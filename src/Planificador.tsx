@@ -1199,4 +1199,3 @@ const descItem: React.CSSProperties = {
   padding: 8,
   background: "#fafafa",
 };
-
