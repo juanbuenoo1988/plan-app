@@ -98,10 +98,6 @@ function monthYear(d: Date | null | undefined): string {
 const weekDaysHeader = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
 const PX_PER_HOUR = 20;
 
-function weekdayShort(d: Date) {
-  const m = ["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"]; // 0=Dom … 6=Sáb
-  return m[getDay(d)];
-}
 
 function monthGrid(date: Date) {
   const start = startOfWeek(startOfMonth(date), { weekStartsOn: 1 });
@@ -332,13 +328,8 @@ function AppInner() {
   const canEdit = !locked;
 
   const [workers, setWorkers] = useState<Worker[]>([
-    { id: "W1", nombre: "ANGEL MORGADO", extraDefault: 0, sabadoDefault: false },
-    { id: "W2", nombre: "ANTONIO MONTILLA", extraDefault: 0, sabadoDefault: false },
-    { id: "W2", nombre: "DANIEL MORGADO", extraDefault: 0, sabadoDefault: false },
-    { id: "W2", nombre: "FIDEL RODRIGO", extraDefault: 0, sabadoDefault: false },
-    { id: "W2", nombre: "LUCAS PRIETO", extraDefault: 0, sabadoDefault: false },
-    { id: "W2", nombre: "LUIS AGUADO", extraDefault: 0, sabadoDefault: false },
-    { id: "W2", nombre: "VICTOR HERNANDEZ", extraDefault: 0, sabadoDefault: false },
+    { id: "W1", nombre: "ANA", extraDefault: 0, sabadoDefault: false },
+    { id: "W2", nombre: "ANGEL MORGADO", extraDefault: 0, sabadoDefault: false },
   ]);
   const [nuevoTrabajador, setNuevoTrabajador] = useState("");
 
@@ -769,13 +760,7 @@ function AppInner() {
                         >
                           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                             <div style={dayLabel}>
-                              {format(d, "d")} <span style={{ color: "#111827" }}>{weekdayShort(d)}</span>{" "}
-                              {ow ? (
-                                <span style={{ fontSize: 12, color: "#d81327f0" }}>
-                                  {getDay(d) !== 6 && ow.extra ? `+${ow.extra}h ` : ""}
-                                  {getDay(d) === 6 && ow.sabado ? "Sáb ON" : ""}
-                                </span>
-                              ) : null}
+                              {format(d, "d")} 
                             </div>
                             {canEdit && (
                               <button className="no-print" onClick={() => addManualHere(w, d)} style={smallPlusBtn} title="Insertar manual aquí">＋</button>
