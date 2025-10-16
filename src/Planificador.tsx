@@ -629,7 +629,7 @@ function AppInner() {
       {/* CABECERA SUPERIOR */}
       <header style={topHeader}>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <h1 style={appTitle}>MONTAJES DELSAZ — PROGRAMACIÓN</h1>
+          <h1 style={appTitle}>MONTAJES DELSAZ — PLANIFICACION TALLERES</h1>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <div style={{ fontWeight: 700, color: "#fff", marginRight: 8 }}>{monthYear(base)}</div>
