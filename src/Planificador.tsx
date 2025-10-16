@@ -1,11 +1,5 @@
-// src/App.tsx
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { supabase } from "./lib/supabase";
-import {
-  loadWorkers, upsertWorker, updateWorker,
-  loadSlices, insertSlices, updateSlice, deleteSlice,
-  loadOverrides, upsertOverride
-} from "./lib/db";
+// src/Planificador.tsx
+import React, { useMemo, useRef, useState } from "react";
 import {
   addDays,
   addMonths,
@@ -21,7 +15,7 @@ import {
 import { es } from "date-fns/locale";
 
 /* ===================== Configuración ===================== */
-const PASSWORD = "taller2025"; // <-- cámbiala a la que quieras
+const PASSWORD = "taller2025"; // ← cámbiala por la que quieras
 
 /* ===================== Error Boundary ===================== */
 class ErrorBoundary extends React.Component<
@@ -42,14 +36,14 @@ class ErrorBoundary extends React.Component<
     if (this.state.hasError) {
       return (
         <div style={{ padding: 20, color: "#111", background: "#fff", borderRadius: 8, margin: 16 }}>
-          <h2>Algo ha fallado 😅</h2>
+          <h2>Algo ha fallado 🫠</h2>
           <p>La aplicación ha capturado un error y se ha detenido el renderizado de esa parte.</p>
           {this.state.info ? (
             <pre style={{ whiteSpace: "pre-wrap", background: "#f3f4f6", padding: 12, borderRadius: 8 }}>
               {this.state.info}
             </pre>
           ) : null}
-          <p style={{ marginTop: 8 }}>Prueba a recargar la página. Si vuelve a pasar, dime el texto del error.</p>
+          <p style={{ marginTop: 8 }}>Recarga la página. Si vuelve a pasar, copia el texto del error y mándamelo.</p>
         </div>
       );
     }
@@ -71,7 +65,7 @@ type TaskSlice = {
   id: string;
   taskId: string;
   producto: string;
-  fecha: string;            // YYYY-MM-DD
+  fecha: string;     // YYYY-MM-DD
   horas: number;
   trabajadorId: string;
   color: string;
@@ -81,7 +75,7 @@ type NewTaskForm = {
   producto: string;
   horasTotales: number;
   trabajadorId: string;
-  fechaInicio: string;      // YYYY-MM-DD
+  fechaInicio: string; // YYYY-MM-DD
 };
 
 type OverridesState = Record<string, Record<string, DayOverride>>;
@@ -118,14 +112,14 @@ function monthGrid(date: Date) {
   return { start, end, weeks };
 }
 
-// Hash genérico
+// Hash muy simple para color
 function hashInt(s: string) {
   let h = 0;
   for (let i = 0; i < s.length; i++) h = (h << 5) - h + s.charCodeAt(i);
   return Math.abs(h);
 }
 
-// Color diferente por BLOQUE (taskId)
+// Color distinto por BLOQUE (taskId)
 function colorFromId(id: string) {
   const hue = hashInt(id) % 360;
   return `hsl(${hue} 70% 45%)`;
@@ -154,7 +148,7 @@ function usadasEnDia(slices: TaskSlice[], workerId: string, date: Date) {
     .reduce((a, s) => a + s.horas, 0);
 }
 
-/* ===================== Replanificación y colas ===================== */
+/* ===================== Replanificación / colas ===================== */
 type QueueItem = { producto: string; horas: number; color: string; taskId: string };
 
 function pushOrMergeSameDay(out: TaskSlice[], add: TaskSlice) {
@@ -253,7 +247,7 @@ function reflowFrom(
   return out;
 }
 
-// Planificación automática de un bloque (crea taskId y color únicos por bloque)
+// Planificación de un bloque (crea taskId/color únicos por bloque)
 function planificarBloqueAuto(
   producto: string,
   horasTotales: number,
@@ -264,7 +258,7 @@ function planificarBloqueAuto(
   overrides: OverridesState
 ): TaskSlice[] {
   const taskId = "T" + Math.random().toString(36).slice(2, 8);
-  const color = colorFromId(taskId); // color distinto por BLOQUE
+  const color = colorFromId(taskId); // color por BLOQUE
   let restante = Math.max(0, Math.round(Number(horasTotales) * 2) / 2);
   const out: TaskSlice[] = [];
 
@@ -321,8 +315,8 @@ function planificarBloqueAuto(
   return out;
 }
 
-/* ===================== App con ErrorBoundary ===================== */
-export default function App() {
+/* ===================== Componente raíz ===================== */
+export default function Planificador() {
   return (
     <ErrorBoundary>
       <AppInner />
@@ -334,7 +328,7 @@ export default function App() {
 function AppInner() {
   const [base, setBase] = useState(new Date());
   const { weeks } = useMemo(() => monthGrid(base), [base]);
-  const [locked, setLocked] = useState(true); // <-- modo bloqueado por defecto
+  const [locked, setLocked] = useState(true); // bloqueado por defecto
   const canEdit = !locked;
 
   const [workers, setWorkers] = useState<Worker[]>([
@@ -357,101 +351,19 @@ function AppInner() {
     trabajadorId: "W2",
     fechaInicio: fmt(new Date()),
   });
-// === Cargar datos de Supabase al abrir + Realtime ===
-useEffect(() => {
-  let active = true;
-  (async () => {
-    try {
-      // Workers
-      const w = await loadWorkers();
-      if (!active) return;
-      if (w.length) {
-        setWorkers(w.map(x => ({
-          id: x.id,
-          nombre: x.nombre,
-          extraDefault: x.extra_default,
-          sabadoDefault: x.sabado_default,
-        })));
-      }
-
-      // Slices
-      const s = await loadSlices();
-      if (!active) return;
-      setSlices(s.map(t => ({
-        id: t.id,
-        taskId: t.task_id,
-        producto: t.producto,
-        fecha: t.fecha,
-        horas: Number(t.horas),
-        trabajadorId: t.trabajador_id,
-        color: t.color,
-      })));
-
-      // Overrides
-      const ov = await loadOverrides();
-      if (!active) return;
-      const map: Record<string, Record<string, { extra: number; sabado: boolean }>> = {};
-      for (const o of ov) {
-        (map[o.worker_id] ||= {})[o.fecha] = { extra: o.extra, sabado: o.sabado };
-      }
-      setOverrides(map);
-
-    } catch (e) {
-      console.error(e);
-      alert("No se pudieron cargar los datos.");
-    }
-  })();
-
-  // Realtime: refrescar cuando cambie algo en BD
-  const ch1 = supabase.channel("rt:task_slices")
-    .on("postgres_changes", { event: "*", schema: "public", table: "task_slices" }, async () => {
-      const s = await loadSlices();
-      if (!active) return;
-      setSlices(s.map(t => ({
-        id: t.id, taskId: t.task_id, producto: t.producto, fecha: t.fecha,
-        horas: Number(t.horas), trabajadorId: t.trabajador_id, color: t.color,
-      })));
-    })
-    .subscribe();
-
-  const ch2 = supabase.channel("rt:workers")
-    .on("postgres_changes", { event: "*", schema: "public", table: "workers" }, async () => {
-      const w = await loadWorkers();
-      if (!active) return;
-      setWorkers(w.map(x => ({
-        id: x.id, nombre: x.nombre,
-        extraDefault: x.extra_default, sabadoDefault: x.sabado_default,
-      })));
-    })
-    .subscribe();
-
-  const ch3 = supabase.channel("rt:day_overrides")
-    .on("postgres_changes", { event: "*", schema: "public", table: "day_overrides" }, async () => {
-      const ov = await loadOverrides();
-      if (!active) return;
-      const map: Record<string, Record<string, { extra: number; sabado: boolean }>> = {};
-      for (const o of ov) (map[o.worker_id] ||= {})[o.fecha] = { extra: o.extra, sabado: o.sabado };
-      setOverrides(map);
-    })
-    .subscribe();
-
-  return () => {
-    active = false;
-    try { supabase.removeChannel(ch1); supabase.removeChannel(ch2); supabase.removeChannel(ch3); } catch {}
-  };
-}, []);
 
   type PrintMode = "none" | "monthly" | "daily" | "dailyAll";
   const [printMode, setPrintMode] = useState<PrintMode>("none");
   const [printWorker, setPrintWorker] = useState<string>("W1");
   const [printDate, setPrintDate] = useState<string>(fmt(new Date()));
+
   function triggerPrint(mode: PrintMode) {
     setPrintMode(mode);
-    setTimeout(() => window.print(), 100);
-    setTimeout(() => setPrintMode("none"), 800);
+    setTimeout(() => window.print(), 80);
+    setTimeout(() => setPrintMode("none"), 600);
   }
 
-  // Autenticación simple
+  // Autenticación simple (bloqueo)
   function tryUnlock() {
     const p = prompt("Introduce la contraseña para editar:");
     if (p === PASSWORD) setLocked(false);
@@ -461,65 +373,40 @@ useEffect(() => {
     setLocked(true);
   }
 
-  // crear bloque
-// crear bloque
-async function crearBloque() {
-  if (!canEdit) return;
-  const w = workers.find((x) => x.id === form.trabajadorId);
-  if (!w) return;
-  const horas = Number(form.horasTotales);
-  if (!form.producto.trim() || !isFinite(horas) || horas <= 0) return;
+  // Crear bloque
+  function crearBloque() {
+    if (!canEdit) return;
+    const w = workers.find((x) => x.id === form.trabajadorId);
+    if (!w) return;
+    const horas = Number(form.horasTotales);
+    if (!form.producto.trim() || !isFinite(horas) || horas <= 0) return;
 
-  const start = new Date(form.fechaInicio);
-  const plan = planificarBloqueAuto(
-    form.producto.trim(),
-    horas,
-    w,
-    start,
-    base,
-    slices,
-    overrides
-  );
+    const start = new Date(form.fechaInicio);
+    const plan = planificarBloqueAuto(
+      form.producto.trim(),
+      Math.max(0.5, Math.round(horas * 2) / 2),
+      w,
+      start,
+      base,
+      slices,
+      overrides
+    );
+    setSlices((prev) => [...prev, ...plan]);
+  }
 
-  // Guardar en BD
-  await insertSlices(plan.map(p => ({
-    id: p.id,
-    task_id: p.taskId,
-    producto: p.producto,
-    fecha: p.fecha,
-    horas: p.horas,
-    trabajador_id: p.trabajadorId,
-    color: p.color,
-  })));
-
-  // Reflejar en pantalla
-  setSlices((prev) => [...prev, ...plan]);
-}
-
-  // trabajadores
- async function addWorker() {
-  if (!canEdit) return;
-  const name = nuevoTrabajador.trim();
-  if (!name) return;
-  const id = "W" + Math.random().toString(36).slice(2, 6);
-
-  await upsertWorker({ id, nombre: name, extra_default: 0, sabado_default: false });
-  setWorkers((prev) => [...prev, { id, nombre: name, extraDefault: 0, sabadoDefault: false }]);
-  setNuevoTrabajador("");
-}
-
-  async function editWorker(id: string, patch: Partial<Worker>) {
-  if (!canEdit) return;
-
-  const dbPatch: any = {};
-  if (patch.nombre !== undefined) dbPatch.nombre = patch.nombre;
-  if (patch.extraDefault !== undefined) dbPatch.extra_default = patch.extraDefault;
-  if (patch.sabadoDefault !== undefined) dbPatch.sabado_default = patch.sabadoDefault;
-
-  await updateWorker(id, dbPatch);
-  setWorkers((prev) => prev.map((w) => (w.id === id ? { ...w, ...patch } : w)));
-}
-
+  // Trabajadores
+  function addWorker() {
+    if (!canEdit) return;
+    const name = nuevoTrabajador.trim();
+    if (!name) return;
+    const id = "W" + Math.random().toString(36).slice(2, 6);
+    setWorkers((prev) => [...prev, { id, nombre: name, extraDefault: 0, sabadoDefault: false }]);
+    setNuevoTrabajador("");
+  }
+  function editWorker(id: string, patch: Partial<Worker>) {
+    if (!canEdit) return;
+    setWorkers((prev) => prev.map((w) => (w.id === id ? { ...w, ...patch } : w)));
+  }
 
   // Drag & Drop
   const dragIdRef = useRef<string | null>(null);
@@ -528,169 +415,119 @@ async function crearBloque() {
     dragIdRef.current = sliceId;
     e.dataTransfer.effectAllowed = "move";
   }
-async function onDropDay(e: React.DragEvent, workerId: string, date: Date) {
-  if (!canEdit) return;
-  e.preventDefault();
-  const sliceId = dragIdRef.current;
-  dragIdRef.current = null;
-  if (!sliceId) return;
-  const nuevaFecha = fmt(date);
-  if (!nuevaFecha) return;
-
-  // Guardar en BD
-  await updateSlice(sliceId, { trabajador_id: workerId, fecha: nuevaFecha });
-
-  // Reflejar en pantalla
-  setSlices((prev) =>
-    prev.map((s) => (s.id === sliceId ? { ...s, trabajadorId: workerId, fecha: nuevaFecha } : s))
-  );
-}
-
+  function onDropDay(e: React.DragEvent, workerId: string, date: Date) {
+    if (!canEdit) return;
+    e.preventDefault();
+    const sliceId = dragIdRef.current;
+    dragIdRef.current = null;
+    if (!sliceId) return;
+    setSlices((prev) =>
+      prev.map((s) => (s.id === sliceId ? { ...s, trabajadorId: workerId, fecha: fmt(date) } : s))
+    );
+  }
   function onDragOver(e: React.DragEvent) {
     if (!canEdit) return;
     e.preventDefault();
   }
 
-  // Doble clic en celda → extras/sábado (reprograma todo ese trabajador desde ese día)
-  async function editOverrideForDay(worker: Worker, date: Date) {
-  if (!canEdit) return;
-  const f = fmt(date);
-  if (!f) return;
-  const ow = overrides[worker.id]?.[f] ?? { extra: worker.extraDefault, sabado: worker.sabadoDefault };
+  // Doble clic en celda → extras/sábado (reprograma desde ese día)
+  function editOverrideForDay(worker: Worker, date: Date) {
+    if (!canEdit) return;
+    const f = fmt(date);
+    if (!f) return;
+    const ow = overrides[worker.id]?.[f] ?? { extra: worker.extraDefault, sabado: worker.sabadoDefault };
 
-  const extraStr = prompt(`Horas extra para ${worker.nombre} el ${f} (solo L–V):`, String(ow.extra));
-  if (extraStr === null) return;
-  const extra = Number(extraStr);
-  if (!isFinite(extra) || extra < 0 || extra > 8) return;
+    const extraStr = prompt(`Horas extra para ${worker.nombre} el ${f} (solo L–V):`, String(ow.extra));
+    if (extraStr === null) return;
+    const extra = Number(extraStr);
+    if (!isFinite(extra) || extra < 0 || extra > 8) return;
 
-  let sab = ow.sabado;
-  if (getDay(date) === 6) {
-    const resp = prompt(`¿Trabaja el sábado ${f}? (sí=1 / no=0):`, sab ? "1" : "0");
-    if (resp === null) return;
-    sab = resp.trim() === "1";
+    let sab = ow.sabado;
+    if (getDay(date) === 6) {
+      const resp = prompt(`¿Trabaja el sábado ${f}? (sí=1 / no=0):`, sab ? "1" : "0");
+      if (resp === null) return;
+      sab = resp.trim() === "1";
+    }
+
+    const nextOverrides: OverridesState = (() => {
+      const byWorker = { ...(overrides[worker.id] || {}) };
+      byWorker[f] = { extra, sabado: sab };
+      return { ...overrides, [worker.id]: byWorker };
+    })();
+
+    setOverrides(nextOverrides);
+
+    setSlices((prev) => {
+      const newPlan = replanWorkerFromDate(worker, f, nextOverrides, prev);
+      const others = prev.filter((s) => s.trabajadorId !== worker.id);
+      return [...others, ...newPlan];
+    });
   }
 
-  // Guardar override en BD
-  await upsertOverride({ worker_id: worker.id, fecha: f, extra, sabado: sab });
-
-  // Replanificar desde ese día
-  const delTrabajador = slices
-    .filter((s) => s.trabajadorId === worker.id)
-    .sort((a, b) => a.fecha.localeCompare(b.fecha));
-
-  const keepBefore = delTrabajador.filter((s) => s.fecha < f);
-  const tail = delTrabajador.filter((s) => s.fecha >= f);
-
-  // Overrides en memoria
-  const nextOverrides: OverridesState = (() => {
-    const byWorker = { ...(overrides[worker.id] || {}) };
-    byWorker[f] = { extra, sabado: sab };
-    return { ...overrides, [worker.id]: byWorker };
-  })();
-
-  const queue = aggregateToQueue(tail);
-  const newPlan = reflowFrom(worker, date, nextOverrides, keepBefore, queue);
-  const others = slices.filter((s) => s.trabajadorId !== worker.id);
-  const finalPlan = [...others, ...newPlan];
-
-  // Persistir cambios en BD
-  for (const s of tail) await deleteSlice(s.id);
-  await insertSlices(newPlan.map(p => ({
-    id: p.id, task_id: p.taskId, producto: p.producto, fecha: p.fecha,
-    horas: p.horas, trabajador_id: p.trabajadorId, color: p.color
-  })));
-
-  // Actualizar UI
-  setOverrides(nextOverrides);
-  setSlices(finalPlan);
-}
-
-
   // Borrar tramo / bloque
- async function removeSlice(id: string) {
-  if (!canEdit) return;
-  const victim = slices.find((s) => s.id === id);
+  function removeSlice(id: string) {
+    if (!canEdit) return;
+    const victim = slices.find((s) => s.id === id);
+    setSlices((prev) => {
+      const filtered = prev.filter((s) => s.id !== id);
+      if (!victim) return filtered;
 
-  // Borrar en BD
-  await deleteSlice(id);
+      const w = workers.find((x) => x.id === victim.trabajadorId);
+      if (!w) return filtered;
 
-  setSlices((prev) => {
-    const filtered = prev.filter((s) => s.id !== id);
-    if (!victim) return filtered;
+      const newPlan = compactFrom(w, victim.fecha, overrides, filtered);
+      const others = filtered.filter((s) => s.trabajadorId !== w.id);
+      return [...others, ...newPlan];
+    });
+  }
 
-    const w = workers.find((x) => x.id === victim.trabajadorId);
-    if (!w) return filtered;
+  function removeTask(taskId: string, workerId: string) {
+    if (!canEdit) return;
+    if (!confirm("¿Eliminar todo el bloque (producto) para este trabajador?")) return;
+    const w = workers.find((x) => x.id === workerId);
+    if (!w) return;
 
-    const newPlan = compactFrom(w, victim.fecha, overrides, filtered);
-    const others = filtered.filter((s) => s.trabajadorId !== w.id);
-    return [...others, ...newPlan];
-  });
-}
- async function removeTask(taskId: string, workerId: string) {
-  if (!canEdit) return;
-  if (!confirm("¿Eliminar todo el bloque (producto) para este trabajador?")) return;
-  const w = workers.find((x) => x.id === workerId);
-  if (!w) return;
+    setSlices((prev) => {
+      const toRemove = prev.filter((s) => s.taskId === taskId && s.trabajadorId === workerId);
+      const filtered = prev.filter((s) => !(s.taskId === taskId && s.trabajadorId === workerId));
+      if (!toRemove.length) return filtered;
 
-  // IDs a borrar en BD
-  const toRemoveIds = slices.filter((s) => s.taskId === taskId && s.trabajadorId === workerId).map(s => s.id);
-  for (const id of toRemoveIds) await deleteSlice(id);
-
-  setSlices((prev) => {
-    const toRemove = prev.filter((s) => s.taskId === taskId && s.trabajadorId === workerId);
-    const filtered = prev.filter((s) => !(s.taskId === taskId && s.trabajadorId === workerId));
-    if (!toRemove.length) return filtered;
-
-    const startF = toRemove.reduce((m, s) => (s.fecha < m ? s.fecha : m), toRemove[0].fecha);
-    const newPlan = compactFrom(w, startF, overrides, filtered);
-    const others = filtered.filter((s) => s.trabajadorId !== w.id);
-    return [...others, ...newPlan];
-  });
-}
-
+      const startF = toRemove.reduce((m, s) => (s.fecha < m ? s.fecha : m), toRemove[0].fecha);
+      const newPlan = compactFrom(w, startF, overrides, filtered);
+      const others = filtered.filter((s) => s.trabajadorId !== w.id);
+      return [...others, ...newPlan];
+    });
+  }
 
   // Urgencia
-async function addManualHere(worker: Worker, date: Date) {
-  if (!canEdit) return;
-  const prod = prompt("Producto a insertar:", "Urgente");
-  if (!prod) return;
-  const hStr = prompt("Horas de ese producto:", "4");
-  const h = Number(hStr);
-  if (!isFinite(h) || h <= 0) return;
+  function addManualHere(worker: Worker, date: Date) {
+    if (!canEdit) return;
+    const prod = prompt("Producto a insertar:", "Urgente");
+    if (!prod) return;
+    const hStr = prompt("Horas de ese producto:", "4");
+    const h = Number(hStr);
+    if (!isFinite(h) || h <= 0) return;
 
-  const delTrabajador = slices
-    .filter((s) => s.trabajadorId === worker.id)
-    .sort((a, b) => a.fecha.localeCompare(b.fecha));
+    const delTrabajador = slices
+      .filter((s) => s.trabajadorId === worker.id)
+      .sort((a, b) => a.fecha.localeCompare(b.fecha));
 
-  const keepBefore = delTrabajador.filter((s) => s.fecha < fmt(date));
-  const tail = delTrabajador.filter((s) => s.fecha >= fmt(date));
+    const keepBefore = delTrabajador.filter((s) => s.fecha < fmt(date));
+    const tail = delTrabajador.filter((s) => s.fecha >= fmt(date));
 
-  const urgent: QueueItem = {
-    producto: prod.trim(),
-    horas: Math.round(h * 2) / 2,
-    color: "#eb0d0dff",
-    taskId: "T" + Math.random().toString(36).slice(2, 8),
-  };
+    const urgent: QueueItem = {
+      producto: prod.trim(),
+      horas: Math.round(h * 2) / 2,
+      color: "#f59e0b",        // amarillo para urgencias
+      taskId: "T" + Math.random().toString(36).slice(2, 8),
+    };
 
-  const queue: QueueItem[] = [urgent, ...aggregateToQueue(tail)];
-  const newPlan = reflowFrom(worker, date, overrides, keepBefore, queue);
-  const others = slices.filter((s) => s.trabajadorId !== worker.id);
-  const finalPlan = [...others, ...newPlan];
+    const queue: QueueItem[] = [urgent, ...aggregateToQueue(tail)];
 
-  // Persistir cambios: borrar tramos desde 'date' y añadir los nuevos
-  const f = fmt(date)!;
-  const oldIds = delTrabajador.filter(s => s.fecha >= f).map(s => s.id);
-  for (const id of oldIds) await deleteSlice(id);
-
-  const toInsert = newPlan.map(p => ({
-    id: p.id, task_id: p.taskId, producto: p.producto, fecha: p.fecha,
-    horas: p.horas, trabajador_id: p.trabajadorId, color: p.color,
-  }));
-  await insertSlices(toInsert);
-
-  setSlices(finalPlan);
-}
-
+    const newPlan = reflowFrom(worker, date, overrides, keepBefore, queue);
+    const others = slices.filter((s) => s.trabajadorId !== worker.id);
+    setSlices([...others, ...newPlan]);
+  }
 
   // Descripciones CRUD
   function saveDesc() {
@@ -751,42 +588,30 @@ async function addManualHere(worker: Worker, date: Date) {
     }
   }
 
- async function aplicarEdicion() {
-  if (!canEdit) return;
-  const w = workers.find((x)=>x.id===ebWorker);
-  if (!w || !ebSelected) return;
-  const match = ebMatches.find(m=>m.taskId===ebSelected);
-  if (!match) return;
-  const nuevoTotal = Math.max(0.5, Math.round(Number(ebHoras)*2)/2);
+  function aplicarEdicion() {
+    if (!canEdit) return;
+    const w = workers.find((x)=>x.id===ebWorker);
+    if (!w || !ebSelected) return;
+    const match = ebMatches.find(m=>m.taskId===ebSelected);
+    if (!match) return;
+    const nuevoTotal = Math.max(0.5, Math.round(Number(ebHoras)*2)/2);
 
-  // Quitar lo anterior de ese task/worker desde DB
-  const delList = slices.filter(s => s.taskId===ebSelected && s.trabajadorId===w.id);
-  for (const s of delList) await deleteSlice(s.id);
-
-  // Replanificar con el mismo taskId y color
-  const color = colorFromId(ebSelected);
-  const restantes = slices.filter(s => !(s.taskId===ebSelected && s.trabajadorId===w.id));
-  const start = new Date(match.startF);
-  const plan = planificarBloqueAuto(
-    ebNombre.trim(),
-    nuevoTotal,
-    w,
-    start,
-    base,
-    restantes,
-    overrides
-  ).map(s=>({...s, taskId: ebSelected, color}));
-
-  // Guardar en BD
-  await insertSlices(plan.map(p => ({
-    id: p.id, task_id: p.taskId, producto: p.producto, fecha: p.fecha,
-    horas: p.horas, trabajador_id: p.trabajadorId, color: p.color
-  })));
-
-  // Refrescar vista
-  setSlices([...restantes, ...plan]);
-}
-
+    setSlices(prev=>{
+      const color = colorFromId(ebSelected);
+      const restantes = prev.filter(s => !(s.taskId===ebSelected && s.trabajadorId===w.id));
+      const start = new Date(match.startF);
+      const plan = planificarBloqueAuto(
+        ebNombre.trim(),
+        nuevoTotal,
+        w,
+        start,
+        base,
+        restantes,
+        overrides
+      ).map(s=>({...s, taskId: ebSelected, color}));
+      return [...restantes, ...plan];
+    });
+  }
 
   /* ===================== Render ===================== */
   return (
@@ -803,14 +628,13 @@ async function addManualHere(worker: Worker, date: Date) {
       {/* CABECERA SUPERIOR */}
       <header style={topHeader}>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <h1 style={appTitle}>MONTAJES DELSAZ-PROGRAMACION TALLERES</h1>
+          <h1 style={appTitle}>MONTAJES DELSAZ — PROGRAMACIÓN</h1>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <div style={{ fontWeight: 700, color: "#fff", marginRight: 8 }}>{monthYear(base)}</div>
           <button style={btnLabeled} onClick={() => setBase(addMonths(base, -1))}>◀ Mes anterior</button>
           <button style={btnLabeled} onClick={() => setBase(addMonths(base, 1))}>Siguiente mes ▶</button>
 
-          {/* Control de bloqueo */}
           {locked ? (
             <button style={btnUnlock} className="no-print" onClick={tryUnlock}>🔒 Desbloquear</button>
           ) : (
@@ -828,7 +652,7 @@ async function addManualHere(worker: Worker, date: Date) {
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               <button style={btnLabeled} onClick={() => triggerPrint("monthly")}>🖨️ Imprimir mensual</button>
               <select style={input} value={printWorker} onChange={(e) => setPrintWorker(e.target.value)}>
-                {workers.map((w) => <option key={w.id} value={w.id}>{w.nombre}</option>)}
+                {workers.map((w) => <option key={`op-${w.id}`} value={w.id}>{w.nombre}</option>)}
               </select>
               <input style={input} type="date" value={printDate} onChange={(e) => setPrintDate(e.target.value)} />
               <button style={btnLabeled} onClick={() => triggerPrint("daily")}>🖨️ Imprimir diario</button>
@@ -840,8 +664,6 @@ async function addManualHere(worker: Worker, date: Date) {
           <div style={panelRow} className="no-print">
             <div style={panel}>
               <div style={panelTitle}>Nuevo bloque</div>
-
-              {/* ---- CENTRADO DEL CONTENIDO ---- */}
               <div style={panelInner}>
                 <div style={grid2}>
                   <label style={label}>Producto</label>
@@ -861,7 +683,7 @@ async function addManualHere(worker: Worker, date: Date) {
                   />
                   <label style={label}>Trabajador</label>
                   <select style={disabledIf(input, locked)} disabled={locked} value={form.trabajadorId} onChange={(e) => setForm({ ...form, trabajadorId: e.target.value })}>
-                    {workers.map((w) => <option key={w.id} value={w.id}>{w.nombre}</option>)}
+                    {workers.map((w) => <option key={`wopt-${w.id}`} value={w.id}>{w.nombre}</option>)}
                   </select>
                   <label style={label}>Fecha inicio</label>
                   <input
@@ -894,7 +716,7 @@ async function addManualHere(worker: Worker, date: Date) {
                 </thead>
                 <tbody>
                   {workers.map((w) => (
-                    <tr key={w.id}>
+                    <tr key={`row-${w.id}`}>
                       <td style={td}><input style={disabledIf(input, locked)} disabled={locked} value={w.nombre} onChange={(e) => editWorker(w.id, { nombre: e.target.value })} /></td>
                       <td style={td}><input style={disabledIf(input, locked)} disabled={locked} type="number" min={0} step={0.5} value={w.extraDefault} onChange={(e) => editWorker(w.id, { extraDefault: Number(e.target.value) })} /></td>
                       <td style={td}><input disabled={locked} type="checkbox" checked={w.sabadoDefault} onChange={(e) => editWorker(w.id, { sabadoDefault: e.target.checked })} /></td>
@@ -911,8 +733,8 @@ async function addManualHere(worker: Worker, date: Date) {
 
           {/* CABECERA DÍAS (impresión mensual) */}
           <div style={daysHeader} className={printMode === "monthly" ? "" : "no-print"}>
-            {weekDaysHeader.map((d) => (
-              <div key={d} style={{ padding: "6px 8px", fontWeight: 600 }}>{d}</div>
+            {weekDaysHeader.map((d, i) => (
+              <div key={`dow-${i}`} style={{ padding: "6px 8px", fontWeight: 600 }}>{d}</div>
             ))}
           </div>
 
@@ -922,8 +744,8 @@ async function addManualHere(worker: Worker, date: Date) {
               <div key={`worker-${w.id}`}>
                 <div style={{ fontSize: 25, fontWeight: 700, margin: "8px 0 4px", color: "#111827" }}>👤 {w.nombre}</div>
 
-                {weeks.map((week, i) => (
-                   <div key={`${w.id}-wk-${week[0].toISOString()}`} style={weekRow}>
+                {weeks.map((week) => (
+                  <div key={`${w.id}-wk-${week[0].toISOString()}`} style={weekRow}>
                     {week.map((d) => {
                       const f = fmt(d);
                       const delDia = f ? slices.filter((s) => s.trabajadorId === w.id && s.fecha === f) : [];
@@ -933,7 +755,7 @@ async function addManualHere(worker: Worker, date: Date) {
 
                       return (
                         <div
-                          key={`${w.id}-${fmt(d)}`}
+                          key={`${w.id}-${f}`}
                           style={dayCell}
                           title={`Doble clic: extras/sábado para ${w.nombre} el ${f || "día"}`}
                           onDoubleClick={() => canEdit && editOverrideForDay(w, d)}
@@ -945,7 +767,7 @@ async function addManualHere(worker: Worker, date: Date) {
                               {format(d, "d")} <span style={{ color: "#111827" }}>{weekdayShort(d)}</span>{" "}
                               {ow ? (
                                 <span style={{ fontSize: 12, color: "#d81327f0" }}>
-                                  {getDay(d) !== 6 && ow.extra ? `+${ow.extra}horas extra ` : ""}
+                                  {getDay(d) !== 6 && ow.extra ? `+${ow.extra}h ` : ""}
                                   {getDay(d) === 6 && ow.sabado ? "Sáb ON" : ""}
                                 </span>
                               ) : null}
@@ -1022,7 +844,7 @@ async function addManualHere(worker: Worker, date: Date) {
                       </thead>
                       <tbody>
                         {daySlices.length ? daySlices.map((s) => (
-                          <tr key={s.id}>
+                          <tr key={`pd-${s.id}`}>
                             <td style={ptd}>{s.producto}</td>
                             <td style={ptd}>&nbsp;{s.horas}</td>
                             <td style={ptd}>{descs[s.producto] || ""}</td>
@@ -1036,7 +858,7 @@ async function addManualHere(worker: Worker, date: Date) {
             </div>
           )}
 
-          {/* Parte diario — TODOS los trabajadores (solo impresión) */}
+          {/* Parte diario — todos (solo impresión) */}
           {printMode === "dailyAll" && (
             <div className="print-only" style={{ marginTop: 8 }}>
               {(() => {
@@ -1050,7 +872,7 @@ async function addManualHere(worker: Worker, date: Date) {
                       const cap = valid ? capacidadDia(w, d, overrides) : 0;
                       const used = valid ? usadasEnDia(slices, w.id, d) : 0;
                       return (
-                        <div key={w.id} className="worker-block">
+                        <div key={`pdall-${w.id}`} className="worker-block">
                           <h2 style={{ margin: 0 }}>
                             Parte diario — {w.nombre} — {valid ? format(d, "EEEE d 'de' LLLL yyyy", { locale: es }) : "fecha inválida"}
                           </h2>
@@ -1061,7 +883,7 @@ async function addManualHere(worker: Worker, date: Date) {
                             </thead>
                             <tbody>
                               {daySlices.length ? daySlices.map((s) => (
-                                <tr key={s.id}>
+                                <tr key={`pdall-row-${s.id}`}>
                                   <td style={ptd}>{s.producto}</td>
                                   <td style={ptd}>&nbsp;{s.horas}</td>
                                   <td style={ptd}>{descs[s.producto] || ""}</td>
@@ -1119,7 +941,7 @@ async function addManualHere(worker: Worker, date: Date) {
               <div style={{ color: "#6b7280", fontSize: 13 }}>No hay descripciones todavía.</div>
             )}
             {Object.entries(descs).map(([prod, texto]) => (
-              <div key={prod} style={descItem}>
+              <div key={`desc-${prod}`} style={descItem}>
                 <div style={{ fontWeight: 700 }}>{prod}</div>
                 <div style={{ fontSize: 12, color: "#374151", whiteSpace: "pre-wrap" }}>{texto}</div>
                 <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
@@ -1136,7 +958,7 @@ async function addManualHere(worker: Worker, date: Date) {
             <div style={{ display: "grid", gap: 8 }}>
               <label style={label}>Trabajador</label>
               <select style={disabledIf(input, locked)} disabled={locked} value={ebWorker} onChange={e=>setEbWorker(e.target.value)}>
-                {workers.map(w=><option key={w.id} value={w.id}>{w.nombre}</option>)}
+                {workers.map(w=><option key={`ebw-${w.id}`} value={w.id}>{w.nombre}</option>)}
               </select>
 
               <label style={label}>Producto</label>
@@ -1155,7 +977,7 @@ async function addManualHere(worker: Worker, date: Date) {
                     if (m) setEbHoras(m.totalHoras);
                   }}>
                     {ebMatches.map(m=>(
-                      <option key={m.taskId} value={m.taskId}>
+                      <option key={`ebmatch-${m.taskId}`} value={m.taskId}>
                         {m.startF} · {m.totalHoras}h · {ebNombre}
                       </option>
                     ))}
@@ -1201,7 +1023,7 @@ function DayCapacityBadge({ capacidad, usado }: { capacidad: number; usado: numb
 /* ===================== Estilos ===================== */
 const appShell: React.CSSProperties = {
   fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
-  background: "#c6f5f9ff", // Azul sólido
+  background: "#e6f7fb",
   minHeight: "100vh",
 };
 
@@ -1213,13 +1035,13 @@ const topHeader: React.CSSProperties = {
   alignItems: "center",
   justifyContent: "space-between",
   padding: "12px 16px",
-  background: "#3218d6",
-  borderBottom: "1px solid rgba(255,255,255,.25)",
+  background: "#1f2937",
+  borderBottom: "1px solid rgba(255,255,255,.15)",
 };
 
 const appTitle: React.CSSProperties = {
-  fontSize: 22,
-  fontWeight: 900,
+  fontSize: 18,
+  fontWeight: 800,
   letterSpacing: 0.4,
   margin: 0,
   textTransform: "uppercase",
@@ -1263,11 +1085,10 @@ const panelInner: React.CSSProperties = {
   boxSizing: "border-box",
 };
 
-
 const panelTitle: React.CSSProperties = { fontWeight: 700, marginBottom: 8, color: "#111827" };
 const grid2: React.CSSProperties = { display: "grid", gap: 8, gridTemplateColumns: "180px 1fr", alignItems: "center" };
 const label: React.CSSProperties = { fontSize: 13, color: "#374151" };
-const input: React.CSSProperties = { padding: "8px 10px", border: "1px solid #e5e7eb", borderRadius: 8, outline: "none", width: "100%", boxSizing: "border-box",};
+const input: React.CSSProperties = { padding: "8px 10px", border: "1px solid #e5e7eb", borderRadius: 8, outline: "none", width: "100%", boxSizing: "border-box" };
 const textarea: React.CSSProperties = { ...input, minHeight: 100, resize: "vertical" as const };
 
 const table: React.CSSProperties = { width: "100%", borderCollapse: "collapse", fontSize: 13, background: "#fff" };
@@ -1383,3 +1204,4 @@ const descItem: React.CSSProperties = {
   padding: 8,
   background: "#fafafa",
 };
+
