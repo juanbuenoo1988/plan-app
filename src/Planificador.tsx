@@ -765,7 +765,14 @@ function AppInner() {
                         >
                           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                             <div style={dayLabel}>
-                              {format(d, "d")} 
+                              {format(d, "d")}{" "}
+                              {ow && (
+                                 <span style={{ fontSize: 12, color: "#d81327" }}>
+                                  {getDay(d) !== 6 && ow.extra && ow.extra > 0 ? `+${ow.extra} h extra ` : ""}
+                                  {getDay(d) === 6 && ow.sabado ? "Sáb. ON" : ""}
+                                 </span>
+                              )}
+                            </div>
                             </div>
                             {canEdit && (
                               <button className="no-print" onClick={() => addManualHere(w, d)} style={smallPlusBtn} title="Insertar manual aquí">＋</button>
