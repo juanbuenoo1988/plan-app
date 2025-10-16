@@ -462,6 +462,7 @@ useEffect(() => {
   }
 
   // crear bloque
+// crear bloque
 async function crearBloque() {
   if (!canEdit) return;
   const w = workers.find((x) => x.id === form.trabajadorId);
@@ -494,8 +495,6 @@ async function crearBloque() {
   // Reflejar en pantalla
   setSlices((prev) => [...prev, ...plan]);
 }
-ices((prev) => [...prev, ...plan]);
-  }
 
   // trabajadores
  async function addWorker() {
@@ -1387,3 +1386,4 @@ const descItem: React.CSSProperties = {
   padding: 8,
   background: "#fafafa",
 };
+
