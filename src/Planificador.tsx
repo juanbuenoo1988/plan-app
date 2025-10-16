@@ -626,9 +626,6 @@ async function onDropDay(e: React.DragEvent, workerId: string, date: Date) {
     return [...others, ...newPlan];
   });
 }
-;
-
-
  async function removeTask(taskId: string, workerId: string) {
   if (!canEdit) return;
   if (!confirm("¿Eliminar todo el bloque (producto) para este trabajador?")) return;
@@ -1386,4 +1383,3 @@ const descItem: React.CSSProperties = {
   padding: 8,
   background: "#fafafa",
 };
-
