@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "./lib/supabase";
-import { loadSlices, insertSlices, updateSlice, deleteSlice, loadWorkers, upsertWorker, updateWorker, loadOverrides, upsertOverride } from "./lib/db";
 
-
+// ----------------- Tipos -----------------
 type Item = {
   id: string;
   title: string;
@@ -16,12 +15,14 @@ type Item = {
 
 type Role = "viewer" | "editor" | "admin" | null;
 
+// ----------------- Helpers -----------------
 function nextStatus(s: Item["status"]): Item["status"] {
   if (s === "planned") return "in_progress";
   if (s === "in_progress") return "done";
   return "planned";
 }
 
+// =================== APP ===================
 export default function App() {
   // Sesión y rol
   const [loadingSession, setLoadingSession] = useState(true);
@@ -45,40 +46,64 @@ export default function App() {
   // -------------- AUTENTICACIÓN --------------
   useEffect(() => {
     (async () => {
-      const { data } = await supabase.auth.getSession();
-      const sess = data.session;
-      setUserId(sess?.user?.id ?? null);
+      try {
+        const { data, error } = await supabase.auth.getSession();
+        if (error) console.error(error);
 
-      if (sess?.user?.id) {
-        // Leer rol del perfil
-        const { data: profile } = await supabase
-          .from("profiles")
-          .select("role")
-          .eq("id", sess.user.id)
-          .maybeSingle();
+        const sess = data?.session ?? null;
+        setUserId(sess?.user?.id ?? null);
 
-        setRole((profile?.role as Role) ?? "viewer");
-      } else {
+        if (sess?.user?.id) {
+          const { data: profile, error: pErr } = await supabase
+            .from("profiles")
+            .select("role")
+            .eq("id", sess.user.id)
+            .maybeSingle();
+
+          if (pErr) {
+            console.error(pErr);
+            setRole("viewer");
+          } else {
+            setRole((profile?.role as Role) ?? "viewer");
+          }
+        } else {
+          setRole(null);
+        }
+      } catch (e) {
+        console.error(e);
         setRole(null);
+      } finally {
+        setLoadingSession(false);
       }
-      setLoadingSession(false);
     })();
 
-    const { data: sub } = supabase.auth.onAuthStateChange(async (_evt, sess) => {
-      setUserId(sess?.user?.id ?? null);
-      if (sess?.user?.id) {
-        const { data: profile } = await supabase
-          .from("profiles")
-          .select("role")
-          .eq("id", sess.user.id)
-          .maybeSingle();
-        setRole((profile?.role as Role) ?? "viewer");
-      } else {
-        setRole(null);
+    const { data: listener } = supabase.auth.onAuthStateChange(
+      async (_evt, sess) => {
+        setUserId(sess?.user?.id ?? null);
+        if (sess?.user?.id) {
+          const { data: profile, error: pErr } = await supabase
+            .from("profiles")
+            .select("role")
+            .eq("id", sess.user.id)
+            .maybeSingle();
+          if (pErr) {
+            console.error(pErr);
+            setRole("viewer");
+          } else {
+            setRole((profile?.role as Role) ?? "viewer");
+          }
+        } else {
+          setRole(null);
+        }
       }
-    });
+    );
 
-    return () => sub.subscription.unsubscribe();
+    return () => {
+      // proteger por si cambia la API
+      try {
+        listener?.subscription?.unsubscribe?.();
+      } catch {}
+    };
   }, []);
 
   async function sendMagicLink(e: React.FormEvent) {
@@ -88,6 +113,7 @@ export default function App() {
     const { error } = await supabase.auth.signInWithOtp({
       email,
       options: {
+        // Deja esto así: redirige al dominio actual (local o Vercel)
         emailRedirectTo: window.location.origin,
       },
     });
@@ -96,28 +122,45 @@ export default function App() {
   }
 
   async function cerrarSesion() {
+    setMsg(null);
     await supabase.auth.signOut();
     setItems([]);
+    setRole(null);
+    setUserId(null);
   }
 
   // -------------- CARGAR LISTA --------------
   const cargar = useMemo(
     () => async () => {
-      setCargandoLista(true);
-      const { data, error } = await supabase
-        .from("planning_items")
-        .select("*")
-        .order("start_at", { ascending: true });
-      if (!error && data) setItems(data as Item[]);
-      setCargandoLista(false);
+      try {
+        setCargandoLista(true);
+        const { data, error } = await supabase
+          .from("planning_items")
+          .select("*")
+          .order("start_at", { ascending: true });
+
+        if (error) {
+          console.error(error);
+          setMsg("No se pudieron cargar los datos.");
+          return;
+        }
+        setItems((data ?? []) as Item[]);
+      } catch (e) {
+        console.error(e);
+        setMsg("Error al conectar con la base de datos.");
+      } finally {
+        setCargandoLista(false);
+      }
     },
     []
   );
 
   useEffect(() => {
     if (!loadingSession && userId) {
+      // primera carga
       cargar();
-      // Realtime para refrescar
+
+      // realtime
       const channel = supabase
         .channel("realtime:planning_items")
         .on(
@@ -128,7 +171,9 @@ export default function App() {
         .subscribe();
 
       return () => {
-        supabase.removeChannel(channel);
+        try {
+          supabase.removeChannel(channel);
+        } catch {}
       };
     }
   }, [loadingSession, userId, cargar]);
@@ -152,12 +197,15 @@ export default function App() {
     };
 
     const { error } = await supabase.from("planning_items").insert(payload);
-    if (error) setMsg(error.message);
-    else {
+    if (error) {
+      console.error(error);
+      setMsg(error.message);
+    } else {
       setTitle("");
       setStartAt("");
       setEndAt("");
       setNotes("");
+      // no llamo a cargar(); el realtime refresca solo
     }
   }
 
@@ -175,7 +223,10 @@ export default function App() {
         updated_at: new Date().toISOString(),
       })
       .eq("id", it.id);
-    if (error) setMsg(error.message);
+    if (error) {
+      console.error(error);
+      setMsg(error.message);
+    }
   }
 
   async function borrar(it: Item) {
@@ -187,7 +238,10 @@ export default function App() {
       .from("planning_items")
       .delete()
       .eq("id", it.id);
-    if (error) setMsg(error.message);
+    if (error) {
+      console.error(error);
+      setMsg(error.message);
+    }
   }
 
   // -------------- RENDER --------------
