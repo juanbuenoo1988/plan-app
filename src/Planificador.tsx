@@ -1183,6 +1183,7 @@ async function addManualHere(worker: Worker, date: Date) {
       </div>
     </div>
   );
+}
 
 /* ===================== Helpers de estilo ===================== */
 function disabledIf<T extends React.CSSProperties>(style: T, disabled: boolean): T {
