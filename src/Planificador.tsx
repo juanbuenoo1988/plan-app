@@ -752,7 +752,6 @@ function AppInner() {
                       const delDia = f ? slices.filter((s) => s.trabajadorId === w.id && s.fecha === f) : [];
                       const cap = capacidadDia(w, d, overrides);
                       const used = usadasEnDia(slices, w.id, d);
-                      const over = used > cap + 1e-9; // margen anti-decimales raros
                       const over = used > cap + 1e-9; // "over" significa "se pasó"
                       const ow = f ? overrides[w.id]?.[f] : undefined;
 
