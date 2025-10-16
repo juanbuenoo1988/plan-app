@@ -1,356 +1,316 @@
 import { useEffect, useMemo, useState } from "react";
-import type { Session } from "@supabase/supabase-js";
 import { supabase } from "./lib/supabase";
-
-// ===== Tipos =====
-type ItemStatus = "planned" | "in_progress" | "done";
 
 type Item = {
   id: string;
   title: string;
-  start_at: string; // ISO
-  end_at: string;   // ISO
-  status: ItemStatus;
+  start_at: string | null;
+  end_at: string | null;
+  status: "planned" | "in_progress" | "done";
   notes: string | null;
+  updated_by: string | null;
+  updated_at: string | null;
 };
 
-// ===== Utilidades fechas =====
-// Input "yyyy-MM-dd" (propio de <input type="date">) -> ISO
-function ymdToISO(ymd: string): string | null {
-  if (!ymd) return null;
-  // ymd = "2025-10-15"
-  const d = new Date(ymd + "T00:00:00");
-  if (isNaN(d.getTime())) return null;
-  return d.toISOString();
+type Role = "viewer" | "editor" | "admin" | null;
+
+function nextStatus(s: Item["status"]): Item["status"] {
+  if (s === "planned") return "in_progress";
+  if (s === "in_progress") return "done";
+  return "planned";
 }
 
-// ISO -> "yyyy-MM-dd" para <input type="date">
-function isoToYMD(iso: string | null | undefined): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return "";
-  // aaaa-mm-dd
-  const yyyy = String(d.getFullYear());
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
-}
-
-// ===== Componente principal =====
 export default function App() {
-  // --- Sesión y UI ---
-  const [session, setSession] = useState<Session | null>(null);
+  // Sesión y rol
+  const [loadingSession, setLoadingSession] = useState(true);
   const [email, setEmail] = useState("");
-  const [sending, setSending] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const [userId, setUserId] = useState<string | null>(null);
+  const [role, setRole] = useState<Role>(null);
 
-  // --- Datos / formulario ---
+  // Datos
   const [items, setItems] = useState<Item[]>([]);
+  const [cargandoLista, setCargandoLista] = useState(false);
+
+  // Formulario nuevo
   const [title, setTitle] = useState("");
-  const [startYMD, setStartYMD] = useState(""); // yyyy-MM-dd
-  const [endYMD, setEndYMD] = useState("");     // yyyy-MM-dd
+  const [startAt, setStartAt] = useState("");
+  const [endAt, setEndAt] = useState("");
   const [notes, setNotes] = useState("");
 
-  // ========= SESIÓN =========
+  const puedeEditar = role === "editor" || role === "admin";
+
+  // -------------- AUTENTICACIÓN --------------
   useEffect(() => {
-    // leer sesión al arrancar
     (async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      setSession(session ?? null);
+      const { data } = await supabase.auth.getSession();
+      const sess = data.session;
+      setUserId(sess?.user?.id ?? null);
+
+      if (sess?.user?.id) {
+        // Leer rol del perfil
+        const { data: profile } = await supabase
+          .from("profiles")
+          .select("role")
+          .eq("id", sess.user.id)
+          .maybeSingle();
+
+        setRole((profile?.role as Role) ?? "viewer");
+      } else {
+        setRole(null);
+      }
+      setLoadingSession(false);
     })();
 
-    // escuchar cambios de sesión
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session ?? null);
+    const { data: sub } = supabase.auth.onAuthStateChange(async (_evt, sess) => {
+      setUserId(sess?.user?.id ?? null);
+      if (sess?.user?.id) {
+        const { data: profile } = await supabase
+          .from("profiles")
+          .select("role")
+          .eq("id", sess.user.id)
+          .maybeSingle();
+        setRole((profile?.role as Role) ?? "viewer");
+      } else {
+        setRole(null);
+      }
     });
 
     return () => sub.subscription.unsubscribe();
   }, []);
 
-  async function sendMagicLink() {
-    try {
-      setSending(true);
-      setMsg(null);
-
-      if (!email) {
-        setMsg("Escribe tu correo.");
-        return;
-      }
-
-      const { error } = await supabase.auth.signInWithOtp({
-        email,
-        options: {
-          // IMPORTANTÍSIMO: que vuelva a tu dominio (o localhost en dev)
-          emailRedirectTo: window.location.origin,
-        },
-      });
-      if (error) throw error;
-
-      setMsg("¡Enlace enviado! Revisa tu correo y haz clic en el enlace.");
-    } catch (e: any) {
-      setMsg(e.message ?? "No se pudo enviar el enlace.");
-    } finally {
-      setSending(false);
-    }
+  async function sendMagicLink(e: React.FormEvent) {
+    e.preventDefault();
+    setMsg(null);
+    if (!email) return setMsg("Escribe un correo");
+    const { error } = await supabase.auth.signInWithOtp({
+      email,
+      options: {
+        emailRedirectTo: window.location.origin,
+      },
+    });
+    if (error) setMsg(error.message);
+    else setMsg("Te he enviado un enlace de login a tu correo.");
   }
 
-  async function logout() {
-    try {
-      await supabase.auth.signOut();
-    } finally {
-      // limpiar y recargar
-      localStorage.clear();
-      sessionStorage.clear();
-      window.location.href = "/";
-    }
+  async function cerrarSesion() {
+    await supabase.auth.signOut();
+    setItems([]);
   }
 
-  // ========= CARGA DE ITEMS =========
-  async function fetchItems() {
-    const { data, error } = await supabase
-      .from("planning_items")
-      .select("id,title,start_at,end_at,status,notes")
-      .order("start_at", { ascending: true });
+  // -------------- CARGAR LISTA --------------
+  const cargar = useMemo(
+    () => async () => {
+      setCargandoLista(true);
+      const { data, error } = await supabase
+        .from("planning_items")
+        .select("*")
+        .order("start_at", { ascending: true });
+      if (!error && data) setItems(data as Item[]);
+      setCargandoLista(false);
+    },
+    []
+  );
 
-    if (error) {
-      setMsg(`Error cargando datos: ${error.message}`);
-      return;
-    }
-    setItems((data ?? []) as Item[]);
-  }
-
-  // cargar cuando haya sesión
   useEffect(() => {
-    if (!session) return;
-    fetchItems();
-    // (Opcional) Realtime: escuchar inserts/updates/deletes
-    const channel = supabase
-      .channel("realtime:planning_items")
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "planning_items" },
-        () => fetchItems()
-      )
-      .subscribe();
+    if (!loadingSession && userId) {
+      cargar();
+      // Realtime para refrescar
+      const channel = supabase
+        .channel("realtime:planning_items")
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "planning_items" },
+          () => cargar()
+        )
+        .subscribe();
 
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [session]);
+      return () => {
+        supabase.removeChannel(channel);
+      };
+    }
+  }, [loadingSession, userId, cargar]);
 
-  // ========= INSERT =========
+  // -------------- CRUD --------------
   async function addItem() {
-    try {
-      setMsg(null);
+    setMsg(null);
+    if (!puedeEditar) {
+      return setMsg("No tienes permisos para añadir. Pide rol editor/admin.");
+    }
+    if (!title.trim()) return setMsg("El título es obligatorio.");
 
-      if (!title.trim()) {
-        setMsg("Pon un título.");
-        return;
-      }
-      const startISO = ymdToISO(startYMD);
-      const endISO = ymdToISO(endYMD);
-      if (!startISO || !endISO) {
-        setMsg("Fechas inválidas.");
-        return;
-      }
+    const payload = {
+      title: title.trim(),
+      start_at: startAt ? new Date(startAt).toISOString() : null,
+      end_at: endAt ? new Date(endAt).toISOString() : null,
+      status: "planned" as const,
+      notes: notes.trim() || null,
+      updated_by: userId,
+      updated_at: new Date().toISOString(),
+    };
 
-      const { error } = await supabase.from("planning_items").insert({
-        title: title.trim(),
-        start_at: startISO,
-        end_at: endISO,
-        status: "planned",
-        notes: notes.trim() ? notes.trim() : null,
-      });
-
-      if (error) throw error;
-
-      // limpiar formulario y recargar
+    const { error } = await supabase.from("planning_items").insert(payload);
+    if (error) setMsg(error.message);
+    else {
       setTitle("");
-      setStartYMD("");
-      setEndYMD("");
+      setStartAt("");
+      setEndAt("");
       setNotes("");
-      await fetchItems();
-      setMsg("Guardado correctamente ✅");
-    } catch (e: any) {
-      setMsg(e.message ?? "No se pudo guardar.");
     }
   }
 
-  // ========= UI =========
-  if (!session) {
-    // ---- VISTA LOGIN ----
+  async function toggleEstado(it: Item) {
+    setMsg(null);
+    if (!puedeEditar) {
+      return setMsg("No tienes permisos para editar. Pide rol editor/admin.");
+    }
+    const nuevo = nextStatus(it.status);
+    const { error } = await supabase
+      .from("planning_items")
+      .update({
+        status: nuevo,
+        updated_by: userId,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", it.id);
+    if (error) setMsg(error.message);
+  }
+
+  async function borrar(it: Item) {
+    setMsg(null);
+    if (!puedeEditar) {
+      return setMsg("No tienes permisos para borrar. Pide rol editor/admin.");
+    }
+    const { error } = await supabase
+      .from("planning_items")
+      .delete()
+      .eq("id", it.id);
+    if (error) setMsg(error.message);
+  }
+
+  // -------------- RENDER --------------
+  if (loadingSession) return <div style={{ padding: 24 }}>Cargando…</div>;
+
+  if (!userId) {
     return (
-      <div style={{ maxWidth: 520, margin: "60px auto", padding: 16 }}>
-        <h2>Inicia sesión</h2>
-        <p>Te enviaremos un enlace por correo.</p>
-
-        {msg && (
-          <div
-            style={{
-              background: "#f4f2e6",
-              color: "#333",
-              padding: "8px 10px",
-              borderRadius: 6,
-              marginBottom: 10,
-              border: "1px solid #e0dcb8",
-            }}
-          >
-            {msg}
-          </div>
-        )}
-
-        <input
-          type="email"
-          placeholder="tu@correo.com"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          style={{
-            width: "100%",
-            padding: 10,
-            marginBottom: 10,
-            borderRadius: 6,
-            border: "1px solid #ccc",
-          }}
-        />
-        <button
-          onClick={sendMagicLink}
-          disabled={sending}
-          style={{
-            padding: "8px 12px",
-            borderRadius: 6,
-            border: "1px solid #333",
-            cursor: "pointer",
-          }}
-        >
-          {sending ? "Enviando..." : "Enviarme enlace"}
-        </button>
+      <div style={{ maxWidth: 720, margin: "40px auto" }}>
+        <h2>Iniciar sesión</h2>
+        <form onSubmit={sendMagicLink}>
+          <input
+            type="email"
+            placeholder="tu@correo.com"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            style={{ width: "100%", padding: 10, marginBottom: 10 }}
+          />
+          <button type="submit">Enviarme enlace mágico</button>
+        </form>
+        {msg && <p style={{ color: "crimson" }}>{msg}</p>}
       </div>
     );
   }
 
-  // ---- VISTA APP ----
   return (
-    <div style={{ maxWidth: 900, margin: "30px auto", padding: 16 }}>
-      <div style={{ textAlign: "right", marginBottom: 10 }}>
-        <button
-          onClick={logout}
-          style={{
-            padding: "6px 10px",
-            borderRadius: 6,
-            border: "1px solid #333",
-            cursor: "pointer",
-          }}
-        >
-          Cerrar sesión
-        </button>
+    <div style={{ maxWidth: 900, margin: "32px auto", padding: 12 }}>
+      <div style={{ display: "flex", justifyContent: "flex-end" }}>
+        <button onClick={cerrarSesion}>Cerrar sesión</button>
       </div>
 
-      {msg && (
-        <div
-          style={{
-            background: "#f4f2e6",
-            color: "#333",
-            padding: "8px 10px",
-            borderRadius: 6,
-            marginBottom: 10,
-            border: "1px solid #e0dcb8",
-          }}
-        >
-          {msg}
-        </div>
-      )}
+      <h2>Planificación</h2>
+      <p>
+        Rol: <b>{role ?? "?"}</b> {puedeEditar ? "(puedes editar)" : "(solo lectura)"}
+      </p>
+      {msg && <p style={{ color: "crimson" }}>{msg}</p>}
 
-      {/* Formulario */}
+      {/* Formulario nuevo */}
       <div
         style={{
           border: "1px solid #ccc",
-          borderRadius: 8,
+          borderRadius: 6,
           padding: 12,
           marginBottom: 16,
         }}
       >
-        <div style={{ marginBottom: 8 }}>
-          <label style={{ display: "block", marginBottom: 4 }}>Título</label>
-          <input
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            placeholder="Título"
-            style={{ width: "100%", padding: 8, borderRadius: 6, border: "1px solid #ccc" }}
-          />
-        </div>
+        <label>Título</label>
+        <input
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          placeholder="Título…"
+          style={{ width: "100%", padding: 8, marginBottom: 8 }}
+        />
 
-        <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+        <div style={{ display: "flex", gap: 8 }}>
           <div style={{ flex: 1 }}>
-            <label style={{ display: "block", marginBottom: 4 }}>Inicio</label>
+            <label>Inicio</label>
             <input
               type="date"
-              value={startYMD}
-              onChange={(e) => setStartYMD(e.target.value)}
-              style={{ width: "100%", padding: 8, borderRadius: 6, border: "1px solid #ccc" }}
+              value={startAt}
+              onChange={(e) => setStartAt(e.target.value)}
+              style={{ width: "100%", padding: 8 }}
             />
           </div>
           <div style={{ flex: 1 }}>
-            <label style={{ display: "block", marginBottom: 4 }}>Fin</label>
+            <label>Fin</label>
             <input
               type="date"
-              value={endYMD}
-              onChange={(e) => setEndYMD(e.target.value)}
-              style={{ width: "100%", padding: 8, borderRadius: 6, border: "1px solid #ccc" }}
+              value={endAt}
+              onChange={(e) => setEndAt(e.target.value)}
+              style={{ width: "100%", padding: 8 }}
             />
           </div>
         </div>
 
-        <div style={{ marginBottom: 8 }}>
-          <label style={{ display: "block", marginBottom: 4 }}>Notas (opcional)</label>
-          <textarea
-            value={notes}
-            onChange={(e) => setNotes(e.target.value)}
-            rows={3}
-            style={{ width: "100%", padding: 8, borderRadius: 6, border: "1px solid #ccc" }}
-          />
-        </div>
+        <label style={{ marginTop: 8, display: "block" }}>Notas (opcional)</label>
+        <textarea
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          style={{ width: "100%", padding: 8, height: 80 }}
+        />
 
-        <button
-          onClick={addItem}
-          style={{
-            padding: "8px 12px",
-            borderRadius: 6,
-            border: "1px solid #333",
-            cursor: "pointer",
-          }}
-        >
-          Añadir
-        </button>
+        <div style={{ marginTop: 8 }}>
+          <button onClick={addItem}>Añadir</button>
+        </div>
       </div>
 
       {/* Lista */}
-      <div>
-        {items.length === 0 ? (
-          <p style={{ color: "#777" }}>Sin elementos</p>
-        ) : (
-          <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "grid", gap: 8 }}>
-            {items.map((it) => (
-              <li
-                key={it.id}
-                style={{
-                  border: "1px solid #ddd",
-                  borderRadius: 8,
-                  padding: 10,
-                  display: "grid",
-                  gap: 6,
-                }}
-              >
-                <div style={{ fontWeight: 600 }}>{it.title}</div>
-                <div style={{ fontSize: 14, color: "#444" }}>
-                  {isoToYMD(it.start_at)} → {isoToYMD(it.end_at)} · Estado:{" "}
-                  <span style={{ fontWeight: 600 }}>{it.status}</span>
-                </div>
-                {it.notes ? <div style={{ whiteSpace: "pre-wrap" }}>{it.notes}</div> : null}
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+      <h3>
+        {cargandoLista ? "Cargando…" : items.length ? "Tareas" : "Sin elementos"}
+      </h3>
+
+      <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
+        {items.map((it) => (
+          <li
+            key={it.id}
+            style={{
+              border: "1px solid #ddd",
+              borderRadius: 6,
+              padding: 12,
+              marginBottom: 8,
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between" }}>
+              <strong>{it.title}</strong>
+              <span>
+                Estado: <b>{it.status}</b>
+              </span>
+            </div>
+            <div style={{ color: "#666", fontSize: 14, marginTop: 4 }}>
+              {it.start_at?.slice(0, 10)} — {it.end_at?.slice(0, 10)}
+            </div>
+            {it.notes && <div style={{ marginTop: 6 }}>{it.notes}</div>}
+
+            <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
+              <button onClick={() => toggleEstado(it)} disabled={!puedeEditar}>
+                Cambiar estado
+              </button>
+              <button onClick={() => borrar(it)} disabled={!puedeEditar}>
+                Borrar
+              </button>
+            </div>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
+
