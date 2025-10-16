@@ -752,12 +752,21 @@ function AppInner() {
                       const delDia = f ? slices.filter((s) => s.trabajadorId === w.id && s.fecha === f) : [];
                       const cap = capacidadDia(w, d, overrides);
                       const used = usadasEnDia(slices, w.id, d);
+                      const over = used > cap + 1e-9; // margen anti-decimales raros
+                      const over = used > cap + 1e-9; // "over" significa "se pasó"
                       const ow = f ? overrides[w.id]?.[f] : undefined;
 
                       return (
                         <div
-                          key={`${w.id}-${f}`}
-                          style={dayCell}
+                          style={{
+                            ...dayCell,
+                            ...(over
+                            ? {
+                                boxShadow: "inset 0 0 0 2px #dc2626", // borde rojo
+                                background: "#fff5f5",               // fondo rosado claro
+                               }
+                           : {}),
+                          }}
                           title={`Doble clic: extras/sábado para ${w.nombre} el ${f || "día"}`}
                           onDoubleClick={() => canEdit && editOverrideForDay(w, d)}
                           onDragOver={onDragOver}
@@ -1027,10 +1036,32 @@ function disabledIf<T extends React.CSSProperties>(style: T, disabled: boolean):
 
 /* ===================== Badge ===================== */
 function DayCapacityBadge({ capacidad, usado }: { capacidad: number; usado: number }) {
-  const libre = Math.max(0, Math.round((capacidad - usado) * 10) / 10);
+  const libre = Math.round((capacidad - usado) * 10) / 10;
+  const exceso = Math.round((usado - capacidad) * 10) / 10; // si > 0, hay sobrecarga
+
+  const base: React.CSSProperties = { marginTop: 6, fontSize: 11, color: "#374151" };
+
   return (
-    <div style={{ marginTop: 6, fontSize: 11, color: "#374151" }}>
-      Cap: {capacidad.toFixed(1)}h · Usado: {usado.toFixed(1)}h · Libre: <span style={{ fontWeight: 700 }}>{libre.toFixed(1)}h</span>
+    <div style={base}>
+      Cap: {capacidad.toFixed(1)}h · Usado: {usado.toFixed(1)}h · Libre:{" "}
+      <span style={{ fontWeight: 700 }}>{Math.max(0, libre).toFixed(1)}h</span>
+
+      {exceso > 0 && (
+        <div
+          style={{
+            marginTop: 4,
+            fontSize: 12,
+            fontWeight: 700,
+            color: "#b91c1c",        // rojo
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 6,
+          }}
+          title="Este día tiene más horas asignadas que su capacidad"
+        >
+          ⚠️ Sobreasignado: +{exceso.toFixed(1)}h
+        </div>
+      )}
     </div>
   );
 }
