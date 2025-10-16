@@ -771,9 +771,9 @@ function AppInner() {
     {" "}
     {/* Avisos en rojo: extras o sábado ON */}
     {ow ? (
-      <span style={{ fontSize: 12, color: "#d81327" }}>
-        {getDay(d) !== 6 && ow.extra && Number(ow.extra) > 0 ? ("+" + ow.extra + " h extra") : ""}
-        {getDay(d) === 6 && ow.sabado ? "Sábado ON" : ""}
+      <span style={{ fontSize: 14, color: "#d81327", fontWeight: 700 }}>
+       {getDay(d) !== 6 && ow.extra && Number(ow.extra) > 0 ? ("+" + ow.extra + " h extra") : ""}
+       {getDay(d) === 6 && ow.sabado ? "Sábado ON" : ""}
       </span>
     ) : null}
   </div>
