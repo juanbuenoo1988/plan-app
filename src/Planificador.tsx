@@ -328,8 +328,13 @@ function AppInner() {
   const canEdit = !locked;
 
   const [workers, setWorkers] = useState<Worker[]>([
-    { id: "W1", nombre: "ANA", extraDefault: 0, sabadoDefault: false },
-    { id: "W2", nombre: "ANGEL MORGADO", extraDefault: 0, sabadoDefault: false },
+    { id: "W1", nombre: "ANGEL MORGADO", extraDefault: 0, sabadoDefault: false },
+    { id: "W2", nombre: "ANTONIO MONTILLA", extraDefault: 0, sabadoDefault: false },
+    { id: "W2", nombre: "DANIEL MORGADO", extraDefault: 0, sabadoDefault: false },
+    { id: "W2", nombre: "FIDEL RODRIGO", extraDefault: 0, sabadoDefault: false },
+    { id: "W2", nombre: "LUCAS PRIETO", extraDefault: 0, sabadoDefault: false },
+    { id: "W2", nombre: "LUIS AGUADO", extraDefault: 0, sabadoDefault: false },
+    { id: "W2", nombre: "VICTOR HERNANDEZ", extraDefault: 0, sabadoDefault: false },
   ]);
   const [nuevoTrabajador, setNuevoTrabajador] = useState("");
 
