@@ -763,21 +763,34 @@ function AppInner() {
                           onDragOver={onDragOver}
                           onDrop={(e) => onDropDay(e, w.id, d)}
                         >
-                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                            <div style={dayLabel}>
-                              {format(d, "d")}{" "}
-                              {ow && (
-                                 <span style={{ fontSize: 12, color: "#d81327" }}>
-                                  {getDay(d) !== 6 && ow.extra && ow.extra > 0 ? `+${ow.extra} h extra ` : ""}
-                                  {getDay(d) === 6 && ow.sabado ? "Sáb. ON" : ""}
-                                 </span>
-                              )}
-                            </div>
-                            </div>
-                            {canEdit && (
-                              <button className="no-print" onClick={() => addManualHere(w, d)} style={smallPlusBtn} title="Insertar manual aquí">＋</button>
-                            )}
-                          </div>
+                          {/* Cabecera del día: número + avisos + botón ＋ */}
+<div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+  <div style={dayLabel}>
+    {/* Solo el número del día */}
+    {format(d, "d")}
+    {" "}
+    {/* Avisos en rojo: extras o sábado ON */}
+    {ow ? (
+      <span style={{ fontSize: 12, color: "#d81327" }}>
+        {getDay(d) !== 6 && ow.extra && Number(ow.extra) > 0 ? ("+" + ow.extra + " h extra") : ""}
+        {getDay(d) === 6 && ow.sabado ? "Sábado ON" : ""}
+      </span>
+    ) : null}
+  </div>
+
+  {/* Botón + para insertar manual */}
+  {canEdit && (
+    <button
+      className="no-print"
+      onClick={() => addManualHere(w, d)}
+      style={smallPlusBtn}
+      title="Insertar manual aquí"
+    >
+      ＋
+    </button>
+  )}
+</div>
+
 
                           <div style={horizontalLane}>
                             {delDia.map((s) => {
