@@ -628,7 +628,7 @@ async function onDropDay(e: React.DragEvent, workerId: string, date: Date) {
   });
 }
 ;
-  }
+
 
  async function removeTask(taskId: string, workerId: string) {
   if (!canEdit) return;
