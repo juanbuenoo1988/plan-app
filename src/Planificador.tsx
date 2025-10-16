@@ -919,11 +919,11 @@ async function addManualHere(worker: Worker, date: Date) {
           {/* CALENDARIO */}
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }} className={printMode === "monthly" ? "" : "no-print"}>
             {workers.map((w) => (
-              <div key={w.id}>
+              <div key={`worker-${w.id}`}>
                 <div style={{ fontSize: 25, fontWeight: 700, margin: "8px 0 4px", color: "#111827" }}>👤 {w.nombre}</div>
 
                 {weeks.map((week, i) => (
-                  <div key={`${w.id}-wk-${i}`} style={weekRow}>
+                   <div key={`${w.id}-wk-${week[0].toISOString()}`} style={weekRow}>
                     {week.map((d) => {
                       const f = fmt(d);
                       const delDia = f ? slices.filter((s) => s.trabajadorId === w.id && s.fecha === f) : [];
@@ -933,7 +933,7 @@ async function addManualHere(worker: Worker, date: Date) {
 
                       return (
                         <div
-                          key={`${w.id}-${f || i}`}
+                          key={`${w.id}-${fmt(d)}`}
                           style={dayCell}
                           title={`Doble clic: extras/sábado para ${w.nombre} el ${f || "día"}`}
                           onDoubleClick={() => canEdit && editOverrideForDay(w, d)}
