@@ -1115,6 +1115,20 @@ function DayCapacityBadge({ capacidad, usado }: { capacidad: number; usado: numb
 }
 
 /* ===================== Estilos ===================== */
+
+const btnBase: React.CSSProperties = {
+  padding: "8px 12px",
+  borderRadius: 8,
+  cursor: "pointer",
+  userSelect: "none" as const,
+  border: "1px solid #d1d5db",
+  background: "#fff",
+  color: "#111827",
+};
+
+// ---- Helper para crear estilos basados en btnBase SIN problemas de orden ----
+const withBase = (patch: React.CSSProperties): React.CSSProperties =>
+  Object.assign({}, btnBase, patch);
 const appShell: React.CSSProperties = {
   fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
   background: "#e6f7fb",
@@ -1198,6 +1212,21 @@ const zoomCard: React.CSSProperties = {
   padding: 16,
 };
 
+const zoomBtn: React.CSSProperties = withBase({
+  position: "absolute",
+  bottom: 4,
+  right: 32,
+  padding: "4px 8px",
+  fontSize: 12,
+  borderRadius: 6,
+});
+
+const zoomCloseBtn: React.CSSProperties = withBase({
+  background: "#ef4444",
+  color: "#fff",
+  border: "1px solid #dc2626",
+});
+
 const zoomHeader: React.CSSProperties = {
   display: "flex",
   alignItems: "center",
@@ -1213,12 +1242,25 @@ const zoomTitle: React.CSSProperties = {
   margin: 0,
 };
 
-const zoomCloseBtn: React.CSSProperties = {
-  ...btnBase,
+const btnLabeled = withBase({});
+
+const btnPrimary = withBase({
+  background: "#111827",
+  color: "#fff",
+  border: "1px solid #111827",
+});
+
+const btnUnlock = withBase({
+  background: "#10b981",
+  color: "#fff",
+  border: "1px solid #0ea66d",
+});
+
+const btnLock = withBase({
   background: "#ef4444",
   color: "#fff",
   border: "1px solid #dc2626",
-};
+});
 
 const zoomLane: React.CSSProperties = {
   display: "flex",
@@ -1322,5 +1364,4 @@ const descItem: React.CSSProperties = {
   padding: 8,
   background: "#fafafa",
 };
-
 
