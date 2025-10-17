@@ -323,14 +323,6 @@ function planificarBloqueAuto(
   return out;
 }
 
-/* ===================== Componente raíz ===================== */
-export default function Planificador() {
-  return (
-    <ErrorBoundary>
-      <AppInner />
-    </ErrorBoundary>
-  );
-}
 
 /* ===================== App ===================== */
 function AppInner() {
@@ -1515,3 +1507,13 @@ const descItem: React.CSSProperties = {
   padding: 8,
   background: "#fafafa",
 };
+
+/* ===================== Componente raíz ===================== */
+export default function Planificador() {
+  return (
+    <ErrorBoundary>
+      <AppInner />
+    </ErrorBoundary>
+  );
+}
+
