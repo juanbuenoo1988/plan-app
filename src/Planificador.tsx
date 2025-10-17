@@ -1,5 +1,6 @@
 // src/Planificador.tsx
-import React, { useMemo, useRef, useState } from "react";
+import React, { useMemo, useRef, useState, useEffect } from "react";
+import { supabase } from "./lib/supabase";
 import {
   addDays,
   addMonths,
@@ -16,6 +17,7 @@ import { es } from "date-fns/locale";
 
 /* ===================== Configuración ===================== */
 const PASSWORD = "taller2025"; // ← cámbiala por la que quieras
+const STORAGE_KEY = "planificador:v1";
 
 /* ===================== Error Boundary ===================== */
 class ErrorBoundary extends React.Component<
@@ -80,6 +82,16 @@ type NewTaskForm = {
 
 type OverridesState = Record<string, Record<string, DayOverride>>;
 type ProductDescriptions = Record<string, string>;
+
+// === Estado que guardaremos en Supabase (todo el planificador) ===
+type CloudState = {
+  workers: Worker[];                 // trabajadores
+  slices: TaskSlice[];               // bloques del calendario
+  overrides: OverridesState;         // extras/sábados por día y trabajador
+  descs: ProductDescriptions;        // descripciones de productos
+  base?: string;                     // mes base (guardado como texto ISO)
+  locked?: boolean;                  // si el planificador está bloqueado
+};
 
 /* ===================== Util ===================== */
 const fmt = (d: Date | null | undefined) => {
