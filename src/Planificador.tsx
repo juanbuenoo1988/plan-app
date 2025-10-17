@@ -386,6 +386,12 @@ function AppInner() {
     return rows;
   }
 
+  // === NUEVO: helper seguro para leer del almacenamiento local ===
+  function safeLocal<T>(k: string, fallback: T) {
+    try { const s = localStorage.getItem(k); return s ? (JSON.parse(s) as T) : fallback; }
+    catch { return fallback; }
+  }
+
   // Crea datos base si el usuario aún no tiene nada en la nube
   async function seedIfEmpty(uid: string) {
     try {
@@ -595,8 +601,14 @@ function AppInner() {
           if (mounted) setLoadingCloud(false);
         }
       } else {
-        // Si no hay sesión, puedes (opcional) limpiar estados locales:
-        // setWorkers([]); setSlices([]); setOverrides({}); setDescs({});
+        // === NUEVO: si NO hay sesión, intenta cargar del almacenamiento local
+        const snap = safeLocal<any>(STORAGE_KEY, null as any);
+        if (snap) {
+          setWorkers(snap.workers ?? []);
+          setSlices(snap.slices ?? []);
+          setOverrides(snap.overrides ?? {});
+          setDescs(snap.descs ?? {});
+        }
       }
     }
 
@@ -657,6 +669,13 @@ function AppInner() {
       if (saveTimer.current) window.clearTimeout(saveTimer.current);
     };
   }, [workers, slices, overrides, descs, userId, loadingCloud]);
+
+  // === NUEVO: guardado local automático cuando NO hay sesión ===
+  useEffect(() => {
+    if (userId) return; // si hay sesión, no guardes en local
+    const snapshot = JSON.stringify({ workers, slices, overrides, descs });
+    try { localStorage.setItem(STORAGE_KEY, snapshot); } catch {}
+  }, [workers, slices, overrides, descs, userId]);
 
   function triggerPrint(mode: PrintMode) {
     setPrintMode(mode);
@@ -1623,4 +1642,3 @@ const descItem: React.CSSProperties = {
   padding: 8,
   background: "#fafafa",
 };
-
