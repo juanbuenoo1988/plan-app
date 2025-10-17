@@ -1281,8 +1281,13 @@ const dayCell: React.CSSProperties = {
   overflow: "hidden",
 };
 const dayLabel: React.CSSProperties = { fontSize: 18, color: "#000000ff" };
+const horizontalLane: React.CSSProperties = {
+  display: "flex",
+  gap: 6,
+  overflowX: "auto",
+  alignItems: "flex-start",
+};
 
-const horizontalLane: React.CSSProperties = { display: "flex", gap: 6, overflowX: "auto", alignItems: "flex-start" };
 const blockStyle: React.CSSProperties = {
   color: "#fff",
   borderRadius: 8,
@@ -1295,7 +1300,13 @@ const blockStyle: React.CSSProperties = {
   cursor: "grab",
   boxShadow: "0 1px 2px rgba(0,0,0,.15)",
 };
-const blockTop: React.CSSProperties = { display: "flex", justifyContent: "space-between", gap: 8, alignItems: "flex-start" };
+
+const blockTop: React.CSSProperties = {
+  display: "flex",
+  justifyContent: "space-between",
+  gap: 8,
+  alignItems: "flex-start",
+};
 
 const productFull: React.CSSProperties = {
   fontWeight: 700,
@@ -1318,27 +1329,93 @@ const btnBase: React.CSSProperties = {
   background: "#fff",
   color: "#111827",
 };
-const btnLabeled: React.CSSProperties = { ...btnBase };
-const btnPrimary: React.CSSProperties = { ...btnBase, background: "#111827", color: "#fff", border: "1px solid #111827" };
-const btnTiny: React.CSSProperties = { padding: "4px 8px", borderRadius: 6, border: "1px solid #d1d5db", background: "#fff", cursor: "pointer", fontSize: 12 };
-const btnTinyDanger: React.CSSProperties = { ...btnTiny, border: "1px solid #ef4444", color: "#ef4444" };
-const btnUnlock: React.CSSProperties = { ...btnBase, background: "#10b981", color: "#fff", border: "1px solid #0ea66d" };
-const btnLock: React.CSSProperties   = { ...btnBase, background: "#ef4444", color: "#fff", border: "1px solid #dc2626" };
+
+// Combinador seguro (evita reordenaciones del minificador)
+const withBase = (patch: React.CSSProperties): React.CSSProperties =>
+  Object.assign({}, btnBase, patch);
+
+const btnLabeled: React.CSSProperties = withBase({});
+const btnPrimary: React.CSSProperties = withBase({
+  background: "#111827",
+  color: "#fff",
+  border: "1px solid #111827",
+});
+
+const btnTiny: React.CSSProperties = {
+  padding: "4px 8px",
+  borderRadius: 6,
+  border: "1px solid #d1d5db",
+  background: "#fff",
+  cursor: "pointer",
+  fontSize: 12,
+};
+
+const btnTinyDanger: React.CSSProperties = Object.assign({}, btnTiny, {
+  border: "1px solid #ef4444",
+  color: "#ef4444",
+});
+
+const btnUnlock: React.CSSProperties = withBase({
+  background: "#10b981",
+  color: "#fff",
+  border: "1px solid #0ea66d",
+});
+
+const btnLock: React.CSSProperties = withBase({
+  background: "#ef4444",
+  color: "#fff",
+  border: "1px solid #dc2626",
+});
 
 const deleteBtn: React.CSSProperties = {
-  position: "absolute", top: -8, right: -8, background: "#ef4444",
-  border: "none", color: "#fff", width: 20, height: 20, borderRadius: "50%",
-  cursor: "pointer", lineHeight: "20px", fontSize: 12,
+  position: "absolute",
+  top: -8,
+  right: -8,
+  background: "#ef4444",
+  border: "none",
+  color: "#fff",
+  width: 20,
+  height: 20,
+  borderRadius: "50%",
+  cursor: "pointer",
+  lineHeight: "20px",
+  fontSize: 12,
 };
-const deleteBtnAlt: React.CSSProperties = {
-  position: "absolute", top: -8, right: 16, background: "#6b7280",
-  border: "none", color: "#fff", width: 22, height: 22, borderRadius: "50%",
-  cursor: "pointer", lineHeight: "22px", fontSize: 12,
-};
-const smallPlusBtn: React.CSSProperties = { background: "#111827", color: "#fff", border: "none", borderRadius: 6, padding: "2px 6px", cursor: "pointer", fontSize: 12 };
 
-const pth: React.CSSProperties = { textAlign: "left", borderBottom: "1px solid #ddd", padding: "6px" };
-const ptd: React.CSSProperties = { borderBottom: "1px solid #eee", padding: "6px" };
+const deleteBtnAlt: React.CSSProperties = {
+  position: "absolute",
+  top: -8,
+  right: 16,
+  background: "#6b7280",
+  border: "none",
+  color: "#fff",
+  width: 22,
+  height: 22,
+  borderRadius: "50%",
+  cursor: "pointer",
+  lineHeight: "22px",
+  fontSize: 12,
+};
+
+const smallPlusBtn: React.CSSProperties = {
+  background: "#111827",
+  color: "#fff",
+  border: "none",
+  borderRadius: 6,
+  padding: "2px 6px",
+  cursor: "pointer",
+  fontSize: 12,
+};
+
+const pth: React.CSSProperties = {
+  textAlign: "left",
+  borderBottom: "1px solid #ddd",
+  padding: "6px",
+};
+const ptd: React.CSSProperties = {
+  borderBottom: "1px solid #eee",
+  padding: "6px",
+};
 
 const sidebar: React.CSSProperties = {
   position: "sticky",
@@ -1370,4 +1447,3 @@ const descItem: React.CSSProperties = {
   padding: 8,
   background: "#fafafa",
 };
-
