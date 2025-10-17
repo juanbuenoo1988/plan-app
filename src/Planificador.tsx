@@ -413,16 +413,16 @@ function flattenOverrides(ov: OverridesState) {
       .order("nombre", { ascending: true });
 
     if (wErr) console.error("workers error:", wErr);
-    if (wData) {
-      setWorkers(
-        wData.map((r: any) => ({
-          id: r.id,
-          nombre: r.nombre,
-          extraDefault: Number(r.extra_default ?? 0),
-          sabadoDefault: !!r.sabado_default,
-        }))
-      );
-    }
+    if (Array.isArray(wData) && wData.length > 0) {
+  setWorkers(
+    wData.map((r: any) => ({
+      id: r.id,
+      nombre: r.nombre,
+      extraDefault: Number(r.extra_default ?? 0),
+      sabadoDefault: !!r.sabado_default,
+    }))
+  );
+  }
 
     // 2) Bloques / Slices
     const { data: sData, error: sErr } = await supabase
@@ -464,19 +464,19 @@ function flattenOverrides(ov: OverridesState) {
       setOverrides(obj);
     }
 
-const { data: dData, error: dErr } = await supabase
+  const { data: dData, error: dErr } = await supabase
   .from("product_descs")
   .select("*")
   .eq("user_id", uid);
 
-if (dErr) console.error("product_descs error:", dErr);
-if (dData) {
+  if (dErr) console.error("product_descs error:", dErr);
+  if (dData) {
   const map: Record<string, string> = {};
   for (const r of dData as any[]) {
     map[r.nombre] = r.texto ?? "";
   }
   setDescs(map);
-}
+  }
 
 
   } catch (e) {
@@ -497,7 +497,7 @@ if (dData) {
       user_id: uid,
     }));
     if (wRows.length) {
-      const { error } = await supabase.from("workers").upsert(wRows, { onConflict: "id" });
+      const { error } = await supabase.from("workers").upsert(wRows, { onConflict: "user_id,id" });
       if (error) throw error;
     }
 
@@ -532,6 +532,36 @@ if (dData) {
   texto,
   user_id: uid,
 }));
+
+async function seedIfEmpty(uid: string) {
+  // ¿Hay algo en workers?
+  const { count, error } = await supabase
+    .from("workers")
+    .select("*", { count: "exact", head: true })
+    .eq("user_id", uid);
+
+  if (!error && (count ?? 0) === 0) {
+    // Sube los que tengas ahora en memoria (los 7 de tu lista inicial)
+    const rows = workers.map(w => ({
+      user_id: uid,
+      id: w.id,
+      nombre: w.nombre,
+      extra_default: w.extraDefault,
+      sabado_default: w.sabadoDefault,
+    }));
+
+    const { error: insErr } = await supabase
+      .from("workers")
+      .upsert(rows, { onConflict: "user_id,id" });
+
+    if (insErr) {
+      console.error("seed workers:", insErr);
+    } else {
+      console.log("Workers sembrados");
+    }
+  }
+}
+
 await supabase.from("product_descs").delete().eq("user_id", uid);
 if (dRows.length) {
   const { error } = await supabase.from("product_descs").insert(dRows);
@@ -566,6 +596,7 @@ if (dRows.length) {
     if (uid) {
       try {
         setLoadingCloud(true);
+        await seedIfEmpty(uid);
         await loadAll(uid);   // ← esta es tu función del paso 3.3-B
       } finally {
         if (mounted) setLoadingCloud(false);
@@ -589,6 +620,7 @@ if (dRows.length) {
     if (uid) {
       try {
         setLoadingCloud(true);
+        await seedIfEmpty(uid);
         await loadAll(uid);
       } finally {
         setLoadingCloud(false);
@@ -1603,4 +1635,5 @@ const descItem: React.CSSProperties = {
   padding: 8,
   background: "#fafafa",
 };
+
 
