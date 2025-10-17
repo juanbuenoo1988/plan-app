@@ -1147,18 +1147,16 @@ function AppInner() {
                         >
                           {/* Cabecera del día: número + avisos + botón ＋ */}
 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-  <div style={dayLabel}>
-    {/* Solo el número del día */}
-    {format(d, "d")}
-    {" "}
-    {/* Avisos en rojo: extras o sábado ON */}
-    {ow ? (
-      <span style={{ fontSize: 14, color: "#d81327", fontWeight: 700 }}>
-       {getDay(d) !== 6 && ow.extra && Number(ow.extra) > 0 ? ("+" + ow.extra + " h extra") : ""}
-       {getDay(d) === 6 && ow.sabado ? "Sábado ON" : ""}
-      </span>
-    ) : null}
-  </div>
+  <div style={{ ...dayLabel, fontSize: 20, fontWeight: 800, color: "#000000" }}>
+  {format(d, "d")}
+  {" "}
+  {ow ? (
+    <span style={{ fontSize: 14, color: "#d81327", fontWeight: 700, marginLeft: 4 }}>
+      {getDay(d) !== 6 && ow.extra && Number(ow.extra) > 0 ? ("+" + ow.extra + " h extra") : ""}
+      {getDay(d) === 6 && ow.sabado ? "Sábado ON" : ""}
+    </span>
+  ) : null}
+</div>
 
   {/* Botón + para insertar manual */}
   {canEdit && (
@@ -1622,5 +1620,4 @@ const descItem: React.CSSProperties = {
   padding: 8,
   background: "#fafafa",
 };
-
 
