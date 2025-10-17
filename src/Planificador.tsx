@@ -1327,6 +1327,14 @@ const weekRow: React.CSSProperties = {
   alignItems: "stretch",
 };
 
+const horizontalLane: React.CSSProperties = {
+  display: "flex",
+  gap: 8,
+  flexWrap: "wrap",
+  alignItems: "center",
+  marginTop: 6,
+};
+
 const dayCell: React.CSSProperties = {
   border: "1px solid #e5e7eb",
   minHeight: 130,
@@ -1456,3 +1464,4 @@ const btnTinyDanger: React.CSSProperties = withBase({
   color: "#fff",
   border: "1px solid #dc2626",
 });
+
