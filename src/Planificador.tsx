@@ -53,8 +53,6 @@ class ErrorBoundary extends React.Component<
   }
 }
 
-
-
 /* ===================== Tipos ===================== */
 type Worker = {
   id: string;
@@ -111,7 +109,6 @@ function monthYear(d: Date | null | undefined): string {
 
 const weekDaysHeader = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
 const PX_PER_HOUR = 20;
-
 
 function monthGrid(date: Date) {
   const start = startOfWeek(startOfMonth(date), { weekStartsOn: 1 });
@@ -202,15 +199,6 @@ function compactFrom(
 
   const queue = aggregateToQueue(tail);
   return reflowFrom(worker, new Date(startF), overrides, keepBefore, queue);
-}
-
-function replanWorkerFromDate(
-  worker: Worker,
-  startF: string,
-  overrides: OverridesState,
-  allSlices: TaskSlice[]
-): TaskSlice[] {
-  return compactFrom(worker, startF, overrides, allSlices);
 }
 
 function reflowFrom(
@@ -334,7 +322,6 @@ export default function Planificador() {
   );
 }
 
-
 /* ===================== App ===================== */
 function AppInner() {
   const [base, setBase] = useState(new Date());
@@ -378,300 +365,298 @@ function AppInner() {
   const [authMsg, setAuthMsg] = useState<string | null>(null);
   const [userEmail, setUserEmail] = useState<string | null>(null);
 
-
-// Referencias para "debounce" y última instantánea guardada
+  // Referencias para "debounce" y última instantánea guardada
   const saveTimer = useRef<number | null>(null);
   const lastSavedRef = useRef<string>("");
-
 
   type PrintMode = "none" | "monthly" | "daily" | "dailyAll";
   const [printMode, setPrintMode] = useState<PrintMode>("none");
   const [printWorker, setPrintWorker] = useState<string>("W1");
   const [printDate, setPrintDate] = useState<string>(fmt(new Date()));
-  
 
   // 🔽🔽🔽 Pega aquí todo este bloque completo 🔽🔽🔽
 
-function flattenOverrides(ov: OverridesState) {
-  const rows: Array<{ worker_id: string; fecha: string; extra: number; sabado: boolean }> = [];
-  Object.entries(ov).forEach(([workerId, byDate]) => {
-    Object.entries(byDate).forEach(([fecha, v]) => {
-      rows.push({ worker_id: workerId, fecha, extra: v.extra, sabado: v.sabado });
+  function flattenOverrides(ov: OverridesState) {
+    const rows: Array<{ worker_id: string; fecha: string; extra: number; sabado: boolean }> = [];
+    Object.entries(ov).forEach(([workerId, byDate]) => {
+      Object.entries(byDate).forEach(([fecha, v]) => {
+        rows.push({ worker_id: workerId, fecha, extra: v.extra, sabado: v.sabado });
+      });
     });
-  });
-  return rows;
-}
+    return rows;
+  }
+
+  // Crea datos base si el usuario aún no tiene nada en la nube
+  async function seedIfEmpty(uid: string) {
+    try {
+      // ¿Hay trabajadores?
+      const { data: existingW, error: wErr } = await supabase
+        .from("workers")
+        .select("id")
+        .eq("user_id", uid)
+        .limit(1);
+
+      if (wErr) {
+        console.error("seedIfEmpty/workers select error:", wErr);
+        return;
+      }
+
+      if (!existingW || existingW.length === 0) {
+        // Inserta un set inicial de trabajadores (puedes ajustar nombres/IDs)
+        const initialWorkers = [
+          { user_id: uid, id: "W1", nombre: "ANGEL MORGADO",  extra_default: 0, sabado_default: false },
+          { user_id: uid, id: "W2", nombre: "ANTONIO MONTILLA", extra_default: 0, sabado_default: false },
+          { user_id: uid, id: "W3", nombre: "DANIEL MORGADO",  extra_default: 0, sabado_default: false },
+          { user_id: uid, id: "W4", nombre: "FIDEL RODRIGO",    extra_default: 0, sabado_default: false },
+          { user_id: uid, id: "W5", nombre: "LUCAS PRIETO",     extra_default: 0, sabado_default: false },
+          { user_id: uid, id: "W6", nombre: "LUIS AGUADO",      extra_default: 0, sabado_default: false },
+          { user_id: uid, id: "W7", nombre: "VICTOR HERNANDEZ", extra_default: 0, sabado_default: false },
+        ];
+
+        const { error: insErr } = await supabase.from("workers").insert(initialWorkers);
+        if (insErr) {
+          console.error("seedIfEmpty/workers insert error:", insErr);
+        } else {
+          console.info("seedIfEmpty: trabajadores iniciales insertados");
+        }
+      }
+    } catch (e) {
+      console.error("seedIfEmpty() exception:", e);
+    }
+  }
 
   // CARGA TODO DE SUPABASE PARA ESTE USUARIO
- async function loadAll(uid: string) {
-  try {
-    // 1) Trabajadores
-    const { data: wData, error: wErr } = await supabase
-      .from("workers")
-      .select("*")
-      .eq("user_id", uid)
-      .order("nombre", { ascending: true });
+  async function loadAll(uid: string) {
+    try {
+      // 1) Trabajadores
+      const { data: wData, error: wErr } = await supabase
+        .from("workers")
+        .select("*")
+        .eq("user_id", uid)
+        .order("nombre", { ascending: true });
 
-    if (wErr) console.error("workers error:", wErr);
-    if (Array.isArray(wData) && wData.length > 0) {
-  setWorkers(
-    wData.map((r: any) => ({
-      id: r.id,
-      nombre: r.nombre,
-      extraDefault: Number(r.extra_default ?? 0),
-      sabadoDefault: !!r.sabado_default,
-    }))
-  );
-  }
-
-    // 2) Bloques / Slices
-    const { data: sData, error: sErr } = await supabase
-      .from("task_slices")
-      .select("*")
-      .eq("user_id", uid);
-
-    if (sErr) console.error("task_slices error:", sErr);
-    if (sData) {
-      setSlices(
-        sData.map((r: any) => ({
-          id: r.id,
-          taskId: r.task_id,
-          producto: r.producto,
-          fecha: r.fecha,
-          horas: Number(r.horas),
-          trabajadorId: r.trabajador_id,
-          color: r.color,
-        }))
-      );
-    }
-
-    // 3) Overrides (extras/sábado)
-    const { data: oData, error: oErr } = await supabase
-      .from("day_overrides")
-      .select("*")
-      .eq("user_id", uid);
-
-    if (oErr) console.error("day_overrides error:", oErr);
-    if (oData) {
-      const obj: Record<string, Record<string, { extra: number; sabado: boolean }>> = {};
-      for (const r of oData as any[]) {
-        if (!obj[r.worker_id]) obj[r.worker_id] = {};
-        obj[r.worker_id][r.fecha] = {
-          extra: Number(r.extra ?? 0),
-          sabado: !!r.sabado,
-        };
+      if (wErr) console.error("workers error:", wErr);
+      if (Array.isArray(wData) && wData.length > 0) {
+        setWorkers(
+          wData.map((r: any) => ({
+            id: r.id,
+            nombre: r.nombre,
+            extraDefault: Number(r.extra_default ?? 0),
+            sabadoDefault: !!r.sabado_default,
+          }))
+        );
       }
-      setOverrides(obj);
+
+      // 2) Bloques / Slices
+      const { data: sData, error: sErr } = await supabase
+        .from("task_slices")
+        .select("*")
+        .eq("user_id", uid);
+
+      if (sErr) console.error("task_slices error:", sErr);
+      if (sData) {
+        setSlices(
+          sData.map((r: any) => ({
+            id: r.id,
+            taskId: r.task_id,
+            producto: r.producto,
+            fecha: r.fecha,
+            horas: Number(r.horas),
+            trabajadorId: r.trabajador_id,
+            color: r.color,
+          }))
+        );
+      }
+
+      // 3) Overrides (extras/sábado)
+      const { data: oData, error: oErr } = await supabase
+        .from("day_overrides")
+        .select("*")
+        .eq("user_id", uid);
+
+      if (oErr) console.error("day_overrides error:", oErr);
+      if (oData) {
+        const obj: Record<string, Record<string, { extra: number; sabado: boolean }>> = {};
+        for (const r of oData as any[]) {
+          if (!obj[r.worker_id]) obj[r.worker_id] = {};
+          obj[r.worker_id][r.fecha] = {
+            extra: Number(r.extra ?? 0),
+            sabado: !!r.sabado,
+          };
+        }
+        setOverrides(obj);
+      }
+
+      const { data: dData, error: dErr } = await supabase
+        .from("product_descs")
+        .select("*")
+        .eq("user_id", uid);
+
+      if (dErr) console.error("product_descs error:", dErr);
+      if (dData) {
+        const map: Record<string, string> = {};
+        for (const r of dData as any[]) {
+          map[r.nombre] = r.texto ?? "";
+        }
+        setDescs(map);
+      }
+    } catch (e) {
+      console.error("loadAll() error:", e);
     }
-
-  const { data: dData, error: dErr } = await supabase
-  .from("product_descs")
-  .select("*")
-  .eq("user_id", uid);
-
-  if (dErr) console.error("product_descs error:", dErr);
-  if (dData) {
-  const map: Record<string, string> = {};
-  for (const r of dData as any[]) {
-    map[r.nombre] = r.texto ?? "";
   }
-  setDescs(map);
-  }
-
-
-  } catch (e) {
-    console.error("loadAll() error:", e);
-  }
- } 
 
   async function saveAll(uid: string) {
-  setSaveError(null);
-  setSavingCloud(true);
-  try {
-    // 1) Trabajadores
-    const wRows = workers.map(w => ({
-      user_id: uid,                      // 👈 IMPORTANTE
-  id: w.id,
-  nombre: w.nombre,
-  extra_default: w.extraDefault,
-  sabado_default: w.sabadoDefault,
-}));
+    setSaveError(null);
+    setSavingCloud(true);
+    try {
+      // 1) Trabajadores
+      const wRows = workers.map(w => ({
+        user_id: uid,
+        id: w.id,
+        nombre: w.nombre,
+        extra_default: w.extraDefault,
+        sabado_default: w.sabadoDefault,
+      }));
 
-if (wRows.length) {
-  // 👇 coincide con tu PK compuesta (user_id, id)
-  const { error } = await supabase
-    .from("workers")
-    .upsert(wRows, { onConflict: "user_id,id" });
-  if (error) throw error;
-}
+      if (wRows.length) {
+        const { error } = await supabase
+          .from("workers")
+          .upsert(wRows, { onConflict: "user_id,id" }); // ⬅️ importante
+        if (error) throw error;
+      }
 
-    // 2) Slices (borramos todos del usuario y reinsertamos el snapshot actual)
-    const sRows = slices.map(s => ({
-      id: s.id,
-      task_id: s.taskId,
-      producto: s.producto,
-      fecha: s.fecha,
-      horas: s.horas,
-      trabajador_id: s.trabajadorId,
-      color: s.color,
-      user_id: uid,
-    }));
-    await supabase.from("task_slices").delete().eq("user_id", uid);
-    if (sRows.length) {
-      const { error } = await supabase.from("task_slices").insert(sRows);
-      if (error) throw error;
-    }
+      // 2) Slices (borramos todos del usuario y reinsertamos el snapshot actual)
+      const sRows = slices.map(s => ({
+        id: s.id,
+        task_id: s.taskId,
+        producto: s.producto,
+        fecha: s.fecha,
+        horas: s.horas,
+        trabajador_id: s.trabajadorId,
+        color: s.color,
+        user_id: uid,
+      }));
+      await supabase.from("task_slices").delete().eq("user_id", uid);
+      if (sRows.length) {
+        const { error } = await supabase.from("task_slices").insert(sRows);
+        if (error) throw error;
+      }
 
-    // 3) Overrides (lo mismo: borramos y subimos snapshot plano)
-    const oRows = flattenOverrides(overrides).map(r => ({ ...r, user_id: uid }));
-    await supabase.from("day_overrides").delete().eq("user_id", uid);
-    if (oRows.length) {
-      const { error } = await supabase.from("day_overrides").insert(oRows);
-      if (error) throw error;
-    }
+      // 3) Overrides (lo mismo: borramos y subimos snapshot plano)
+      const oRows = flattenOverrides(overrides).map(r => ({ ...r, user_id: uid }));
+      await supabase.from("day_overrides").delete().eq("user_id", uid);
+      if (oRows.length) {
+        const { error } = await supabase.from("day_overrides").insert(oRows);
+        if (error) throw error;
+      }
 
-    // 4) Descripciones (borramos y subimos snapshot actual)
- const dRows = Object.entries(descs).map(([nombre, texto]) => ({
-  nombre,
-  texto,
-  user_id: uid,
-}));
+      // 4) Descripciones (borramos y subimos snapshot actual)
+      const dRows = Object.entries(descs).map(([nombre, texto]) => ({
+        nombre,
+        texto,
+        user_id: uid,
+      }));
 
-async function seedIfEmpty(uid: string) {
-  // ¿Hay algo en workers?
-  const { count, error } = await supabase
-    .from("workers")
-    .select("*", { count: "exact", head: true })
-    .eq("user_id", uid);
-
-  if (!error && (count ?? 0) === 0) {
-    // Sube los que tengas ahora en memoria (los 7 de tu lista inicial)
-    const rows = workers.map(w => ({
-      user_id: uid,
-      id: w.id,
-      nombre: w.nombre,
-      extra_default: w.extraDefault,
-      sabado_default: w.sabadoDefault,
-    }));
-
-    const { error: insErr } = await supabase
-      .from("workers")
-      .upsert(rows, { onConflict: "user_id,id" });
-
-    if (insErr) {
-      console.error("seed workers:", insErr);
-    } else {
-      console.log("Workers sembrados");
+      await supabase.from("product_descs").delete().eq("user_id", uid);
+      if (dRows.length) {
+        const { error } = await supabase.from("product_descs").insert(dRows);
+        if (error) throw error;
+      }
+    } catch (e: any) {
+      setSaveError(e.message ?? String(e));
+      throw e;
+    } finally {
+      setSavingCloud(false);
     }
   }
-}
-
-await supabase.from("product_descs").delete().eq("user_id", uid);
-if (dRows.length) {
-  const { error } = await supabase.from("product_descs").insert(dRows);
-  if (error) throw error;
-}
-
-
-  } catch (e: any) {
-    setSaveError(e.message ?? String(e));
-    throw e;
-  } finally {
-    setSavingCloud(false);
-  }
-}
 
   // ⬇️ 3.3-C (efecto que detecta sesión y carga Supabase)
   useEffect(() => {
-  let mounted = true;
+    let mounted = true;
 
-  async function init() {
-    // 1) ¿Hay sesión ya abierta?
-    const { data } = await supabase.auth.getSession();
-    const uid = data.session?.user?.id ?? null;
-    const mail = data.session?.user?.email ?? null;
+    async function init() {
+      // 1) ¿Hay sesión ya abierta?
+      const { data } = await supabase.auth.getSession();
+      const uid = data.session?.user?.id ?? null;
+      const mail = data.session?.user?.email ?? null;
 
-    if (!mounted) return;
+      if (!mounted) return;
 
-    setUserId(uid);
-    setUserEmail(mail);
+      setUserId(uid);
+      setUserEmail(mail);
 
-    // 2) Si hay usuario, carga todo desde Supabase
-    if (uid) {
-      try {
-        setLoadingCloud(true);
-        await seedIfEmpty(uid);
-        await loadAll(uid);   // ← esta es tu función del paso 3.3-B
-      } finally {
-        if (mounted) setLoadingCloud(false);
+      // 2) Si hay usuario, carga todo desde Supabase
+      if (uid) {
+        try {
+          setLoadingCloud(true);
+          await seedIfEmpty(uid);
+          await loadAll(uid);   // ← esta es tu función del paso 3.3-B
+        } finally {
+          if (mounted) setLoadingCloud(false);
+        }
+      } else {
+        // Si no hay sesión, puedes (opcional) limpiar estados locales:
+        // setWorkers([]); setSlices([]); setOverrides({}); setDescs({});
       }
-    } else {
-      // Si no hay sesión, puedes (opcional) limpiar estados locales:
-      // setWorkers([]); setSlices([]); setOverrides({}); setDescs({});
     }
-  }
 
-  init();
+    init();
 
-  // 3) Suscripción a cambios de sesión (login / logout)
-  const { data: sub } = supabase.auth.onAuthStateChange(async (_event, session) => {
-    if (!mounted) return;
-    const uid = session?.user?.id ?? null;
-    const mail = session?.user?.email ?? null; 
-    setUserId(uid);
-    setUserEmail(mail);
+    // 3) Suscripción a cambios de sesión (login / logout)
+    const { data: sub } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      if (!mounted) return;
+      const uid = session?.user?.id ?? null;
+      const mail = session?.user?.email ?? null;
+      setUserId(uid);
+      setUserEmail(mail);
 
-    if (uid) {
-      try {
-        setLoadingCloud(true);
-        await seedIfEmpty(uid);
-        await loadAll(uid);
-      } finally {
-        setLoadingCloud(false);
+      if (uid) {
+        try {
+          setLoadingCloud(true);
+          await seedIfEmpty(uid);
+          await loadAll(uid); // ← evitar duplicado de llamadas
+        } finally {
+          setLoadingCloud(false);
+        }
       }
-    } else {
-      // Opcional: limpiar estados si haces logout
-      // setWorkers([]); setSlices([]); setOverrides({}); setDescs({});
-    }
-  });
+    });
 
-  return () => {
-    mounted = false;
-    sub?.subscription?.unsubscribe();
-  };
-}, []); // ← sin dependencias: solo al montar
+    return () => {
+      mounted = false;
+      sub?.subscription?.unsubscribe();
+    };
+  }, []); // ← sin dependencias: solo al montar
 
-// AUTOSAVE: guarda en Supabase cuando cambian datos (con debounce)
-useEffect(() => {
-  if (!userId) return;          // sin sesión, no guardes
-  if (loadingCloud) return;     // no guardes mientras cargas desde la nube
+  // AUTOSAVE: guarda en Supabase cuando cambian datos (con debounce)
+  useEffect(() => {
+    if (!userId) return;          // sin sesión, no guardes
+    if (loadingCloud) return;     // no guardes mientras cargas desde la nube
 
-  // Foto del estado para evitar guardados innecesarios
-  const snapshot = JSON.stringify({
-    workers,
-    slices,
-    overrides,
-    descs,
-  });
+    // Foto del estado para evitar guardados innecesarios
+    const snapshot = JSON.stringify({
+      workers,
+      slices,
+      overrides,
+      descs,
+    });
 
-  if (snapshot === lastSavedRef.current) return;
+    if (snapshot === lastSavedRef.current) return;
 
-  // Debounce ~800ms
-  if (saveTimer.current) window.clearTimeout(saveTimer.current);
-  saveTimer.current = window.setTimeout(async () => {
-    try {
-      await saveAll(userId);
-      lastSavedRef.current = snapshot;
-    } catch {
-      // el error ya se guarda en setSaveError dentro de saveAll
-    }
-  }, 800);
-
-  return () => {
+    // Debounce ~800ms
     if (saveTimer.current) window.clearTimeout(saveTimer.current);
-  };
-}, [workers, slices, overrides, descs, userId, loadingCloud]);
+    saveTimer.current = window.setTimeout(async () => {
+      try {
+        await saveAll(userId);
+        lastSavedRef.current = snapshot;
+      } catch {
+        // el error ya se guarda en setSaveError dentro de saveAll
+      }
+    }, 800);
 
+    return () => {
+      if (saveTimer.current) window.clearTimeout(saveTimer.current);
+    };
+  }, [workers, slices, overrides, descs, userId, loadingCloud]);
 
   function triggerPrint(mode: PrintMode) {
     setPrintMode(mode);
@@ -803,7 +788,7 @@ useEffect(() => {
     setOverrides(nextOverrides);
 
     setSlices((prev) => {
-      const newPlan = replanWorkerFromDate(worker, f, nextOverrides, prev);
+      const newPlan = compactFrom(worker, f, nextOverrides, prev); // ← sin wrapper duplicado
       const others = prev.filter((s) => s.trabajadorId !== worker.id);
       return [...others, ...newPlan];
     });
@@ -1188,7 +1173,6 @@ useEffect(() => {
     </button>
   )}
 </div>
-
 
                           <div style={horizontalLane}>
                             {delDia.map((s) => {
@@ -1639,4 +1623,3 @@ const descItem: React.CSSProperties = {
   padding: 8,
   background: "#fafafa",
 };
-
