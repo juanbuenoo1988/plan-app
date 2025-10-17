@@ -497,7 +497,10 @@ function flattenOverrides(ov: OverridesState) {
       user_id: uid,
     }));
     if (wRows.length) {
-      const { error } = await supabase.from("workers").upsert(wRows, { onConflict: "user_id,id" });
+      const { error } = await supabase
+  .from("workers")
+  .upsert(wRows, { onConflict: "user_id,id" }); // <-- esta es la correcta
+
       if (error) throw error;
     }
 
@@ -1635,5 +1638,6 @@ const descItem: React.CSSProperties = {
   padding: 8,
   background: "#fafafa",
 };
+
 
 
