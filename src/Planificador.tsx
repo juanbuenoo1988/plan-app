@@ -1,6 +1,5 @@
 // src/Planificador.tsx
-import React, { useMemo, useRef, useState, useEffect } from "react";
-import { supabase } from "./lib/supabase";
+import React, { useMemo, useRef, useState } from "react";
 import {
   addDays,
   addMonths,
@@ -17,7 +16,6 @@ import { es } from "date-fns/locale";
 
 /* ===================== Configuración ===================== */
 const PASSWORD = "taller2025"; // ← cámbiala por la que quieras
-const STORAGE_KEY = "planificador:v1";
 
 /* ===================== Error Boundary ===================== */
 class ErrorBoundary extends React.Component<
@@ -83,16 +81,6 @@ type NewTaskForm = {
 type OverridesState = Record<string, Record<string, DayOverride>>;
 type ProductDescriptions = Record<string, string>;
 
-// === Estado que guardaremos en Supabase (todo el planificador) ===
-type CloudState = {
-  workers: Worker[];                 // trabajadores
-  slices: TaskSlice[];               // bloques del calendario
-  overrides: OverridesState;         // extras/sábados por día y trabajador
-  descs: ProductDescriptions;        // descripciones de productos
-  base?: string;                     // mes base (guardado como texto ISO)
-  locked?: boolean;                  // si el planificador está bloqueado
-};
-
 /* ===================== Util ===================== */
 const fmt = (d: Date | null | undefined) => {
   if (!d || !(d instanceof Date) || isNaN(d.getTime())) return "";
@@ -109,6 +97,7 @@ function monthYear(d: Date | null | undefined): string {
 
 const weekDaysHeader = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
 const PX_PER_HOUR = 20;
+
 
 function monthGrid(date: Date) {
   const start = startOfWeek(startOfMonth(date), { weekStartsOn: 1 });
@@ -199,6 +188,15 @@ function compactFrom(
 
   const queue = aggregateToQueue(tail);
   return reflowFrom(worker, new Date(startF), overrides, keepBefore, queue);
+}
+
+function replanWorkerFromDate(
+  worker: Worker,
+  startF: string,
+  overrides: OverridesState,
+  allSlices: TaskSlice[]
+): TaskSlice[] {
+  return compactFrom(worker, startF, overrides, allSlices);
 }
 
 function reflowFrom(
@@ -332,11 +330,11 @@ function AppInner() {
   const [workers, setWorkers] = useState<Worker[]>([
     { id: "W1", nombre: "ANGEL MORGADO", extraDefault: 0, sabadoDefault: false },
     { id: "W2", nombre: "ANTONIO MONTILLA", extraDefault: 0, sabadoDefault: false },
-    { id: "W3", nombre: "DANIEL MORGADO", extraDefault: 0, sabadoDefault: false },
-    { id: "W4", nombre: "FIDEL RODRIGO", extraDefault: 0, sabadoDefault: false },
-    { id: "W5", nombre: "LUCAS PRIETO", extraDefault: 0, sabadoDefault: false },
-    { id: "W6", nombre: "LUIS AGUADO", extraDefault: 0, sabadoDefault: false },
-    { id: "W7", nombre: "VICTOR HERNANDEZ", extraDefault: 0, sabadoDefault: false },
+    { id: "W2", nombre: "DANIEL MORGADO", extraDefault: 0, sabadoDefault: false },
+    { id: "W2", nombre: "FIDEL RODRIGO", extraDefault: 0, sabadoDefault: false },
+    { id: "W2", nombre: "LUCAS PRIETO", extraDefault: 0, sabadoDefault: false },
+    { id: "W2", nombre: "LUIS AGUADO", extraDefault: 0, sabadoDefault: false },
+    { id: "W2", nombre: "VICTOR HERNANDEZ", extraDefault: 0, sabadoDefault: false },
   ]);
   const [nuevoTrabajador, setNuevoTrabajador] = useState("");
 
@@ -349,332 +347,16 @@ function AppInner() {
   const [editKey, setEditKey] = useState<string | null>(null);
 
   const [form, setForm] = useState<NewTaskForm>({
-    producto: "",
+    producto: "SAS ALTAN",
     horasTotales: 30,
-    trabajadorId: "W1",
+    trabajadorId: "W2",
     fechaInicio: fmt(new Date()),
   });
-  // ⬇️ 3.3-C (estados de sesión/carga en la nube)
-  const [userId, setUserId] = useState<string | null>(null);
-  const [loadingCloud, setLoadingCloud] = useState(false);
-  // Estado de guardado en la nube
-  const [savingCloud, setSavingCloud] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
-  const [loginEmail, setLoginEmail] = useState("");
-  const [sendingLink, setSendingLink] = useState(false);
-  const [authMsg, setAuthMsg] = useState<string | null>(null);
-  const [userEmail, setUserEmail] = useState<string | null>(null);
-
-  // Referencias para "debounce" y última instantánea guardada
-  const saveTimer = useRef<number | null>(null);
-  const lastSavedRef = useRef<string>("");
 
   type PrintMode = "none" | "monthly" | "daily" | "dailyAll";
   const [printMode, setPrintMode] = useState<PrintMode>("none");
   const [printWorker, setPrintWorker] = useState<string>("W1");
   const [printDate, setPrintDate] = useState<string>(fmt(new Date()));
-
-  // 🔽🔽🔽 Pega aquí todo este bloque completo 🔽🔽🔽
-
-  function flattenOverrides(ov: OverridesState) {
-    const rows: Array<{ worker_id: string; fecha: string; extra: number; sabado: boolean }> = [];
-    Object.entries(ov).forEach(([workerId, byDate]) => {
-      Object.entries(byDate).forEach(([fecha, v]) => {
-        rows.push({ worker_id: workerId, fecha, extra: v.extra, sabado: v.sabado });
-      });
-    });
-    return rows;
-  }
-
-  // === NUEVO: helper seguro para leer del almacenamiento local ===
-  function safeLocal<T>(k: string, fallback: T) {
-    try { const s = localStorage.getItem(k); return s ? (JSON.parse(s) as T) : fallback; }
-    catch { return fallback; }
-  }
-
-  // Crea datos base si el usuario aún no tiene nada en la nube
-  async function seedIfEmpty(uid: string) {
-    try {
-      // ¿Hay trabajadores?
-      const { data: existingW, error: wErr } = await supabase
-        .from("workers")
-        .select("id")
-        .eq("user_id", uid)
-        .limit(1);
-
-      if (wErr) {
-        console.error("seedIfEmpty/workers select error:", wErr);
-        return;
-      }
-
-      if (!existingW || existingW.length === 0) {
-        // Inserta un set inicial de trabajadores (puedes ajustar nombres/IDs)
-        const initialWorkers = [
-          { user_id: uid, id: "W1", nombre: "ANGEL MORGADO",  extra_default: 0, sabado_default: false },
-          { user_id: uid, id: "W2", nombre: "ANTONIO MONTILLA", extra_default: 0, sabado_default: false },
-          { user_id: uid, id: "W3", nombre: "DANIEL MORGADO",  extra_default: 0, sabado_default: false },
-          { user_id: uid, id: "W4", nombre: "FIDEL RODRIGO",    extra_default: 0, sabado_default: false },
-          { user_id: uid, id: "W5", nombre: "LUCAS PRIETO",     extra_default: 0, sabado_default: false },
-          { user_id: uid, id: "W6", nombre: "LUIS AGUADO",      extra_default: 0, sabado_default: false },
-          { user_id: uid, id: "W7", nombre: "VICTOR HERNANDEZ", extra_default: 0, sabado_default: false },
-        ];
-
-        const { error: insErr } = await supabase.from("workers").insert(initialWorkers);
-        if (insErr) {
-          console.error("seedIfEmpty/workers insert error:", insErr);
-        } else {
-          console.info("seedIfEmpty: trabajadores iniciales insertados");
-        }
-      }
-    } catch (e) {
-      console.error("seedIfEmpty() exception:", e);
-    }
-  }
-
-  // CARGA TODO DE SUPABASE PARA ESTE USUARIO
-  async function loadAll(uid: string) {
-    try {
-      // 1) Trabajadores
-      const { data: wData, error: wErr } = await supabase
-        .from("workers")
-        .select("*")
-        .eq("user_id", uid)
-        .order("nombre", { ascending: true });
-
-      if (wErr) console.error("workers error:", wErr);
-      if (Array.isArray(wData) && wData.length > 0) {
-        setWorkers(
-          wData.map((r: any) => ({
-            id: r.id,
-            nombre: r.nombre,
-            extraDefault: Number(r.extra_default ?? 0),
-            sabadoDefault: !!r.sabado_default,
-          }))
-        );
-      }
-
-      // 2) Bloques / Slices
-      const { data: sData, error: sErr } = await supabase
-        .from("task_slices")
-        .select("*")
-        .eq("user_id", uid);
-
-      if (sErr) console.error("task_slices error:", sErr);
-      if (sData) {
-        setSlices(
-          sData.map((r: any) => ({
-            id: r.id,
-            taskId: r.task_id,
-            producto: r.producto,
-            fecha: r.fecha,
-            horas: Number(r.horas),
-            trabajadorId: r.trabajador_id,
-            color: r.color,
-          }))
-        );
-      }
-
-      // 3) Overrides (extras/sábado)
-      const { data: oData, error: oErr } = await supabase
-        .from("day_overrides")
-        .select("*")
-        .eq("user_id", uid);
-
-      if (oErr) console.error("day_overrides error:", oErr);
-      if (oData) {
-        const obj: Record<string, Record<string, { extra: number; sabado: boolean }>> = {};
-        for (const r of oData as any[]) {
-          if (!obj[r.worker_id]) obj[r.worker_id] = {};
-          obj[r.worker_id][r.fecha] = {
-            extra: Number(r.extra ?? 0),
-            sabado: !!r.sabado,
-          };
-        }
-        setOverrides(obj);
-      }
-
-      const { data: dData, error: dErr } = await supabase
-        .from("product_descs")
-        .select("*")
-        .eq("user_id", uid);
-
-      if (dErr) console.error("product_descs error:", dErr);
-      if (dData) {
-        const map: Record<string, string> = {};
-        for (const r of dData as any[]) {
-          map[r.nombre] = r.texto ?? "";
-        }
-        setDescs(map);
-      }
-    } catch (e) {
-      console.error("loadAll() error:", e);
-    }
-  }
-
-  async function saveAll(uid: string) {
-    setSaveError(null);
-    setSavingCloud(true);
-    try {
-      // 1) Trabajadores
-      const wRows = workers.map(w => ({
-  user_id: uid,
-  id: w.id,
-  nombre: w.nombre,
-  extra_default: w.extraDefault,
-  sabado_default: w.sabadoDefault,
-}));
-
-await supabase.from("workers").delete().eq("user_id", uid);
-if (wRows.length) {
-  const { error } = await supabase.from("workers").insert(wRows);
-  if (error) throw error;
-}
-
-      // 2) Slices (borramos todos del usuario y reinsertamos el snapshot actual)
-      const sRows = slices.map(s => ({
-        id: s.id,
-        task_id: s.taskId,
-        producto: s.producto,
-        fecha: s.fecha,
-        horas: s.horas,
-        trabajador_id: s.trabajadorId,
-        color: s.color,
-        user_id: uid,
-      }));
-      await supabase.from("task_slices").delete().eq("user_id", uid);
-      if (sRows.length) {
-        const { error } = await supabase.from("task_slices").insert(sRows);
-        if (error) throw error;
-      }
-
-      // 3) Overrides (lo mismo: borramos y subimos snapshot plano)
-      const oRows = flattenOverrides(overrides).map(r => ({ ...r, user_id: uid }));
-      await supabase.from("day_overrides").delete().eq("user_id", uid);
-      if (oRows.length) {
-        const { error } = await supabase.from("day_overrides").insert(oRows);
-        if (error) throw error;
-      }
-
-      // 4) Descripciones (borramos y subimos snapshot actual)
-      const dRows = Object.entries(descs).map(([nombre, texto]) => ({
-        nombre,
-        texto,
-        user_id: uid,
-      }));
-
-      await supabase.from("product_descs").delete().eq("user_id", uid);
-      if (dRows.length) {
-        const { error } = await supabase.from("product_descs").insert(dRows);
-        if (error) throw error;
-      }
-    } catch (e: any) {
-      setSaveError(e.message ?? String(e));
-      throw e;
-    } finally {
-      setSavingCloud(false);
-    }
-  }
-
-  // ⬇️ 3.3-C (efecto que detecta sesión y carga Supabase)
-  useEffect(() => {
-    let mounted = true;
-
-    async function init() {
-      // 1) ¿Hay sesión ya abierta?
-      const { data } = await supabase.auth.getSession();
-      const uid = data.session?.user?.id ?? null;
-      const mail = data.session?.user?.email ?? null;
-
-      if (!mounted) return;
-
-      setUserId(uid);
-      setUserEmail(mail);
-
-      // 2) Si hay usuario, carga todo desde Supabase
-      if (uid) {
-        try {
-          setLoadingCloud(true);
-          await seedIfEmpty(uid);
-          await loadAll(uid);   // ← esta es tu función del paso 3.3-B
-        } finally {
-          if (mounted) setLoadingCloud(false);
-        }
-      } else {
-        // === NUEVO: si NO hay sesión, intenta cargar del almacenamiento local
-        const snap = safeLocal<any>(STORAGE_KEY, null as any);
-        if (snap) {
-          setWorkers(snap.workers ?? []);
-          setSlices(snap.slices ?? []);
-          setOverrides(snap.overrides ?? {});
-          setDescs(snap.descs ?? {});
-        }
-      }
-    }
-
-    init();
-
-    // 3) Suscripción a cambios de sesión (login / logout)
-    const { data: sub } = supabase.auth.onAuthStateChange(async (_event, session) => {
-      if (!mounted) return;
-      const uid = session?.user?.id ?? null;
-      const mail = session?.user?.email ?? null;
-      setUserId(uid);
-      setUserEmail(mail);
-
-      if (uid) {
-        try {
-          setLoadingCloud(true);
-          await seedIfEmpty(uid);
-          await loadAll(uid); // ← evitar duplicado de llamadas
-        } finally {
-          setLoadingCloud(false);
-        }
-      }
-    });
-
-    return () => {
-      mounted = false;
-      sub?.subscription?.unsubscribe();
-    };
-  }, []); // ← sin dependencias: solo al montar
-
-  // AUTOSAVE: guarda en Supabase cuando cambian datos (con debounce)
-  useEffect(() => {
-    if (!userId) return;          // sin sesión, no guardes
-    if (loadingCloud) return;     // no guardes mientras cargas desde la nube
-
-    // Foto del estado para evitar guardados innecesarios
-    const snapshot = JSON.stringify({
-      workers,
-      slices,
-      overrides,
-      descs,
-    });
-
-    if (snapshot === lastSavedRef.current) return;
-
-    // Debounce ~800ms
-    if (saveTimer.current) window.clearTimeout(saveTimer.current);
-    saveTimer.current = window.setTimeout(async () => {
-      try {
-        await saveAll(userId);
-        lastSavedRef.current = snapshot;
-      } catch {
-        // el error ya se guarda en setSaveError dentro de saveAll
-      }
-    }, 800);
-
-    return () => {
-      if (saveTimer.current) window.clearTimeout(saveTimer.current);
-    };
-  }, [workers, slices, overrides, descs, userId, loadingCloud]);
-
-  // === NUEVO: guardado local automático cuando NO hay sesión ===
-  useEffect(() => {
-    if (userId) return; // si hay sesión, no guardes en local
-    const snapshot = JSON.stringify({ workers, slices, overrides, descs });
-    try { localStorage.setItem(STORAGE_KEY, snapshot); } catch {}
-  }, [workers, slices, overrides, descs, userId]);
 
   function triggerPrint(mode: PrintMode) {
     setPrintMode(mode);
@@ -690,35 +372,6 @@ if (wRows.length) {
   }
   function lock() {
     setLocked(true);
-  }
-
-  // 🔽🔽🔽 AÑADIR AQUÍ el bloque de login/logout 🔽🔽🔽
-
-  async function sendMagicLink() {
-    setAuthMsg(null);
-    const email = loginEmail.trim();
-    if (!email) { setAuthMsg("Escribe tu email."); return; }
-    setSendingLink(true);
-    try {
-      const { error } = await supabase.auth.signInWithOtp({
-        email,
-        options: {
-          emailRedirectTo: window.location.origin, // vuelve a la misma app
-        },
-      });
-      if (error) throw error;
-      setAuthMsg("Te envié un enlace mágico. Revisa tu correo.");
-    } catch (e: any) {
-      setAuthMsg(e.message ?? String(e));
-    } finally {
-      setSendingLink(false);
-    }
-  }
-
-  async function logout() {
-    await supabase.auth.signOut();
-    // Limpia opcionalmente estados locales:
-    // setWorkers([]); setSlices([]); setOverrides({}); setDescs({});
   }
 
   // Crear bloque
@@ -755,26 +408,6 @@ if (wRows.length) {
     if (!canEdit) return;
     setWorkers((prev) => prev.map((w) => (w.id === id ? { ...w, ...patch } : w)));
   }
-// ——— Eliminar trabajador + limpiar sus datos ———
-function deleteWorker(id: string) {
-  if (!canEdit) return;
-  const w = workers.find(x => x.id === id);
-  const name = w?.nombre || id;
-  if (!confirm(`¿Eliminar a "${name}" y todas sus asignaciones? Esta acción no se puede deshacer.`)) return;
-
-  // 1) Quita el trabajador de la lista
-  setWorkers(prev => prev.filter(x => x.id !== id));
-
-  // 2) Elimina todos sus bloques/horas
-  setSlices(prev => prev.filter(s => s.trabajadorId !== id));
-
-  // 3) Borra overrides (extras/sábados) del trabajador
-  setOverrides(prev => {
-    const copy = { ...prev };
-    delete copy[id];
-    return copy;
-  });
-}
 
   // Drag & Drop
   const dragIdRef = useRef<string | null>(null);
@@ -826,7 +459,7 @@ function deleteWorker(id: string) {
     setOverrides(nextOverrides);
 
     setSlices((prev) => {
-      const newPlan = compactFrom(worker, f, nextOverrides, prev); // ← sin wrapper duplicado
+      const newPlan = replanWorkerFromDate(worker, f, nextOverrides, prev);
       const others = prev.filter((s) => s.trabajadorId !== worker.id);
       return [...others, ...newPlan];
     });
@@ -985,76 +618,30 @@ function deleteWorker(id: string) {
   return (
     <div style={appShell}>
       <style>{`
-  @media print {
-    .no-print { display: none !important; }
-    .print-only { display: block !important; }
-    body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-    .worker-block { page-break-inside: avoid; margin-bottom: 16px; }
-  }
-`}</style>
+        @media print {
+          .no-print { display: none !important; }
+          .print-only { display: block !important; }
+          body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+          .worker-block { page-break-inside: avoid; margin-bottom: 16px; }
+        }
+      `}</style>
 
       {/* CABECERA SUPERIOR */}
       <header style={topHeader}>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <h1 style={appTitle}>MONTAJES DELSAZ — PLANIFICACION TALLERES</h1>
         </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-    <div style={{ fontWeight: 700, color: "#fff", marginRight: 8 }}>{monthYear(base)}</div>
-    <button style={btnLabeled} onClick={() => setBase(addMonths(base, -1))}>◀ Mes anterior</button>
-    <button style={btnLabeled} onClick={() => setBase(addMonths(base, 1))}>Siguiente mes ▶</button>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div style={{ fontWeight: 700, color: "#fff", marginRight: 8 }}>{monthYear(base)}</div>
+          <button style={btnLabeled} onClick={() => setBase(addMonths(base, -1))}>◀ Mes anterior</button>
+          <button style={btnLabeled} onClick={() => setBase(addMonths(base, 1))}>Siguiente mes ▶</button>
 
-    {locked ? (
-      <button style={btnUnlock} className="no-print" onClick={tryUnlock}>🔒 Desbloquear</button>
-    ) : (
-      <button style={btnLock} className="no-print" onClick={lock}>🔓 Bloquear</button>
-    )}
-
-    {/* ——— separador visual ——— */}
-    <div style={{ width: 1, height: 22, background: "rgba(255,255,255,.25)", margin: "0 6px" }} />
-
-    {/* === Estado de guardado / error (ya tienes savingCloud y saveError) === */}
-    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-      {savingCloud && <span style={{ color: "#a7f3d0" }}>Guardando…</span>}
-      {saveError && <span style={{ color: "#fecaca" }} title={saveError}>⚠ Error al guardar</span>}
-    </div>
-
-    {/* ——— separador visual ——— */}
-    <div style={{ width: 1, height: 22, background: "rgba(255,255,255,.25)", margin: "0 6px" }} />
-
-    {/* === UI de autenticación === */}
-    {userId ? (
-      // Conectado
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <span style={{ color: "#d1d5db", fontSize: 13 }}>
-          Conectado{userEmail ? `: ${userEmail}` : "" }
-        </span>
-        <button style={btnLabeled} className="no-print" onClick={logout}>Cerrar sesión</button>
-      </div>
-    ) : (
-      // No conectado → pedir email y enviar enlace mágico
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <input
-          className="no-print"
-          style={{ ...input, width: 220 }}
-          type="email"
-          placeholder="tu-correo@empresa.com"
-          value={loginEmail}
-          onChange={(e) => setLoginEmail(e.target.value)}
-        />
-        <button
-          className="no-print"
-          style={btnPrimary}
-          onClick={sendMagicLink}
-          disabled={sendingLink}
-          title="Te enviaré un correo con un enlace para entrar"
-        >
-          {sendingLink ? "Enviando…" : "Enviarme enlace"}
-        </button>
-        {authMsg && <span style={{ color: "#fff", fontSize: 12, opacity: 0.9 }}>{authMsg}</span>}
-      </div>
-    )}
-  </div>
-
+          {locked ? (
+            <button style={btnUnlock} className="no-print" onClick={tryUnlock}>🔒 Desbloquear</button>
+          ) : (
+            <button style={btnLock} className="no-print" onClick={lock}>🔓 Bloquear</button>
+          )}
+        </div>
       </header>
 
       {/* LAYOUT PRINCIPAL */}
@@ -1126,56 +713,19 @@ function deleteWorker(id: string) {
                     <th style={th}>Nombre</th>
                     <th style={th}>Extra por defecto (L–V)</th>
                     <th style={th}>Sábado por defecto</th>
-                    <th style={th}>Acciones</th>
                   </tr>
                 </thead>
                 <tbody>
                   {workers.map((w) => (
-    <tr key={`row-${w.id}`}>
-      <td style={td}>
-        <input
-          style={disabledIf(input, locked)}
-          disabled={locked}
-          value={w.nombre}
-          onChange={(e) => editWorker(w.id, { nombre: e.target.value })}
-        />
-      </td>
-      <td style={td}>
-        <input
-          style={disabledIf(input, locked)}
-          disabled={locked}
-          type="number"
-          min={0}
-          step={0.5}
-          value={w.extraDefault}
-          onChange={(e) => editWorker(w.id, { extraDefault: Number(e.target.value) })}
-        />
-      </td>
-      <td style={td}>
-        <input
-          disabled={locked}
-          type="checkbox"
-          checked={w.sabadoDefault}
-          onChange={(e) => editWorker(w.id, { sabadoDefault: e.target.checked })}
-        />
-      </td>
-
-      {/* NUEVO: columna de acciones */}
-      <td style={{ ...td, width: 1, whiteSpace: "nowrap" }}>
-        <button
-          style={disabledIf(btnTinyDanger, locked)}
-          disabled={locked}
-          onClick={() => deleteWorker(w.id)}
-          title="Eliminar trabajador y todas sus asignaciones"
-        >
-          🗑 Eliminar
-        </button>
-      </td>
-    </tr>
-  ))}
+                    <tr key={`row-${w.id}`}>
+                      <td style={td}><input style={disabledIf(input, locked)} disabled={locked} value={w.nombre} onChange={(e) => editWorker(w.id, { nombre: e.target.value })} /></td>
+                      <td style={td}><input style={disabledIf(input, locked)} disabled={locked} type="number" min={0} step={0.5} value={w.extraDefault} onChange={(e) => editWorker(w.id, { extraDefault: Number(e.target.value) })} /></td>
+                      <td style={td}><input disabled={locked} type="checkbox" checked={w.sabadoDefault} onChange={(e) => editWorker(w.id, { sabadoDefault: e.target.checked })} /></td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
-              <div style={{ fontSize: 18, color: "#6b7280", marginTop: 6 }}>
+              <div style={{ fontSize: 12, color: "#6b7280", marginTop: 6 }}>
                 {locked ? "Bloqueado: solo lectura." :
                 <>Doble clic en una <b>celda</b> para fijar <b>extras/sábado</b> de ese <b>día</b>. Botón <b>＋</b> inserta un bloque desde ese día.</>}
               </div>
@@ -1202,20 +752,12 @@ function deleteWorker(id: string) {
                       const delDia = f ? slices.filter((s) => s.trabajadorId === w.id && s.fecha === f) : [];
                       const cap = capacidadDia(w, d, overrides);
                       const used = usadasEnDia(slices, w.id, d);
-                      const over = used > cap + 1e-9; // "over" significa "se pasó"
                       const ow = f ? overrides[w.id]?.[f] : undefined;
 
                       return (
                         <div
-                          style={{
-                            ...dayCell,
-                            ...(over
-                            ? {
-                                boxShadow: "inset 0 0 0 2px #dc2626", // borde rojo
-                                background: "#fff5f5",               // fondo rosado claro
-                               }
-                           : {}),
-                          }}
+                          key={`${w.id}-${f}`}
+                          style={dayCell}
                           title={`Doble clic: extras/sábado para ${w.nombre} el ${f || "día"}`}
                           onDoubleClick={() => canEdit && editOverrideForDay(w, d)}
                           onDragOver={onDragOver}
@@ -1229,9 +771,9 @@ function deleteWorker(id: string) {
     {" "}
     {/* Avisos en rojo: extras o sábado ON */}
     {ow ? (
-      <span style={{ fontSize: 14, color: "#d81327", fontWeight: 700 }}>
-       {getDay(d) !== 6 && ow.extra && Number(ow.extra) > 0 ? ("+" + ow.extra + " h extra") : ""}
-       {getDay(d) === 6 && ow.sabado ? "Sábado ON" : ""}
+      <span style={{ fontSize: 12, color: "#d81327" }}>
+        {getDay(d) !== 6 && ow.extra && Number(ow.extra) > 0 ? ("+" + ow.extra + " h extra") : ""}
+        {getDay(d) === 6 && ow.sabado ? "Sábado ON" : ""}
       </span>
     ) : null}
   </div>
@@ -1248,6 +790,7 @@ function deleteWorker(id: string) {
     </button>
   )}
 </div>
+
 
                           <div style={horizontalLane}>
                             {delDia.map((s) => {
@@ -1484,32 +1027,10 @@ function disabledIf<T extends React.CSSProperties>(style: T, disabled: boolean):
 
 /* ===================== Badge ===================== */
 function DayCapacityBadge({ capacidad, usado }: { capacidad: number; usado: number }) {
-  const libre = Math.round((capacidad - usado) * 10) / 10;
-  const exceso = Math.round((usado - capacidad) * 10) / 10; // si > 0, hay sobrecarga
-
-  const base: React.CSSProperties = { marginTop: 6, fontSize: 11, color: "#374151" };
-
+  const libre = Math.max(0, Math.round((capacidad - usado) * 10) / 10);
   return (
-    <div style={base}>
-      Cap: {capacidad.toFixed(1)}h · Usado: {usado.toFixed(1)}h · Libre:{" "}
-      <span style={{ fontWeight: 700 }}>{Math.max(0, libre).toFixed(1)}h</span>
-
-      {exceso > 0 && (
-        <div
-          style={{
-            marginTop: 4,
-            fontSize: 12,
-            fontWeight: 700,
-            color: "#b91c1c",        // rojo
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 6,
-          }}
-          title="Este día tiene más horas asignadas que su capacidad"
-        >
-          ⚠️ Sobreasignado: +{exceso.toFixed(1)}h
-        </div>
-      )}
+    <div style={{ marginTop: 6, fontSize: 11, color: "#374151" }}>
+      Cap: {capacidad.toFixed(1)}h · Usado: {usado.toFixed(1)}h · Libre: <span style={{ fontWeight: 700 }}>{libre.toFixed(1)}h</span>
     </div>
   );
 }
@@ -1608,7 +1129,7 @@ const dayCell: React.CSSProperties = {
   background: "#fafafa",
   borderRadius: 8,
 };
-const dayLabel: React.CSSProperties = { fontSize: 11, color: "#6b7280" };
+const dayLabel: React.CSSProperties = { fontSize: 18, color: "#000000ff" };
 
 const horizontalLane: React.CSSProperties = { display: "flex", gap: 6, overflowX: "auto", alignItems: "flex-start" };
 const blockStyle: React.CSSProperties = {
