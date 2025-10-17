@@ -330,11 +330,11 @@ function AppInner() {
   const [workers, setWorkers] = useState<Worker[]>([
     { id: "W1", nombre: "ANGEL MORGADO", extraDefault: 0, sabadoDefault: false },
     { id: "W2", nombre: "ANTONIO MONTILLA", extraDefault: 0, sabadoDefault: false },
-    { id: "W2", nombre: "DANIEL MORGADO", extraDefault: 0, sabadoDefault: false },
-    { id: "W2", nombre: "FIDEL RODRIGO", extraDefault: 0, sabadoDefault: false },
-    { id: "W2", nombre: "LUCAS PRIETO", extraDefault: 0, sabadoDefault: false },
-    { id: "W2", nombre: "LUIS AGUADO", extraDefault: 0, sabadoDefault: false },
-    { id: "W2", nombre: "VICTOR HERNANDEZ", extraDefault: 0, sabadoDefault: false },
+    { id: "W3", nombre: "DANIEL MORGADO", extraDefault: 0, sabadoDefault: false },
+    { id: "W4", nombre: "FIDEL RODRIGO", extraDefault: 0, sabadoDefault: false },
+    { id: "W5", nombre: "LUCAS PRIETO", extraDefault: 0, sabadoDefault: false },
+    { id: "W6", nombre: "LUIS AGUADO", extraDefault: 0, sabadoDefault: false },
+    { id: "W7", nombre: "VICTOR HERNANDEZ", extraDefault: 0, sabadoDefault: false },
   ]);
   const [nuevoTrabajador, setNuevoTrabajador] = useState("");
 
@@ -347,9 +347,9 @@ function AppInner() {
   const [editKey, setEditKey] = useState<string | null>(null);
 
   const [form, setForm] = useState<NewTaskForm>({
-    producto: "SAS ALTAN",
-    horasTotales: 30,
-    trabajadorId: "W2",
+    producto: "",
+    horasTotales: ,
+    trabajadorId: "",
     fechaInicio: fmt(new Date()),
   });
 
@@ -397,13 +397,15 @@ function AppInner() {
 
   // Trabajadores
   function addWorker() {
-    if (!canEdit) return;
-    const name = nuevoTrabajador.trim();
-    if (!name) return;
-    const id = "W" + Math.random().toString(36).slice(2, 6);
-    setWorkers((prev) => [...prev, { id, nombre: name, extraDefault: 0, sabadoDefault: false }]);
-    setNuevoTrabajador("");
-  }
+  if (!canEdit) return;
+  const name = nuevoTrabajador.trim();
+  if (!name) return;
+  const id = "W" + Math.random().toString(36).slice(2, 6).toUpperCase();
+  // No permitir IDs repetidos (muy raro, pero por si acaso)
+  if (workers.some(w => w.id === id)) return addWorker();
+  setWorkers(prev => [...prev, { id, nombre: name, extraDefault: 0, sabadoDefault: false }]);
+  setNuevoTrabajador("");
+}
   function editWorker(id: string, patch: Partial<Worker>) {
     if (!canEdit) return;
     setWorkers((prev) => prev.map((w) => (w.id === id ? { ...w, ...patch } : w)));
@@ -1219,3 +1221,4 @@ const descItem: React.CSSProperties = {
   padding: 8,
   background: "#fafafa",
 };
+
