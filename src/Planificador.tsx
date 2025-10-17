@@ -15,7 +15,7 @@ import {
 import es from "date-fns/locale/es";
 
 /* ===================== Configuración ===================== */
-const PASSWORD = "taller2025"; // ← cámbiala por la que quieras
+const PASSWORD = "taller2025"; // ← cámbiala por la que quieras (ojo: visible en el front)
 
 /* ===================== Error Boundary ===================== */
 class ErrorBoundary extends React.Component<
@@ -97,7 +97,6 @@ function monthYear(d: Date | null | undefined): string {
 
 const weekDaysHeader = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
 const PX_PER_HOUR = 20;
-
 
 function monthGrid(date: Date) {
   const start = startOfWeek(startOfMonth(date), { weekStartsOn: 1 });
@@ -289,11 +288,15 @@ function planificarBloqueAuto(
     }
   }
 
+  // Seguir planificando después de fin de mes, respetando lo ya asignado
   let cursor = endOfMonth(baseMes);
   while (restante > 0) {
     cursor = addDays(cursor, 1);
     const cap = capacidadDia(worker, cursor, overrides);
-    const h = Math.min(restante, Math.floor(cap * 2) / 2);
+    const ya = usadasEnDia([...existentes, ...out], worker.id, cursor);
+    const libre = Math.max(0, Math.floor((cap - ya) * 2) / 2);
+    const h = Math.min(restante, libre);
+
     if (h > 0) {
       pushOrMergeSameDay(out, {
         id: "S" + Math.random().toString(36).slice(2, 9),
@@ -347,11 +350,11 @@ function AppInner() {
   const [editKey, setEditKey] = useState<string | null>(null);
 
   const [form, setForm] = useState<NewTaskForm>({
-  producto: "",
-  horasTotales: 30,     // ← valor por defecto
-  trabajadorId: "W1",   // ← que apunte a un trabajador existente
-  fechaInicio: fmt(new Date()),
-});;
+    producto: "",
+    horasTotales: 30,     // ← valor por defecto
+    trabajadorId: "W1",   // ← que apunte a un trabajador existente
+    fechaInicio: fmt(new Date()),
+  });
 
   type PrintMode = "none" | "monthly" | "daily" | "dailyAll";
   const [printMode, setPrintMode] = useState<PrintMode>("none");
@@ -398,15 +401,19 @@ function AppInner() {
 
   // Trabajadores
   function addWorker() {
-  if (!canEdit) return;
-  const name = nuevoTrabajador.trim();
-  if (!name) return;
-  const id = "W" + Math.random().toString(36).slice(2, 6).toUpperCase();
-  // No permitir IDs repetidos (muy raro, pero por si acaso)
-  if (workers.some(w => w.id === id)) return addWorker();
-  setWorkers(prev => [...prev, { id, nombre: name, extraDefault: 0, sabadoDefault: false }]);
-  setNuevoTrabajador("");
-}
+    if (!canEdit) return;
+    const name = nuevoTrabajador.trim();
+    if (!name) return;
+
+    // Genera ID único sin recursión
+    let id = "";
+    do {
+      id = "W" + Math.random().toString(36).slice(2, 6).toUpperCase();
+    } while (workers.some((w) => w.id === id));
+
+    setWorkers((prev) => [...prev, { id, nombre: name, extraDefault: 0, sabadoDefault: false }]);
+    setNuevoTrabajador("");
+  }
   function editWorker(id: string, patch: Partial<Worker>) {
     if (!canEdit) return;
     setWorkers((prev) => prev.map((w) => (w.id === id ? { ...w, ...patch } : w)));
@@ -414,21 +421,39 @@ function AppInner() {
 
   // Drag & Drop
   const dragIdRef = useRef<string | null>(null);
+
   function onDragStart(e: React.DragEvent, sliceId: string) {
     if (!canEdit) { e.preventDefault(); return; }
     dragIdRef.current = sliceId;
     e.dataTransfer.effectAllowed = "move";
   }
+
   function onDropDay(e: React.DragEvent, workerId: string, date: Date) {
     if (!canEdit) return;
     e.preventDefault();
     const sliceId = dragIdRef.current;
     dragIdRef.current = null;
     if (!sliceId) return;
-    setSlices((prev) =>
-      prev.map((s) => (s.id === sliceId ? { ...s, trabajadorId: workerId, fecha: fmt(date) } : s))
-    );
+
+    const f = fmt(date);
+    if (!f) return;
+
+    setSlices((prev) => {
+      // 1) Mover el tramo arrastrado
+      const moved = prev.map((s) =>
+        s.id === sliceId ? { ...s, trabajadorId: workerId, fecha: f } : s
+      );
+
+      // 2) Recompactar SOLO al trabajador afectado desde esa fecha
+      const w = workers.find((x) => x.id === workerId);
+      if (!w) return moved;
+
+      const replan = compactFrom(w, f, overrides, moved);
+      const others = moved.filter((s) => s.trabajadorId !== workerId);
+      return [...others, ...replan];
+    });
   }
+
   function onDragOver(e: React.DragEvent) {
     if (!canEdit) return;
     e.preventDefault();
@@ -573,7 +598,8 @@ function AppInner() {
     const w = workers.find((x) => x.id === ebWorker);
     if (!w || !ebNombre.trim()) { setEbMatches([]); setEbSelected(""); setEbHoras(0); return; }
 
-    const delW = slices.filter(s => s.trabajadorId === w.id && s.producto.trim() === ebNombre.trim());
+    const needle = ebNombre.trim().toLowerCase();
+    const delW = slices.filter(s => s.trabajadorId === w.id && s.producto.trim().toLowerCase() === needle);
     const byTask = new Map<string, FoundBlock>();
     for (const s of delW) {
       const fb = byTask.get(s.taskId) ?? { taskId: s.taskId, startF: s.fecha, totalHoras: 0 };
@@ -766,45 +792,39 @@ function AppInner() {
                           onDragOver={onDragOver}
                           onDrop={(e) => onDropDay(e, w.id, d)}
                         >
-                          {/* Cabecera del día: número + avisos + botón ＋ */}
+                          {/* Cabecera del día: número + avisos + botones */}
                           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                       <div style={{ ...dayLabel, fontSize: 20, fontWeight: 800, color: "#000000" }}>
-    {/* Solo el número del día */}
-    {format(d, "d")}
-    {" "}
-    {/* Avisos en rojo: extras o sábado ON */}
-    {ow ? (
-      <span style={{ fontSize: 12, color: "#d81327" }}>
-        {getDay(d) !== 6 && ow.extra && Number(ow.extra) > 0 ? ("+" + ow.extra + " h extra") : ""}
-        {getDay(d) === 6 && ow.sabado ? "Sábado ON" : ""}
-      </span>
-    ) : null}
-  </div>
+                            <div style={{ ...dayLabel, fontSize: 20, fontWeight: 800, color: "#000000" }}>
+                              {format(d, "d")}{" "}
+                              {ow ? (
+                                <span style={{ fontSize: 12, color: "#d81327" }}>
+                                  {getDay(d) !== 6 && ow.extra && Number(ow.extra) > 0 ? `+${ow.extra} h extra` : ""}
+                                  {(getDay(d) !== 6 && ow.extra && Number(ow.extra) > 0 && ow.sabado) ? " · " : ""}
+                                  {getDay(d) === 6 && ow.sabado ? "Sábado ON" : ""}
+                                </span>
+                              ) : null}
+                            </div>
 
-  {/* Botones + y 🔍 */}
-  {canEdit && (
-  <div className="no-print" style={{ display: "flex", gap: 6 }}>
-    {/* Botón para añadir manual */}
-    <button
-      onClick={() => addManualHere(w, d)}
-      style={smallPlusBtn}
-      title="Insertar manual aquí"
-    >
-      ＋
-    </button>
+                            {canEdit && (
+                              <div className="no-print" style={{ display: "flex", gap: 6 }}>
+                                <button
+                                  onClick={() => addManualHere(w, d)}
+                                  style={smallPlusBtn}
+                                  title="Insertar manual aquí"
+                                >
+                                  ＋
+                                </button>
 
-    {/* Botón para ampliar casilla */}
-    <button
-      onClick={() => setZoomCell(`${w.id}|${fmt(d)}`)}
-      style={{ ...smallPlusBtn, background: "#0ea5e9" }}
-      title="Ampliar esta casilla"
-    >
-      🔍
-    </button>
-  </div>
-)}
-</div>
-
+                                <button
+                                  onClick={() => setZoomCell(`${w.id}|${fmt(d)}`)}
+                                  style={{ ...smallPlusBtn, background: "#0ea5e9" }}
+                                  title="Ampliar esta casilla"
+                                >
+                                  🔍
+                                </button>
+                              </div>
+                            )}
+                          </div>
 
                           <div style={horizontalLane}>
                             {delDia.map((s) => {
@@ -1028,71 +1048,73 @@ function AppInner() {
           </div>
         </aside>
       </div>
+
+      {/* ZOOM DÍA */}
       {zoomCell && (() => {
-  const [wid, f] = zoomCell.split("|");
-  const w = workers.find((x) => x.id === wid);
-  const d = f ? new Date(f) : null;
+        const [wid, f] = zoomCell.split("|");
+        const w = workers.find((x) => x.id === wid);
+        const d = f ? new Date(f) : null;
 
-  if (!w || !f || !d || isNaN(d.getTime?.() ?? NaN)) {
-    setTimeout(() => setZoomCell(null), 0);
-    return null;
-  }
+        if (!w || !f || !d || isNaN(d.getTime?.() ?? NaN)) {
+          setTimeout(() => setZoomCell(null), 0);
+          return null;
+        }
 
-  const delDia = slices
-    .filter((s) => s.trabajadorId === w.id && s.fecha === f)
-    .sort((a, b) => a.producto.localeCompare(b.producto));
+        const delDia = slices
+          .filter((s) => s.trabajadorId === w.id && s.fecha === f)
+          .sort((a, b) => a.producto.localeCompare(b.producto));
 
-  const cap = capacidadDia(w, d, overrides);
-  const used = usadasEnDia(slices, w.id, d);
+        const cap = capacidadDia(w, d, overrides);
+        const used = usadasEnDia(slices, w.id, d);
 
-  return (
-    <div style={zoomOverlay} onClick={() => setZoomCell(null)}>
-      <div style={zoomCard} onClick={(e) => e.stopPropagation()}>
-        <div style={zoomHeader}>
-          <h3 style={zoomTitle}>
-            {w.nombre} — {format(d, "EEEE d 'de' LLLL yyyy", { locale: es })}
-          </h3>
-          <button style={zoomCloseBtn} onClick={() => setZoomCell(null)}>
-            Cerrar
-          </button>
-        </div>
-
-        <div style={{ marginBottom: 8, color: "#374151" }}>
-          Capacidad: <b>{cap.toFixed(1)}h</b> · Usado: <b>{used.toFixed(1)}h</b> · Libre:{" "}
-          <b>{Math.max(0, cap - used).toFixed(1)}h</b>
-        </div>
-
-        <div style={zoomLane}>
-          {delDia.length === 0 ? (
-            <div style={{ color: "#6b7280" }}>No hay bloques para este día.</div>
-          ) : (
-            delDia.map((s) => (
-              <div
-                key={`zoom-${s.id}`}
-                style={{
-                  ...zoomBlock,
-                  background: s.color,
-                  width: Math.max(140, s.horas * (PX_PER_HOUR * 2.5)),
-                }}
-                title={`${s.producto} — ${s.horas}h`}
-              >
-                <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-                  <div style={{ fontWeight: 800 }}>{s.producto}</div>
-                  <div>{s.horas}h</div>
-                </div>
-                {descs[s.producto] ? (
-                  <div style={{ marginTop: 6, fontSize: 12, background: "rgba(255,255,255,.15)", padding: "4px 6px", borderRadius: 6 }}>
-                    {descs[s.producto]}
-                  </div>
-                ) : null}
+        return (
+          <div style={zoomOverlay} onClick={() => setZoomCell(null)}>
+            <div style={zoomCard} onClick={(e) => e.stopPropagation()}>
+              <div style={zoomHeader}>
+                <h3 style={zoomTitle}>
+                  {w.nombre} — {format(d, "EEEE d 'de' LLLL yyyy", { locale: es })}
+                </h3>
+                <button style={zoomCloseBtn} onClick={() => setZoomCell(null)}>
+                  Cerrar
+                </button>
               </div>
-            ))
-          )}
-        </div>
-      </div>
-    </div>
-  );
-})()}
+
+              <div style={{ marginBottom: 8, color: "#374151" }}>
+                Capacidad: <b>{cap.toFixed(1)}h</b> · Usado: <b>{used.toFixed(1)}h</b> · Libre:{" "}
+                <b>{Math.max(0, cap - used).toFixed(1)}h</b>
+              </div>
+
+              <div style={zoomLane}>
+                {delDia.length === 0 ? (
+                  <div style={{ color: "#6b7280" }}>No hay bloques para este día.</div>
+                ) : (
+                  delDia.map((s) => (
+                    <div
+                      key={`zoom-${s.id}`}
+                      style={{
+                        ...zoomBlock,
+                        background: s.color,
+                        width: Math.max(140, s.horas * (PX_PER_HOUR * 2.5)),
+                      }}
+                      title={`${s.producto} — ${s.horas}h`}
+                    >
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                        <div style={{ fontWeight: 800 }}>{s.producto}</div>
+                        <div>{s.horas}h</div>
+                      </div>
+                      {descs[s.producto] ? (
+                        <div style={{ marginTop: 6, fontSize: 12, background: "rgba(255,255,255,.15)", padding: "4px 6px", borderRadius: 6 }}>
+                          {descs[s.producto]}
+                        </div>
+                      ) : null}
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
@@ -1129,6 +1151,7 @@ const btnBase: React.CSSProperties = {
 // ---- Helper para crear estilos basados en btnBase SIN problemas de orden ----
 const withBase = (patch: React.CSSProperties): React.CSSProperties =>
   Object.assign({}, btnBase, patch);
+
 const appShell: React.CSSProperties = {
   fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
   background: "#e6f7fb",
@@ -1192,6 +1215,7 @@ const panelInner: React.CSSProperties = {
   padding: "0 8px",
   boxSizing: "border-box",
 };
+
 const zoomOverlay: React.CSSProperties = {
   position: "fixed",
   inset: 0,
@@ -1211,15 +1235,6 @@ const zoomCard: React.CSSProperties = {
   boxShadow: "0 10px 30px rgba(0,0,0,.25)",
   padding: 16,
 };
-
-const zoomBtn: React.CSSProperties = withBase({
-  position: "absolute",
-  bottom: 4,
-  right: 32,
-  padding: "4px 8px",
-  fontSize: 12,
-  borderRadius: 6,
-});
 
 const zoomCloseBtn: React.CSSProperties = withBase({
   background: "#ef4444",
@@ -1289,7 +1304,7 @@ const textarea: React.CSSProperties = { ...input, minHeight: 100, resize: "verti
 
 const table: React.CSSProperties = { width: "100%", borderCollapse: "collapse", fontSize: 13, background: "#fff" };
 const th: React.CSSProperties = { textAlign: "left", borderBottom: "1px solid #e5e7eb", padding: "6px", background: "#f9fafb" };
-const td: React.CSSProperties = { borderBottom: "1px solid #f3f4f6", padding: "6px" };
+const td: React.CSSProperties = { borderBottom: "1px solid "#f3f4f6", padding: "6px" } as React.CSSProperties; // evita error de tipo si el linter es estricto
 
 const daysHeader: React.CSSProperties = {
   display: "grid",
@@ -1300,7 +1315,7 @@ const daysHeader: React.CSSProperties = {
   fontWeight: 800,
   fontSize: 18,
   color: "#0f172a",
-  justifyItems: "center",   // <- centra el contenido de cada celda
+  justifyItems: "center",
   alignItems: "center",
 };
 
@@ -1309,8 +1324,9 @@ const weekRow: React.CSSProperties = {
   gridTemplateColumns: "repeat(7, 1fr)",
   gap: 2,
   marginBottom: 2,
-  alignItems: "stretch",     // <- importante para que todas las celdas crezcan igual en alto
+  alignItems: "stretch",
 };
+
 const dayCell: React.CSSProperties = {
   border: "1px solid #e5e7eb",
   minHeight: 130,
@@ -1319,9 +1335,10 @@ const dayCell: React.CSSProperties = {
   flexDirection: "column",
   background: "#fafafa",
   borderRadius: 8,
-  position: "relative",       // <- lo usamos para posicionar el botón 🔍
+  position: "relative",
   overflow: "hidden",
 };
+
 const dayLabel: React.CSSProperties = { fontSize: 18, color: "#000000ff" };
 
 const pth: React.CSSProperties = {
@@ -1329,6 +1346,7 @@ const pth: React.CSSProperties = {
   borderBottom: "1px solid #ddd",
   padding: "6px",
 };
+
 const ptd: React.CSSProperties = {
   borderBottom: "1px solid #eee",
   padding: "6px",
@@ -1365,3 +1383,76 @@ const descItem: React.CSSProperties = {
   background: "#fafafa",
 };
 
+/* ====== Estilos que faltaban y se usan en el JSX ====== */
+const smallPlusBtn: React.CSSProperties = withBase({
+  padding: "4px 8px",
+  fontSize: 12,
+  borderRadius: 6,
+});
+
+const deleteBtn: React.CSSProperties = {
+  position: "absolute",
+  top: 4,
+  right: 4,
+  padding: "0 6px",
+  border: "none",
+  background: "rgba(0,0,0,.35)",
+  color: "#fff",
+  borderRadius: 6,
+  cursor: "pointer",
+};
+
+const deleteBtnAlt: React.CSSProperties = {
+  position: "absolute",
+  top: 4,
+  right: 28,
+  padding: "0 6px",
+  border: "none",
+  background: "rgba(239,68,68,.9)",
+  color: "#fff",
+  borderRadius: 6,
+  cursor: "pointer",
+};
+
+const blockStyle: React.CSSProperties = {
+  color: "#fff",
+  borderRadius: 10,
+  padding: "8px 10px",
+  minHeight: 36,
+  display: "inline-flex",
+  flexDirection: "column",
+  justifyContent: "center",
+  boxShadow: "0 2px 4px rgba(0,0,0,.18)",
+  lineHeight: 1.15,
+};
+
+const blockTop: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: 6,
+  fontSize: 12,
+  fontWeight: 700,
+};
+
+const productFull: React.CSSProperties = {
+  maxWidth: 180,
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+};
+
+const btnTiny: React.CSSProperties = withBase({
+  padding: "4px 8px",
+  fontSize: 12,
+  borderRadius: 6,
+});
+
+const btnTinyDanger: React.CSSProperties = withBase({
+  padding: "4px 8px",
+  fontSize: 12,
+  borderRadius: 6,
+  background: "#ef4444",
+  color: "#fff",
+  border: "1px solid #dc2626",
+});
