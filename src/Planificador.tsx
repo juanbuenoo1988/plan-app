@@ -1319,20 +1319,14 @@ const daysHeader: React.CSSProperties = {
   alignItems: "center",
 };
 
-const weekRow: React.CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "repeat(7, 1fr)",
-  gap: 2,
-  marginBottom: 2,
-  alignItems: "stretch",
-};
-
 const horizontalLane: React.CSSProperties = {
   display: "flex",
   gap: 8,
   flexWrap: "wrap",
   alignItems: "center",
   marginTop: 6,
+  // opcional: evita que colapse si no hay bloques
+  minHeight: 10,
 };
 
 const dayCell: React.CSSProperties = {
