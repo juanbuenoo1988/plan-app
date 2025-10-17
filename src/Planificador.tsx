@@ -1099,9 +1099,7 @@ function deleteWorker(id: string) {
           onChange={(e) => setForm({ ...form, trabajadorId: e.target.value })}
         >
           {workers.map((w) => (
-            <option key={`wopt-${w.id}`} value={w.id}>
-              {w.nombre}
-            </option>
+            <option key={`wopt-${w.id}`} value={w.id}>{w.nombre}</option>
           ))}
         </select>
         <label style={label}>Fecha inicio</label>
@@ -1170,13 +1168,9 @@ function deleteWorker(id: string) {
               <input
                 style={disabledIf(input, locked)}
                 disabled={locked}
-                type="number"
-                min={0}
-                step={0.5}
+                type="number" min={0} step={0.5}
                 value={w.extraDefault}
-                onChange={(e) =>
-                  editWorker(w.id, { extraDefault: Number(e.target.value) })
-                }
+                onChange={(e) => editWorker(w.id, { extraDefault: Number(e.target.value) })}
               />
             </td>
             <td style={td}>
@@ -1184,9 +1178,7 @@ function deleteWorker(id: string) {
                 disabled={locked}
                 type="checkbox"
                 checked={w.sabadoDefault}
-                onChange={(e) =>
-                  editWorker(w.id, { sabadoDefault: e.target.checked })
-                }
+                onChange={(e) => editWorker(w.id, { sabadoDefault: e.target.checked })}
               />
             </td>
             <td style={td} className="no-print">
@@ -1215,6 +1207,7 @@ function deleteWorker(id: string) {
     </div>
   </div>
 </div>
+
 
           {/* CABECERA DÍAS (impresión mensual) */}
           <div style={daysHeader} className={printMode === "monthly" ? "" : "no-print"}>
