@@ -737,6 +737,34 @@ function AppInner() {
     if (!canEdit) return;
     setWorkers((prev) => prev.map((w) => (w.id === id ? { ...w, ...patch } : w)));
   }
+function deleteWorker(id: string) {
+  if (!canEdit) return;
+  const victim = workers.find(w => w.id === id);
+  if (!victim) return;
+  if (!confirm(`¿Eliminar a ${victim.nombre} y todas sus asignaciones?`)) return;
+
+  // calcula el siguiente id “válido” para selectores
+  const remaining = workers.filter(w => w.id !== id);
+  const nextId = remaining[0]?.id ?? "";
+
+  // quita trabajador
+  setWorkers(remaining);
+
+  // quita sus tramos
+  setSlices(prev => prev.filter(s => s.trabajadorId !== id));
+
+  // quita sus overrides
+  setOverrides(prev => {
+    const copy = { ...prev };
+    delete copy[id];
+    return copy;
+  });
+
+  // reajusta selects que pudieran apuntar a ese trabajador
+  setForm(prev => (prev.trabajadorId === id ? { ...prev, trabajadorId: nextId } : prev));
+  setPrintWorker(prev => (prev === id ? nextId : prev));
+  setEbWorker(prev => (prev === id ? nextId : prev));
+}
 
   // Drag & Drop
   const dragIdRef = useRef<string | null>(null);
@@ -1076,30 +1104,54 @@ function AppInner() {
               </div>
             </div>
 
-            <div style={panel}>
-              <div style={panelTitle}>Trabajadores</div>
-              <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-                <input style={disabledIf(input, locked)} disabled={locked} placeholder="Nombre del trabajador" value={nuevoTrabajador} onChange={(e) => setNuevoTrabajador(e.target.value)} />
-                <button style={disabledIf(btnLabeled, locked)} disabled={locked} onClick={addWorker}>➕ Añadir</button>
-              </div>
-              <table style={table}>
-                <thead>
-                  <tr>
-                    <th style={th}>Nombre</th>
-                    <th style={th}>Extra por defecto (L–V)</th>
-                    <th style={th}>Sábado por defecto</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {workers.map((w) => (
-                    <tr key={`row-${w.id}`}>
-                      <td style={td}><input style={disabledIf(input, locked)} disabled={locked} value={w.nombre} onChange={(e) => editWorker(w.id, { nombre: e.target.value })} /></td>
-                      <td style={td}><input style={disabledIf(input, locked)} disabled={locked} type="number" min={0} step={0.5} value={w.extraDefault} onChange={(e) => editWorker(w.id, { extraDefault: Number(e.target.value) })} /></td>
-                      <td style={td}><input disabled={locked} type="checkbox" checked={w.sabadoDefault} onChange={(e) => editWorker(w.id, { sabadoDefault: e.target.checked })} /></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <table style={table}>
+  <thead>
+    <tr>
+      <th style={th}>Nombre</th>
+      <th style={th}>Extra por defecto (L–V)</th>
+      <th style={th}>Sábado por defecto</th>
+      <th style={th} className="no-print">Acciones</th> {/* ← NUEVA COLUMNA */}
+    </tr>
+  </thead>
+  <tbody>
+    {workers.map((w) => (
+      <tr key={`row-${w.id}`}>
+        <td style={td}>
+          <input
+            style={disabledIf(input, locked)} disabled={locked}
+            value={w.nombre}
+            onChange={(e) => editWorker(w.id, { nombre: e.target.value })}
+          />
+        </td>
+        <td style={td}>
+          <input
+            style={disabledIf(input, locked)} disabled={locked}
+            type="number" min={0} step={0.5}
+            value={w.extraDefault}
+            onChange={(e) => editWorker(w.id, { extraDefault: Number(e.target.value) })}
+          />
+        </td>
+        <td style={td}>
+          <input
+            disabled={locked}
+            type="checkbox"
+            checked={w.sabadoDefault}
+            onChange={(e) => editWorker(w.id, { sabadoDefault: e.target.checked })}
+          />
+        </td>
+        <td style={td} className="no-print">
+          <button
+            style={disabledIf(btnTinyDanger, locked)} disabled={locked}
+            onClick={() => deleteWorker(w.id)}
+            title="Eliminar trabajador"
+          >
+            🗑 Eliminar
+          </button>
+        </td>
+      </tr>
+    ))}
+  </tbody>
+</table>
               <div style={{ fontSize: 12, color: "#6b7280", marginTop: 6 }}>
                 {locked ? "Bloqueado: solo lectura." :
                 <>Doble clic en una <b>celda</b> para fijar <b>extras/sábado</b> de ese <b>día</b>. Botón <b>＋</b> inserta un bloque desde ese día.</>}
@@ -1533,7 +1585,7 @@ const dayCell: React.CSSProperties = {
   background: "#fafafa",
   borderRadius: 8,
 };
-const dayLabel: React.CSSProperties = { fontSize: 11, color: "#6b7280" };
+const dayLabel: React.CSSProperties = { fontSize: 17, color: "#6b7280" };
 
 const horizontalLane: React.CSSProperties = { display: "flex", gap: 6, overflowX: "auto", alignItems: "flex-start" };
 const blockStyle: React.CSSProperties = {
