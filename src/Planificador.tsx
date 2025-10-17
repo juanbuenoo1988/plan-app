@@ -373,6 +373,11 @@ function AppInner() {
   // Estado de guardado en la nube
   const [savingCloud, setSavingCloud] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [loginEmail, setLoginEmail] = useState("");
+  const [sendingLink, setSendingLink] = useState(false);
+  const [authMsg, setAuthMsg] = useState<string | null>(null);
+  const [userEmail, setUserEmail] = useState<string | null>(null);
+
 
 // Referencias para "debounce" y última instantánea guardada
   const saveTimer = useRef<number | null>(null);
@@ -550,10 +555,12 @@ if (dRows.length) {
     // 1) ¿Hay sesión ya abierta?
     const { data } = await supabase.auth.getSession();
     const uid = data.session?.user?.id ?? null;
+    const mail = data.session?.user?.email ?? null;
 
     if (!mounted) return;
 
     setUserId(uid);
+    setUserEmail(mail);
 
     // 2) Si hay usuario, carga todo desde Supabase
     if (uid) {
@@ -575,7 +582,9 @@ if (dRows.length) {
   const { data: sub } = supabase.auth.onAuthStateChange(async (_event, session) => {
     if (!mounted) return;
     const uid = session?.user?.id ?? null;
+    const mail = session?.user?.email ?? null; 
     setUserId(uid);
+    setUserEmail(mail);
 
     if (uid) {
       try {
@@ -642,6 +651,35 @@ useEffect(() => {
   }
   function lock() {
     setLocked(true);
+  }
+
+  // 🔽🔽🔽 AÑADIR AQUÍ el bloque de login/logout 🔽🔽🔽
+
+  async function sendMagicLink() {
+    setAuthMsg(null);
+    const email = loginEmail.trim();
+    if (!email) { setAuthMsg("Escribe tu email."); return; }
+    setSendingLink(true);
+    try {
+      const { error } = await supabase.auth.signInWithOtp({
+        email,
+        options: {
+          emailRedirectTo: window.location.origin, // vuelve a la misma app
+        },
+      });
+      if (error) throw error;
+      setAuthMsg("Te envié un enlace mágico. Revisa tu correo.");
+    } catch (e: any) {
+      setAuthMsg(e.message ?? String(e));
+    } finally {
+      setSendingLink(false);
+    }
+  }
+
+  async function logout() {
+    await supabase.auth.signOut();
+    // Limpia opcionalmente estados locales:
+    // setWorkers([]); setSlices([]); setOverrides({}); setDescs({});
   }
 
   // Crear bloque
@@ -901,17 +939,63 @@ useEffect(() => {
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <h1 style={appTitle}>MONTAJES DELSAZ — PLANIFICACION TALLERES</h1>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <div style={{ fontWeight: 700, color: "#fff", marginRight: 8 }}>{monthYear(base)}</div>
-          <button style={btnLabeled} onClick={() => setBase(addMonths(base, -1))}>◀ Mes anterior</button>
-          <button style={btnLabeled} onClick={() => setBase(addMonths(base, 1))}>Siguiente mes ▶</button>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+    <div style={{ fontWeight: 700, color: "#fff", marginRight: 8 }}>{monthYear(base)}</div>
+    <button style={btnLabeled} onClick={() => setBase(addMonths(base, -1))}>◀ Mes anterior</button>
+    <button style={btnLabeled} onClick={() => setBase(addMonths(base, 1))}>Siguiente mes ▶</button>
 
-          {locked ? (
-            <button style={btnUnlock} className="no-print" onClick={tryUnlock}>🔒 Desbloquear</button>
-          ) : (
-            <button style={btnLock} className="no-print" onClick={lock}>🔓 Bloquear</button>
-          )}
-        </div>
+    {locked ? (
+      <button style={btnUnlock} className="no-print" onClick={tryUnlock}>🔒 Desbloquear</button>
+    ) : (
+      <button style={btnLock} className="no-print" onClick={lock}>🔓 Bloquear</button>
+    )}
+
+    {/* ——— separador visual ——— */}
+    <div style={{ width: 1, height: 22, background: "rgba(255,255,255,.25)", margin: "0 6px" }} />
+
+    {/* === Estado de guardado / error (ya tienes savingCloud y saveError) === */}
+    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      {savingCloud && <span style={{ color: "#a7f3d0" }}>Guardando…</span>}
+      {saveError && <span style={{ color: "#fecaca" }} title={saveError}>⚠ Error al guardar</span>}
+    </div>
+
+    {/* ——— separador visual ——— */}
+    <div style={{ width: 1, height: 22, background: "rgba(255,255,255,.25)", margin: "0 6px" }} />
+
+    {/* === UI de autenticación === */}
+    {userId ? (
+      // Conectado
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <span style={{ color: "#d1d5db", fontSize: 13 }}>
+          Conectado{userEmail ? `: ${userEmail}` : "" }
+        </span>
+        <button style={btnLabeled} className="no-print" onClick={logout}>Cerrar sesión</button>
+      </div>
+    ) : (
+      // No conectado → pedir email y enviar enlace mágico
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <input
+          className="no-print"
+          style={{ ...input, width: 220 }}
+          type="email"
+          placeholder="tu-correo@empresa.com"
+          value={loginEmail}
+          onChange={(e) => setLoginEmail(e.target.value)}
+        />
+        <button
+          className="no-print"
+          style={btnPrimary}
+          onClick={sendMagicLink}
+          disabled={sendingLink}
+          title="Te enviaré un correo con un enlace para entrar"
+        >
+          {sendingLink ? "Enviando…" : "Enviarme enlace"}
+        </button>
+        {authMsg && <span style={{ color: "#fff", fontSize: 12, opacity: 0.9 }}>{authMsg}</span>}
+      </div>
+    )}
+  </div>
+
       </header>
 
       {/* LAYOUT PRINCIPAL */}
