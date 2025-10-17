@@ -1175,7 +1175,7 @@ function deleteWorker(id: string) {
   ))}
                 </tbody>
               </table>
-              <div style={{ fontSize: 12, color: "#6b7280", marginTop: 6 }}>
+              <div style={{ fontSize: 18, color: "#6b7280", marginTop: 6 }}>
                 {locked ? "Bloqueado: solo lectura." :
                 <>Doble clic en una <b>celda</b> para fijar <b>extras/sábado</b> de ese <b>día</b>. Botón <b>＋</b> inserta un bloque desde ese día.</>}
               </div>
