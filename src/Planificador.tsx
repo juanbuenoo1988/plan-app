@@ -765,7 +765,7 @@ function AppInner() {
                         >
                           {/* Cabecera del día: número + avisos + botón ＋ */}
 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-  <div style={dayLabel}>
+  <div style={{ ...dayLabel, fontSize: 20, fontWeight: 800, color: "#000000" }}>
     {/* Solo el número del día */}
     {format(d, "d")}
     {" "}
