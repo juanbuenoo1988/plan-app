@@ -342,11 +342,11 @@ function AppInner() {
   const [workers, setWorkers] = useState<Worker[]>([
     { id: "W1", nombre: "ANGEL MORGADO", extraDefault: 0, sabadoDefault: false },
     { id: "W2", nombre: "ANTONIO MONTILLA", extraDefault: 0, sabadoDefault: false },
-    { id: "W2", nombre: "DANIEL MORGADO", extraDefault: 0, sabadoDefault: false },
-    { id: "W2", nombre: "FIDEL RODRIGO", extraDefault: 0, sabadoDefault: false },
-    { id: "W2", nombre: "LUCAS PRIETO", extraDefault: 0, sabadoDefault: false },
-    { id: "W2", nombre: "LUIS AGUADO", extraDefault: 0, sabadoDefault: false },
-    { id: "W2", nombre: "VICTOR HERNANDEZ", extraDefault: 0, sabadoDefault: false },
+    { id: "W3", nombre: "DANIEL MORGADO", extraDefault: 0, sabadoDefault: false },
+    { id: "W4", nombre: "FIDEL RODRIGO", extraDefault: 0, sabadoDefault: false },
+    { id: "W5", nombre: "LUCAS PRIETO", extraDefault: 0, sabadoDefault: false },
+    { id: "W6", nombre: "LUIS AGUADO", extraDefault: 0, sabadoDefault: false },
+    { id: "W7", nombre: "VICTOR HERNANDEZ", extraDefault: 0, sabadoDefault: false },
   ]);
   const [nuevoTrabajador, setNuevoTrabajador] = useState("");
 
@@ -367,13 +367,32 @@ function AppInner() {
   // ⬇️ 3.3-C (estados de sesión/carga en la nube)
   const [userId, setUserId] = useState<string | null>(null);
   const [loadingCloud, setLoadingCloud] = useState(false);
+  // Estado de guardado en la nube
+  const [savingCloud, setSavingCloud] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+// Referencias para "debounce" y última instantánea guardada
+  const saveTimer = useRef<number | null>(null);
+  const lastSavedRef = useRef<string>("");
+
 
   type PrintMode = "none" | "monthly" | "daily" | "dailyAll";
   const [printMode, setPrintMode] = useState<PrintMode>("none");
   const [printWorker, setPrintWorker] = useState<string>("W1");
   const [printDate, setPrintDate] = useState<string>(fmt(new Date()));
+  
 
   // 🔽🔽🔽 Pega aquí todo este bloque completo 🔽🔽🔽
+
+function flattenOverrides(ov: OverridesState) {
+  const rows: Array<{ worker_id: string; fecha: string; extra: number; sabado: boolean }> = [];
+  Object.entries(ov).forEach(([workerId, byDate]) => {
+    Object.entries(byDate).forEach(([fecha, v]) => {
+      rows.push({ worker_id: workerId, fecha, extra: v.extra, sabado: v.sabado });
+    });
+  });
+  return rows;
+}
 
   // CARGA TODO DE SUPABASE PARA ESTE USUARIO
  async function loadAll(uid: string) {
@@ -437,23 +456,87 @@ function AppInner() {
       setOverrides(obj);
     }
 
-    // 4) Descripciones
-    const { data: dData, error: dErr } = await supabase
-      .from("product_descs")
-      .select("*")
-      .eq("user_id", uid);
+const { data: dData, error: dErr } = await supabase
+  .from("product_descs")
+  .select("*")
+  .eq("user_id", uid);
 
-    if (dErr) console.error("product_descs error:", dErr);
-    if (dData) {
-      const map: Record<string, string> = {};
-      for (const r of dData as any[]) {
-        map[r.nombre] = r.texto ?? "";
-      }
-      setDescs(map);
-    }
+if (dErr) console.error("product_descs error:", dErr);
+if (dData) {
+  const map: Record<string, string> = {};
+  for (const r of dData as any[]) {
+    map[r.nombre] = r.texto ?? "";
+  }
+  setDescs(map);
+}
+
+
   } catch (e) {
     console.error("loadAll() error:", e);
   }
+
+  async function saveAll(uid: string) {
+  setSaveError(null);
+  setSavingCloud(true);
+  try {
+    // 1) Trabajadores
+    const wRows = workers.map(w => ({
+      id: w.id,
+      nombre: w.nombre,
+      extra_default: w.extraDefault,
+      sabado_default: w.sabadoDefault,
+      user_id: uid,
+    }));
+    if (wRows.length) {
+      const { error } = await supabase.from("workers").upsert(wRows, { onConflict: "id" });
+      if (error) throw error;
+    }
+
+    // 2) Slices (borramos todos del usuario y reinsertamos el snapshot actual)
+    const sRows = slices.map(s => ({
+      id: s.id,
+      task_id: s.taskId,
+      producto: s.producto,
+      fecha: s.fecha,
+      horas: s.horas,
+      trabajador_id: s.trabajadorId,
+      color: s.color,
+      user_id: uid,
+    }));
+    await supabase.from("task_slices").delete().eq("user_id", uid);
+    if (sRows.length) {
+      const { error } = await supabase.from("task_slices").insert(sRows);
+      if (error) throw error;
+    }
+
+    // 3) Overrides (lo mismo: borramos y subimos snapshot plano)
+    const oRows = flattenOverrides(overrides).map(r => ({ ...r, user_id: uid }));
+    await supabase.from("day_overrides").delete().eq("user_id", uid);
+    if (oRows.length) {
+      const { error } = await supabase.from("day_overrides").insert(oRows);
+      if (error) throw error;
+    }
+
+    // 4) Descripciones (borramos y subimos snapshot actual)
+ const dRows = Object.entries(descs).map(([nombre, texto]) => ({
+  nombre,
+  texto,
+  user_id: uid,
+}));
+await supabase.from("product_descs").delete().eq("user_id", uid);
+if (dRows.length) {
+  const { error } = await supabase.from("product_descs").insert(dRows);
+  if (error) throw error;
+}
+
+
+  } catch (e: any) {
+    setSaveError(e.message ?? String(e));
+    throw e;
+  } finally {
+    setSavingCloud(false);
+  }
+}
 
   // ⬇️ 3.3-C (efecto que detecta sesión y carga Supabase)
   useEffect(() => {
@@ -509,8 +592,36 @@ function AppInner() {
   };
 }, []); // ← sin dependencias: solo al montar
 
-}
+// AUTOSAVE: guarda en Supabase cuando cambian datos (con debounce)
+useEffect(() => {
+  if (!userId) return;          // sin sesión, no guardes
+  if (loadingCloud) return;     // no guardes mientras cargas desde la nube
 
+  // Foto del estado para evitar guardados innecesarios
+  const snapshot = JSON.stringify({
+    workers,
+    slices,
+    overrides,
+    descs,
+  });
+
+  if (snapshot === lastSavedRef.current) return;
+
+  // Debounce ~800ms
+  if (saveTimer.current) window.clearTimeout(saveTimer.current);
+  saveTimer.current = window.setTimeout(async () => {
+    try {
+      await saveAll(userId);
+      lastSavedRef.current = snapshot;
+    } catch {
+      // el error ya se guarda en setSaveError dentro de saveAll
+    }
+  }, 800);
+
+  return () => {
+    if (saveTimer.current) window.clearTimeout(saveTimer.current);
+  };
+}, [workers, slices, overrides, descs, userId, loadingCloud]);
 
 
   function triggerPrint(mode: PrintMode) {
