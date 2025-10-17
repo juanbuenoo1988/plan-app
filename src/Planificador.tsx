@@ -357,6 +357,7 @@ function AppInner() {
   const [printMode, setPrintMode] = useState<PrintMode>("none");
   const [printWorker, setPrintWorker] = useState<string>("W1");
   const [printDate, setPrintDate] = useState<string>(fmt(new Date()));
+  const [zoomCell, setZoomCell] = useState<string | null>(null);
 
   function triggerPrint(mode: PrintMode) {
     setPrintMode(mode);
@@ -737,7 +738,7 @@ function AppInner() {
           {/* CABECERA DÍAS (impresión mensual) */}
           <div style={daysHeader} className={printMode === "monthly" ? "" : "no-print"}>
             {weekDaysHeader.map((d, i) => (
-              <div key={`dow-${i}`} style={{ padding: "6px 8px", fontWeight: 600 }}>{d}</div>
+              <div key={`dow-${i}`} style={{ padding: "6px 8px", fontWeight: 800, textAlign: "center" }}>{d}</div>
             ))}
           </div>
 
@@ -766,8 +767,8 @@ function AppInner() {
                           onDrop={(e) => onDropDay(e, w.id, d)}
                         >
                           {/* Cabecera del día: número + avisos + botón ＋ */}
-<div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-  <div style={{ ...dayLabel, fontSize: 20, fontWeight: 800, color: "#000000" }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                       <div style={{ ...dayLabel, fontSize: 20, fontWeight: 800, color: "#000000" }}>
     {/* Solo el número del día */}
     {format(d, "d")}
     {" "}
@@ -780,17 +781,28 @@ function AppInner() {
     ) : null}
   </div>
 
-  {/* Botón + para insertar manual */}
+  {/* Botones + y 🔍 */}
   {canEdit && (
+  <div className="no-print" style={{ display: "flex", gap: 6 }}>
+    {/* Botón para añadir manual */}
     <button
-      className="no-print"
       onClick={() => addManualHere(w, d)}
       style={smallPlusBtn}
       title="Insertar manual aquí"
     >
       ＋
     </button>
-  )}
+
+    {/* Botón para ampliar casilla */}
+    <button
+      onClick={() => setZoomCell(`${w.id}|${fmt(d)}`)}
+      style={{ ...smallPlusBtn, background: "#0ea5e9" }}
+      title="Ampliar esta casilla"
+    >
+      🔍
+    </button>
+  </div>
+)}
 </div>
 
 
@@ -1016,6 +1028,71 @@ function AppInner() {
           </div>
         </aside>
       </div>
+      {zoomCell && (() => {
+  const [wid, f] = zoomCell.split("|");
+  const w = workers.find((x) => x.id === wid);
+  const d = f ? new Date(f) : null;
+
+  if (!w || !f || !d || isNaN(d.getTime?.() ?? NaN)) {
+    setTimeout(() => setZoomCell(null), 0);
+    return null;
+  }
+
+  const delDia = slices
+    .filter((s) => s.trabajadorId === w.id && s.fecha === f)
+    .sort((a, b) => a.producto.localeCompare(b.producto));
+
+  const cap = capacidadDia(w, d, overrides);
+  const used = usadasEnDia(slices, w.id, d);
+
+  return (
+    <div style={zoomOverlay} onClick={() => setZoomCell(null)}>
+      <div style={zoomCard} onClick={(e) => e.stopPropagation()}>
+        <div style={zoomHeader}>
+          <h3 style={zoomTitle}>
+            {w.nombre} — {format(d, "EEEE d 'de' LLLL yyyy", { locale: es })}
+          </h3>
+          <button style={zoomCloseBtn} onClick={() => setZoomCell(null)}>
+            Cerrar
+          </button>
+        </div>
+
+        <div style={{ marginBottom: 8, color: "#374151" }}>
+          Capacidad: <b>{cap.toFixed(1)}h</b> · Usado: <b>{used.toFixed(1)}h</b> · Libre:{" "}
+          <b>{Math.max(0, cap - used).toFixed(1)}h</b>
+        </div>
+
+        <div style={zoomLane}>
+          {delDia.length === 0 ? (
+            <div style={{ color: "#6b7280" }}>No hay bloques para este día.</div>
+          ) : (
+            delDia.map((s) => (
+              <div
+                key={`zoom-${s.id}`}
+                style={{
+                  ...zoomBlock,
+                  background: s.color,
+                  width: Math.max(140, s.horas * (PX_PER_HOUR * 2.5)),
+                }}
+                title={`${s.producto} — ${s.horas}h`}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                  <div style={{ fontWeight: 800 }}>{s.producto}</div>
+                  <div>{s.horas}h</div>
+                </div>
+                {descs[s.producto] ? (
+                  <div style={{ marginTop: 6, fontSize: 12, background: "rgba(255,255,255,.15)", padding: "4px 6px", borderRadius: 6 }}>
+                    {descs[s.producto]}
+                  </div>
+                ) : null}
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+})()}
     </div>
   );
 }
@@ -1101,6 +1178,66 @@ const panelInner: React.CSSProperties = {
   padding: "0 8px",
   boxSizing: "border-box",
 };
+const zoomOverlay: React.CSSProperties = {
+  position: "fixed",
+  inset: 0,
+  background: "rgba(0,0,0,.45)",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  zIndex: 1000,
+};
+
+const zoomCard: React.CSSProperties = {
+  background: "#fff",
+  borderRadius: 12,
+  width: "min(1000px, 92vw)",
+  maxHeight: "90vh",
+  overflow: "auto",
+  boxShadow: "0 10px 30px rgba(0,0,0,.25)",
+  padding: 16,
+};
+
+const zoomHeader: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: 8,
+  marginBottom: 12,
+};
+
+const zoomTitle: React.CSSProperties = {
+  fontSize: 18,
+  fontWeight: 800,
+  color: "#111827",
+  margin: 0,
+};
+
+const zoomCloseBtn: React.CSSProperties = {
+  ...btnBase,
+  background: "#ef4444",
+  color: "#fff",
+  border: "1px solid #dc2626",
+};
+
+const zoomLane: React.CSSProperties = {
+  display: "flex",
+  gap: 8,
+  flexWrap: "wrap",
+  alignItems: "flex-start",
+};
+
+const zoomBlock: React.CSSProperties = {
+  color: "#fff",
+  borderRadius: 10,
+  padding: "10px 12px",
+  minHeight: 40,
+  display: "flex",
+  flexDirection: "column",
+  justifyContent: "center",
+  boxShadow: "0 2px 4px rgba(0,0,0,.18)",
+  lineHeight: 1.15,
+};
 
 const panelTitle: React.CSSProperties = { fontWeight: 700, marginBottom: 8, color: "#111827" };
 const grid2: React.CSSProperties = { display: "grid", gap: 8, gridTemplateColumns: "180px 1fr", alignItems: "center" };
@@ -1116,12 +1253,22 @@ const daysHeader: React.CSSProperties = {
   display: "grid",
   gridTemplateColumns: "repeat(7, 1fr)",
   gap: 2,
-  fontSize: 12,
   margin: "8px 0 4px",
-  color: "#000000ff",
+  textTransform: "uppercase",
+  fontWeight: 800,
+  fontSize: 18,
+  color: "#0f172a",
+  justifyItems: "center",   // <- centra el contenido de cada celda
+  alignItems: "center",
 };
 
-const weekRow: React.CSSProperties = { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 2, marginBottom: 2 };
+const weekRow: React.CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(7, 1fr)",
+  gap: 2,
+  marginBottom: 2,
+  alignItems: "stretch",     // <- importante para que todas las celdas crezcan igual en alto
+};
 const dayCell: React.CSSProperties = {
   border: "1px solid #e5e7eb",
   minHeight: 130,
@@ -1130,6 +1277,8 @@ const dayCell: React.CSSProperties = {
   flexDirection: "column",
   background: "#fafafa",
   borderRadius: 8,
+  position: "relative",       // <- lo usamos para posicionar el botón 🔍
+  overflow: "hidden",
 };
 const dayLabel: React.CSSProperties = { fontSize: 18, color: "#000000ff" };
 
