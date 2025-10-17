@@ -490,19 +490,20 @@ function flattenOverrides(ov: OverridesState) {
   try {
     // 1) Trabajadores
     const wRows = workers.map(w => ({
-      id: w.id,
-      nombre: w.nombre,
-      extra_default: w.extraDefault,
-      sabado_default: w.sabadoDefault,
-      user_id: uid,
-    }));
-    if (wRows.length) {
-      const { error } = await supabase
-  .from("workers")
-  .upsert(wRows, { onConflict: "user_id,id" }); // <-- esta es la correcta
+      user_id: uid,                      // 👈 IMPORTANTE
+  id: w.id,
+  nombre: w.nombre,
+  extra_default: w.extraDefault,
+  sabado_default: w.sabadoDefault,
+}));
 
-      if (error) throw error;
-    }
+if (wRows.length) {
+  // 👇 coincide con tu PK compuesta (user_id, id)
+  const { error } = await supabase
+    .from("workers")
+    .upsert(wRows, { onConflict: "user_id,id" });
+  if (error) throw error;
+}
 
     // 2) Slices (borramos todos del usuario y reinsertamos el snapshot actual)
     const sRows = slices.map(s => ({
@@ -1638,6 +1639,4 @@ const descItem: React.CSSProperties = {
   padding: 8,
   background: "#fafafa",
 };
-
-
 
