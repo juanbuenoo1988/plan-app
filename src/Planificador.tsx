@@ -1449,7 +1449,7 @@ function deleteWorker(id: string) {
         </aside>
       </div>
     </div>
-  );
+  )
 }
 
 /* ===================== Helpers de estilo ===================== */
