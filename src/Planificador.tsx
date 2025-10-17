@@ -517,19 +517,18 @@ function AppInner() {
     try {
       // 1) Trabajadores
       const wRows = workers.map(w => ({
-        user_id: uid,
-        id: w.id,
-        nombre: w.nombre,
-        extra_default: w.extraDefault,
-        sabado_default: w.sabadoDefault,
-      }));
+  user_id: uid,
+  id: w.id,
+  nombre: w.nombre,
+  extra_default: w.extraDefault,
+  sabado_default: w.sabadoDefault,
+}));
 
-      if (wRows.length) {
-        const { error } = await supabase
-          .from("workers")
-          .upsert(wRows, { onConflict: "user_id,id" }); // ⬅️ importante
-        if (error) throw error;
-      }
+await supabase.from("workers").delete().eq("user_id", uid);
+if (wRows.length) {
+  const { error } = await supabase.from("workers").insert(wRows);
+  if (error) throw error;
+}
 
       // 2) Slices (borramos todos del usuario y reinsertamos el snapshot actual)
       const sRows = slices.map(s => ({
@@ -756,6 +755,26 @@ function AppInner() {
     if (!canEdit) return;
     setWorkers((prev) => prev.map((w) => (w.id === id ? { ...w, ...patch } : w)));
   }
+// ——— Eliminar trabajador + limpiar sus datos ———
+function deleteWorker(id: string) {
+  if (!canEdit) return;
+  const w = workers.find(x => x.id === id);
+  const name = w?.nombre || id;
+  if (!confirm(`¿Eliminar a "${name}" y todas sus asignaciones? Esta acción no se puede deshacer.`)) return;
+
+  // 1) Quita el trabajador de la lista
+  setWorkers(prev => prev.filter(x => x.id !== id));
+
+  // 2) Elimina todos sus bloques/horas
+  setSlices(prev => prev.filter(s => s.trabajadorId !== id));
+
+  // 3) Borra overrides (extras/sábados) del trabajador
+  setOverrides(prev => {
+    const copy = { ...prev };
+    delete copy[id];
+    return copy;
+  });
+}
 
   // Drag & Drop
   const dragIdRef = useRef<string | null>(null);
@@ -1107,16 +1126,53 @@ function AppInner() {
                     <th style={th}>Nombre</th>
                     <th style={th}>Extra por defecto (L–V)</th>
                     <th style={th}>Sábado por defecto</th>
+                    <th style={th}>Acciones</th>
                   </tr>
                 </thead>
                 <tbody>
                   {workers.map((w) => (
-                    <tr key={`row-${w.id}`}>
-                      <td style={td}><input style={disabledIf(input, locked)} disabled={locked} value={w.nombre} onChange={(e) => editWorker(w.id, { nombre: e.target.value })} /></td>
-                      <td style={td}><input style={disabledIf(input, locked)} disabled={locked} type="number" min={0} step={0.5} value={w.extraDefault} onChange={(e) => editWorker(w.id, { extraDefault: Number(e.target.value) })} /></td>
-                      <td style={td}><input disabled={locked} type="checkbox" checked={w.sabadoDefault} onChange={(e) => editWorker(w.id, { sabadoDefault: e.target.checked })} /></td>
-                    </tr>
-                  ))}
+    <tr key={`row-${w.id}`}>
+      <td style={td}>
+        <input
+          style={disabledIf(input, locked)}
+          disabled={locked}
+          value={w.nombre}
+          onChange={(e) => editWorker(w.id, { nombre: e.target.value })}
+        />
+      </td>
+      <td style={td}>
+        <input
+          style={disabledIf(input, locked)}
+          disabled={locked}
+          type="number"
+          min={0}
+          step={0.5}
+          value={w.extraDefault}
+          onChange={(e) => editWorker(w.id, { extraDefault: Number(e.target.value) })}
+        />
+      </td>
+      <td style={td}>
+        <input
+          disabled={locked}
+          type="checkbox"
+          checked={w.sabadoDefault}
+          onChange={(e) => editWorker(w.id, { sabadoDefault: e.target.checked })}
+        />
+      </td>
+
+      {/* NUEVO: columna de acciones */}
+      <td style={{ ...td, width: 1, whiteSpace: "nowrap" }}>
+        <button
+          style={disabledIf(btnTinyDanger, locked)}
+          disabled={locked}
+          onClick={() => deleteWorker(w.id)}
+          title="Eliminar trabajador y todas sus asignaciones"
+        >
+          🗑 Eliminar
+        </button>
+      </td>
+    </tr>
+  ))}
                 </tbody>
               </table>
               <div style={{ fontSize: 12, color: "#6b7280", marginTop: 6 }}>
