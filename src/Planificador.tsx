@@ -1304,7 +1304,7 @@ const textarea: React.CSSProperties = { ...input, minHeight: 100, resize: "verti
 
 const table: React.CSSProperties = { width: "100%", borderCollapse: "collapse", fontSize: 13, background: "#fff" };
 const th: React.CSSProperties = { textAlign: "left", borderBottom: "1px solid #e5e7eb", padding: "6px", background: "#f9fafb" };
-const td: React.CSSProperties = { borderBottom: "1px solid "#f3f4f6", padding: "6px" } as React.CSSProperties; // evita error de tipo si el linter es estricto
+const td: React.CSSProperties = { borderBottom: "1px solid #f3f4f6", padding: "6px" };
 
 const daysHeader: React.CSSProperties = {
   display: "grid",
