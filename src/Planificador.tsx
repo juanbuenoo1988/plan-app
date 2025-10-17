@@ -12,7 +12,7 @@ import {
   startOfMonth,
   startOfWeek,
 } from "date-fns";
-import { es } from "date-fns/locale";
+import es from "date-fns/locale";
 
 /* ===================== Configuración ===================== */
 const PASSWORD = "taller2025"; // ← cámbiala por la que quieras
