@@ -477,6 +477,7 @@ if (dData) {
   } catch (e) {
     console.error("loadAll() error:", e);
   }
+ } 
 
   async function saveAll(uid: string) {
   setSaveError(null);
@@ -887,13 +888,13 @@ useEffect(() => {
   return (
     <div style={appShell}>
       <style>{`
-        @media print {
-          .no-print { display: none !important; }
-          .print-only { display: block !important; }
-          body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-          .worker-block { page-break-inside: avoid; margin-bottom: 16px; }
-        }
-      `}</style>
+  @media print {
+    .no-print { display: none !important; }
+    .print-only { display: block !important; }
+    body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .worker-block { page-break-inside: avoid; margin-bottom: 16px; }
+  }
+`}</style>
 
       {/* CABECERA SUPERIOR */}
       <header style={topHeader}>
@@ -1518,6 +1519,4 @@ const descItem: React.CSSProperties = {
   padding: 8,
   background: "#fafafa",
 };
-
-
 
