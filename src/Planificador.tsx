@@ -53,6 +53,8 @@ class ErrorBoundary extends React.Component<
   }
 }
 
+
+
 /* ===================== Tipos ===================== */
 type Worker = {
   id: string;
@@ -321,6 +323,15 @@ function planificarBloqueAuto(
   }
 
   return out;
+}
+
+/* ===================== Componente raíz ===================== */
+export default function Planificador() {
+  return (
+    <ErrorBoundary>
+      <AppInner />
+    </ErrorBoundary>
+  );
 }
 
 
@@ -1508,12 +1519,5 @@ const descItem: React.CSSProperties = {
   background: "#fafafa",
 };
 
-/* ===================== Componente raíz ===================== */
-export default function Planificador() {
-  return (
-    <ErrorBoundary>
-      <AppInner />
-    </ErrorBoundary>
-  );
-}
+
 
