@@ -347,11 +347,11 @@ function AppInner() {
   const [editKey, setEditKey] = useState<string | null>(null);
 
   const [form, setForm] = useState<NewTaskForm>({
-    producto: "",
-    horasTotales: ,
-    trabajadorId: "",
-    fechaInicio: fmt(new Date()),
-  });
+  producto: "",
+  horasTotales: 30,     // ← valor por defecto
+  trabajadorId: "W1",   // ← que apunte a un trabajador existente
+  fechaInicio: fmt(new Date()),
+});;
 
   type PrintMode = "none" | "monthly" | "daily" | "dailyAll";
   const [printMode, setPrintMode] = useState<PrintMode>("none");
