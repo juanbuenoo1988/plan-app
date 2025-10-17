@@ -774,8 +774,36 @@ function AppInner() {
               <div key={`worker-${w.id}`}>
                 <div style={{ fontSize: 25, fontWeight: 700, margin: "8px 0 4px", color: "#111827" }}>👤 {w.nombre}</div>
 
-                {weeks.map((week) => (
-                  <div key={`${w.id}-wk-${week[0].toISOString()}`} style={weekRow}>
+{weeks.map((week) => (
+  <div key={`${w.id}-wk-${week[0].toISOString()}`} style={weekRow}>
+    {week.map((d) => {
+      const f = fmt(d);
+      const delDia = f ? slices.filter((s) => s.trabajadorId === w.id && s.fecha === f) : [];
+      const cap = capacidadDia(w, d, overrides);
+      const used = usadasEnDia(slices, w.id, d);
+      const ow = f ? overrides[w.id]?.[f] : undefined;
+
+      return (
+        <div
+          key={`${w.id}-${f}`}
+          style={dayCell}
+          title={`Doble clic: extras/sábado para ${w.nombre} el ${f || "día"}`}
+          onDoubleClick={() => canEdit && editOverrideForDay(w, d)}
+          onDragOver={onDragOver}
+          onDrop={(e) => onDropDay(e, w.id, d)}
+        >
+          {/* ... cabecera día ... */}
+          <div style={horizontalLane}>
+            {delDia.map((s) => (
+              // ... tus bloques ...
+            ))}
+          </div>
+          <DayCapacityBadge capacidad={cap} usado={used} />
+        </div>
+      );
+    })}
+  </div>
+))}                  <div key={`${w.id}-wk-${week[0].toISOString()}`} style={weekRow}>
                     {week.map((d) => {
                       const f = fmt(d);
                       const delDia = f ? slices.filter((s) => s.trabajadorId === w.id && s.fecha === f) : [];
@@ -1318,7 +1346,13 @@ const daysHeader: React.CSSProperties = {
   justifyItems: "center",
   alignItems: "center",
 };
-
+const weekRow: React.CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(7, 1fr)",
+  gap: 2,
+  marginBottom: 2,
+  alignItems: "stretch",
+};
 const horizontalLane: React.CSSProperties = {
   display: "flex",
   gap: 8,
