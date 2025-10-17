@@ -1449,7 +1449,7 @@ function deleteWorker(id: string) {
                   <button style={disabledIf(btnTinyDanger, locked)} disabled={locked} onClick={() => deleteDesc(prod)}>🗑 Eliminar</button>
                 </div>
               </div>
-            )))}
+            )}
           </div>
 
           {/* Editor de bloques por producto */}
