@@ -1065,99 +1065,157 @@ function deleteWorker(id: string) {
           </div>
 
           {/* FORM + TRABAJADORES */}
-          <div style={panelRow} className="no-print">
-            <div style={panel}>
-              <div style={panelTitle}>Nuevo bloque</div>
-              <div style={panelInner}>
-                <div style={grid2}>
-                  <label style={label}>Producto</label>
-                  <input style={disabledIf(input, locked)} disabled={locked} value={form.producto} onChange={(e) => setForm({ ...form, producto: e.target.value })} />
-                  <label style={label}>Horas totales</label>
-                  <input
-                    style={disabledIf(input, locked)}
-                    disabled={locked}
-                    type="number"
-                    min={0.5}
-                    step={0.5}
-                    value={form.horasTotales}
-                    onChange={(e) => {
-                      const v = Number(e.target.value);
-                      setForm({ ...form, horasTotales: isFinite(v) ? v : 0 });
-                    }}
-                  />
-                  <label style={label}>Trabajador</label>
-                  <select style={disabledIf(input, locked)} disabled={locked} value={form.trabajadorId} onChange={(e) => setForm({ ...form, trabajadorId: e.target.value })}>
-                    {workers.map((w) => <option key={`wopt-${w.id}`} value={w.id}>{w.nombre}</option>)}
-                  </select>
-                  <label style={label}>Fecha inicio</label>
-                  <input
-                    style={disabledIf(input, locked)}
-                    disabled={locked}
-                    type="date"
-                    value={form.fechaInicio}
-                    onChange={(e) => setForm({ ...form, fechaInicio: e.target.value })}
-                  />
-                </div>
-                <div style={{ marginTop: 12, display: "flex", justifyContent: "center" }}>
-                  <button style={disabledIf(btnPrimary, locked)} disabled={locked} onClick={crearBloque}>➕ Planificar</button>
-                </div>
-              </div>
-            </div>
+      <div style={panelRow} className="no-print">
+  {/* Panel: Nuevo bloque */}
+  <div style={panel}>
+    <div style={panelTitle}>Nuevo bloque</div>
+    <div style={panelInner}>
+      <div style={grid2}>
+        <label style={label}>Producto</label>
+        <input
+          style={disabledIf(input, locked)}
+          disabled={locked}
+          value={form.producto}
+          onChange={(e) => setForm({ ...form, producto: e.target.value })}
+        />
+        <label style={label}>Horas totales</label>
+        <input
+          style={disabledIf(input, locked)}
+          disabled={locked}
+          type="number"
+          min={0.5}
+          step={0.5}
+          value={form.horasTotales}
+          onChange={(e) => {
+            const v = Number(e.target.value);
+            setForm({ ...form, horasTotales: isFinite(v) ? v : 0 });
+          }}
+        />
+        <label style={label}>Trabajador</label>
+        <select
+          style={disabledIf(input, locked)}
+          disabled={locked}
+          value={form.trabajadorId}
+          onChange={(e) => setForm({ ...form, trabajadorId: e.target.value })}
+        >
+          {workers.map((w) => (
+            <option key={`wopt-${w.id}`} value={w.id}>
+              {w.nombre}
+            </option>
+          ))}
+        </select>
+        <label style={label}>Fecha inicio</label>
+        <input
+          style={disabledIf(input, locked)}
+          disabled={locked}
+          type="date"
+          value={form.fechaInicio}
+          onChange={(e) => setForm({ ...form, fechaInicio: e.target.value })}
+        />
+      </div>
+      <div style={{ marginTop: 12, display: "flex", justifyContent: "center" }}>
+        <button
+          style={disabledIf(btnPrimary, locked)}
+          disabled={locked}
+          onClick={crearBloque}
+        >
+          ➕ Planificar
+        </button>
+      </div>
+    </div>
+  </div>
 
-            <table style={table}>
-  <thead>
-    <tr>
-      <th style={th}>Nombre</th>
-      <th style={th}>Extra por defecto (L–V)</th>
-      <th style={th}>Sábado por defecto</th>
-      <th style={th} className="no-print">Acciones</th> {/* ← NUEVA COLUMNA */}
-    </tr>
-  </thead>
-  <tbody>
-    {workers.map((w) => (
-      <tr key={`row-${w.id}`}>
-        <td style={td}>
-          <input
-            style={disabledIf(input, locked)} disabled={locked}
-            value={w.nombre}
-            onChange={(e) => editWorker(w.id, { nombre: e.target.value })}
-          />
-        </td>
-        <td style={td}>
-          <input
-            style={disabledIf(input, locked)} disabled={locked}
-            type="number" min={0} step={0.5}
-            value={w.extraDefault}
-            onChange={(e) => editWorker(w.id, { extraDefault: Number(e.target.value) })}
-          />
-        </td>
-        <td style={td}>
-          <input
-            disabled={locked}
-            type="checkbox"
-            checked={w.sabadoDefault}
-            onChange={(e) => editWorker(w.id, { sabadoDefault: e.target.checked })}
-          />
-        </td>
-        <td style={td} className="no-print">
-          <button
-            style={disabledIf(btnTinyDanger, locked)} disabled={locked}
-            onClick={() => deleteWorker(w.id)}
-            title="Eliminar trabajador"
-          >
-            🗑 Eliminar
-          </button>
-        </td>
-      </tr>
-    ))}
-  </tbody>
-</table>
-              <div style={{ fontSize: 12, color: "#6b7280", marginTop: 6 }}>
-                {locked ? "Bloqueado: solo lectura." :
-                <>Doble clic en una <b>celda</b> para fijar <b>extras/sábado</b> de ese <b>día</b>. Botón <b>＋</b> inserta un bloque desde ese día.</>}
-              </div>
-            </div>
-          </div>
+  {/* Panel: Trabajadores */}
+  <div style={panel}>
+    <div style={panelTitle}>Trabajadores</div>
+
+    <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+      <input
+        style={disabledIf(input, locked)}
+        disabled={locked}
+        placeholder="Nombre del trabajador"
+        value={nuevoTrabajador}
+        onChange={(e) => setNuevoTrabajador(e.target.value)}
+      />
+      <button
+        style={disabledIf(btnLabeled, locked)}
+        disabled={locked}
+        onClick={addWorker}
+      >
+        ➕ Añadir
+      </button>
+    </div>
+
+    <table style={table}>
+      <thead>
+        <tr>
+          <th style={th}>Nombre</th>
+          <th style={th}>Extra por defecto (L–V)</th>
+          <th style={th}>Sábado por defecto</th>
+          <th style={th} className="no-print">Acciones</th>
+        </tr>
+      </thead>
+      <tbody>
+        {workers.map((w) => (
+          <tr key={`row-${w.id}`}>
+            <td style={td}>
+              <input
+                style={disabledIf(input, locked)}
+                disabled={locked}
+                value={w.nombre}
+                onChange={(e) => editWorker(w.id, { nombre: e.target.value })}
+              />
+            </td>
+            <td style={td}>
+              <input
+                style={disabledIf(input, locked)}
+                disabled={locked}
+                type="number"
+                min={0}
+                step={0.5}
+                value={w.extraDefault}
+                onChange={(e) =>
+                  editWorker(w.id, { extraDefault: Number(e.target.value) })
+                }
+              />
+            </td>
+            <td style={td}>
+              <input
+                disabled={locked}
+                type="checkbox"
+                checked={w.sabadoDefault}
+                onChange={(e) =>
+                  editWorker(w.id, { sabadoDefault: e.target.checked })
+                }
+              />
+            </td>
+            <td style={td} className="no-print">
+              <button
+                style={disabledIf(btnTinyDanger, locked)}
+                disabled={locked}
+                onClick={() => deleteWorker(w.id)}
+                title="Eliminar trabajador"
+              >
+                🗑 Eliminar
+              </button>
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+
+    <div style={{ fontSize: 12, color: "#6b7280", marginTop: 6 }}>
+      {locked ? (
+        "Bloqueado: solo lectura."
+      ) : (
+        <>
+          Doble clic en una <b>celda</b> para fijar <b>extras/sábado</b> de ese{" "}
+          <b>día</b>. Botón <b>＋</b> inserta un bloque desde ese día.
+        </>
+      )}
+    </div>
+  </div>
+</div>
 
           {/* CABECERA DÍAS (impresión mensual) */}
           <div style={daysHeader} className={printMode === "monthly" ? "" : "no-print"}>
