@@ -359,16 +359,159 @@ function AppInner() {
   const [editKey, setEditKey] = useState<string | null>(null);
 
   const [form, setForm] = useState<NewTaskForm>({
-    producto: "SAS ALTAN",
+    producto: "",
     horasTotales: 30,
-    trabajadorId: "W2",
+    trabajadorId: "W1",
     fechaInicio: fmt(new Date()),
   });
+  // ⬇️ 3.3-C (estados de sesión/carga en la nube)
+  const [userId, setUserId] = useState<string | null>(null);
+  const [loadingCloud, setLoadingCloud] = useState(false);
 
   type PrintMode = "none" | "monthly" | "daily" | "dailyAll";
   const [printMode, setPrintMode] = useState<PrintMode>("none");
   const [printWorker, setPrintWorker] = useState<string>("W1");
   const [printDate, setPrintDate] = useState<string>(fmt(new Date()));
+
+  // 🔽🔽🔽 Pega aquí todo este bloque completo 🔽🔽🔽
+
+  // CARGA TODO DE SUPABASE PARA ESTE USUARIO
+ async function loadAll(uid: string) {
+  try {
+    // 1) Trabajadores
+    const { data: wData, error: wErr } = await supabase
+      .from("workers")
+      .select("*")
+      .eq("user_id", uid)
+      .order("nombre", { ascending: true });
+
+    if (wErr) console.error("workers error:", wErr);
+    if (wData) {
+      setWorkers(
+        wData.map((r: any) => ({
+          id: r.id,
+          nombre: r.nombre,
+          extraDefault: Number(r.extra_default ?? 0),
+          sabadoDefault: !!r.sabado_default,
+        }))
+      );
+    }
+
+    // 2) Bloques / Slices
+    const { data: sData, error: sErr } = await supabase
+      .from("task_slices")
+      .select("*")
+      .eq("user_id", uid);
+
+    if (sErr) console.error("task_slices error:", sErr);
+    if (sData) {
+      setSlices(
+        sData.map((r: any) => ({
+          id: r.id,
+          taskId: r.task_id,
+          producto: r.producto,
+          fecha: r.fecha,
+          horas: Number(r.horas),
+          trabajadorId: r.trabajador_id,
+          color: r.color,
+        }))
+      );
+    }
+
+    // 3) Overrides (extras/sábado)
+    const { data: oData, error: oErr } = await supabase
+      .from("day_overrides")
+      .select("*")
+      .eq("user_id", uid);
+
+    if (oErr) console.error("day_overrides error:", oErr);
+    if (oData) {
+      const obj: Record<string, Record<string, { extra: number; sabado: boolean }>> = {};
+      for (const r of oData as any[]) {
+        if (!obj[r.worker_id]) obj[r.worker_id] = {};
+        obj[r.worker_id][r.fecha] = {
+          extra: Number(r.extra ?? 0),
+          sabado: !!r.sabado,
+        };
+      }
+      setOverrides(obj);
+    }
+
+    // 4) Descripciones
+    const { data: dData, error: dErr } = await supabase
+      .from("product_descs")
+      .select("*")
+      .eq("user_id", uid);
+
+    if (dErr) console.error("product_descs error:", dErr);
+    if (dData) {
+      const map: Record<string, string> = {};
+      for (const r of dData as any[]) {
+        map[r.nombre] = r.texto ?? "";
+      }
+      setDescs(map);
+    }
+  } catch (e) {
+    console.error("loadAll() error:", e);
+  }
+
+  // ⬇️ 3.3-C (efecto que detecta sesión y carga Supabase)
+  useEffect(() => {
+  let mounted = true;
+
+  async function init() {
+    // 1) ¿Hay sesión ya abierta?
+    const { data } = await supabase.auth.getSession();
+    const uid = data.session?.user?.id ?? null;
+
+    if (!mounted) return;
+
+    setUserId(uid);
+
+    // 2) Si hay usuario, carga todo desde Supabase
+    if (uid) {
+      try {
+        setLoadingCloud(true);
+        await loadAll(uid);   // ← esta es tu función del paso 3.3-B
+      } finally {
+        if (mounted) setLoadingCloud(false);
+      }
+    } else {
+      // Si no hay sesión, puedes (opcional) limpiar estados locales:
+      // setWorkers([]); setSlices([]); setOverrides({}); setDescs({});
+    }
+  }
+
+  init();
+
+  // 3) Suscripción a cambios de sesión (login / logout)
+  const { data: sub } = supabase.auth.onAuthStateChange(async (_event, session) => {
+    if (!mounted) return;
+    const uid = session?.user?.id ?? null;
+    setUserId(uid);
+
+    if (uid) {
+      try {
+        setLoadingCloud(true);
+        await loadAll(uid);
+      } finally {
+        setLoadingCloud(false);
+      }
+    } else {
+      // Opcional: limpiar estados si haces logout
+      // setWorkers([]); setSlices([]); setOverrides({}); setDescs({});
+    }
+  });
+
+  return () => {
+    mounted = false;
+    sub?.subscription?.unsubscribe();
+  };
+}, []); // ← sin dependencias: solo al montar
+
+}
+
+
 
   function triggerPrint(mode: PrintMode) {
     setPrintMode(mode);
