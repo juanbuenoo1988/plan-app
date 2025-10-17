@@ -313,14 +313,14 @@ function planificarBloqueAuto(
   return out;
 }
 
-const PRINT_STYLES = `
+const PRINT_CSS = `
 @media print {
   .no-print { display: none !important; }
   .print-only { display: block !important; }
   body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   .worker-block { page-break-inside: avoid; margin-bottom: 16px; }
 }
-`;
+`;  
 /* ===================== Componente raíz ===================== */
 export default function Planificador() {
   return (
@@ -982,7 +982,7 @@ function deleteWorker(id: string) {
   /* ===================== Render ===================== */
   return (  
     <div style={appShell}>
-      <style dangerouslySetInnerHTML={{ __html: PRINT_STYLES }} />
+      <style dangerouslySetInnerHTML={{ __html: PRINT_CSS }} />
 
       {/* CABECERA SUPERIOR */}
       <header style={topHeader}>
