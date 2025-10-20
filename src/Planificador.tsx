@@ -106,7 +106,7 @@ function monthYear(d: Date | null | undefined): string {
   } catch { return ""; }
 }
 
-const weekDaysHeader = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
+const weekDaysHeader = ["LUNES", "MARTES", "MIERCOLES", "JUEVES", "VIERNES", "SABADO", "DOMINGO"];
 const PX_PER_HOUR = 20;
 
 function monthGrid(date: Date) {
@@ -1620,4 +1620,5 @@ const descItem: React.CSSProperties = {
   padding: 8,
   background: "#fafafa",
 };
+
 
