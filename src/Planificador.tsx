@@ -1439,7 +1439,7 @@ function DayCapacityBadge({ capacidad, usado }: { capacidad: number; usado: numb
 /* ===================== Estilos ===================== */
 const appShell: React.CSSProperties = {
   fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
-  background: "#e6f7fb",
+  background: "#a1d2ddff",
   minHeight: "100vh",
 };
 
