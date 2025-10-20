@@ -521,17 +521,15 @@ function AppInner() {
     setSavingCloud(true);
     try {
       // 1) Trabajadores
-      const wRows = workers.map(w => ({
-  user_id: uid,
+      const wRows = workers.map(w => ({ user_id: uid,
   id: w.id,
   nombre: w.nombre,
   extra_default: w.extraDefault,
   sabado_default: w.sabadoDefault,
-}));
+tenant_id: TENANT_ID, }));
 
-await supabase.from("workers").delete().eq("tenant_id", TENANT_ID);
 if (wRows.length) {
-  const { error } = await supabase.from("workers").insert(wRows);
+  const { error } = await supabase.from("workers").upsert(wRows, { onConflict: "tenant_id,id" });
   if (error) throw error;
 }
 
