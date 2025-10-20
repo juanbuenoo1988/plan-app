@@ -355,7 +355,7 @@ function AppInner() {
 
   const [form, setForm] = useState<NewTaskForm>({
     producto: "",
-    horasTotales: ,
+    horasTotales: 0,
     trabajadorId: "W1",
     fechaInicio: fmt(new Date()),
   });
