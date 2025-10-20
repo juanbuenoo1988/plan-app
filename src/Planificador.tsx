@@ -19,6 +19,9 @@ import { es } from "date-fns/locale";
 const PASSWORD = "taller2025"; // ← cámbiala por la que quieras
 const STORAGE_KEY = "planificador:v1";
 
+
+// Todos verán/editarán el mismo plan (tenant único)
+const TENANT_ID = "00000000-0000-0000-0000-000000000001";
 /* ===================== Error Boundary ===================== */
 class ErrorBoundary extends React.Component<
   { children: React.ReactNode },
@@ -401,7 +404,7 @@ function AppInner() {
       const { data: existingW, error: wErr } = await supabase
         .from("workers")
         .select("id")
-        .eq("user_id", uid)
+        .eq("tenant_id", TENANT_ID)
         .limit(1);
 
       if (wErr) {
@@ -440,7 +443,7 @@ function AppInner() {
       const { data: wData, error: wErr } = await supabase
         .from("workers")
         .select("*")
-        .eq("user_id", uid)
+        .eq("tenant_id", TENANT_ID)
         .order("nombre", { ascending: true });
 
       if (wErr) console.error("workers error:", wErr);
@@ -459,7 +462,7 @@ function AppInner() {
       const { data: sData, error: sErr } = await supabase
         .from("task_slices")
         .select("*")
-        .eq("user_id", uid);
+        .eq("tenant_id", TENANT_ID);
 
       if (sErr) console.error("task_slices error:", sErr);
       if (sData) {
@@ -480,7 +483,7 @@ function AppInner() {
       const { data: oData, error: oErr } = await supabase
         .from("day_overrides")
         .select("*")
-        .eq("user_id", uid);
+        .eq("tenant_id", TENANT_ID);
 
       if (oErr) console.error("day_overrides error:", oErr);
       if (oData) {
@@ -498,7 +501,7 @@ function AppInner() {
       const { data: dData, error: dErr } = await supabase
         .from("product_descs")
         .select("*")
-        .eq("user_id", uid);
+        .eq("tenant_id", TENANT_ID);
 
       if (dErr) console.error("product_descs error:", dErr);
       if (dData) {
@@ -526,7 +529,7 @@ function AppInner() {
   sabado_default: w.sabadoDefault,
 }));
 
-await supabase.from("workers").delete().eq("user_id", uid);
+await supabase.from("workers").delete().eq("tenant_id", TENANT_ID);
 if (wRows.length) {
   const { error } = await supabase.from("workers").insert(wRows);
   if (error) throw error;
@@ -543,7 +546,7 @@ if (wRows.length) {
         color: s.color,
         user_id: uid,
       }));
-      await supabase.from("task_slices").delete().eq("user_id", uid);
+      await supabase.from("task_slices").delete().eq("tenant_id", TENANT_ID);
       if (sRows.length) {
         const { error } = await supabase.from("task_slices").insert(sRows);
         if (error) throw error;
@@ -551,7 +554,7 @@ if (wRows.length) {
 
       // 3) Overrides (lo mismo: borramos y subimos snapshot plano)
       const oRows = flattenOverrides(overrides).map(r => ({ ...r, user_id: uid }));
-      await supabase.from("day_overrides").delete().eq("user_id", uid);
+      await supabase.from("day_overrides").delete().eq("tenant_id", TENANT_ID);
       if (oRows.length) {
         const { error } = await supabase.from("day_overrides").insert(oRows);
         if (error) throw error;
@@ -561,10 +564,10 @@ if (wRows.length) {
       const dRows = Object.entries(descs).map(([nombre, texto]) => ({
         nombre,
         texto,
-        user_id: uid,
-      }));
+        user_id: uid,  tenant_id: TENANT_ID,  // ← importante
+}));
 
-      await supabase.from("product_descs").delete().eq("user_id", uid);
+      await supabase.from("product_descs").delete().eq("tenant_id", TENANT_ID);
       if (dRows.length) {
         const { error } = await supabase.from("product_descs").insert(dRows);
         if (error) throw error;
@@ -1722,4 +1725,3 @@ const descItem: React.CSSProperties = {
   padding: 8,
   background: "#fafafa",
 };
-
