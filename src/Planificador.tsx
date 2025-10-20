@@ -1,3 +1,4 @@
+// src/Planificador.tsx
 import React, { useMemo, useRef, useState, useEffect } from "react";
 import { supabase } from "./lib/supabase";
 import {
@@ -106,8 +107,10 @@ function monthYear(d: Date | null | undefined): string {
   } catch { return ""; }
 }
 
-const weekDaysHeader = ["LUNES", "MARTES", "MIERCOLES", "JUEVES", "VIERNES", "SABADO", "DOMINGO"];
+const weekDaysHeader = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
 const PX_PER_HOUR = 20;
+const URGENT_COLOR = "#f59e0b";
+
 
 function monthGrid(date: Date) {
   const start = startOfWeek(startOfMonth(date), { weekStartsOn: 1 });
@@ -385,6 +388,12 @@ function AppInner() {
     return rows;
   }
 
+  // === NUEVO: helper seguro para leer del almacenamiento local ===
+  function safeLocal<T>(k: string, fallback: T) {
+    try { const s = localStorage.getItem(k); return s ? (JSON.parse(s) as T) : fallback; }
+    catch { return fallback; }
+  }
+
   // Crea datos base si el usuario aún no tiene nada en la nube
   async function seedIfEmpty(uid: string) {
     try {
@@ -510,19 +519,18 @@ function AppInner() {
     try {
       // 1) Trabajadores
       const wRows = workers.map(w => ({
-        user_id: uid,
-        id: w.id,
-        nombre: w.nombre,
-        extra_default: w.extraDefault,
-        sabado_default: w.sabadoDefault,
-      }));
+  user_id: uid,
+  id: w.id,
+  nombre: w.nombre,
+  extra_default: w.extraDefault,
+  sabado_default: w.sabadoDefault,
+}));
 
-      if (wRows.length) {
-        const { error } = await supabase
-          .from("workers")
-          .upsert(wRows, { onConflict: "user_id,id" }); // ⬅️ importante
-        if (error) throw error;
-      }
+await supabase.from("workers").delete().eq("user_id", uid);
+if (wRows.length) {
+  const { error } = await supabase.from("workers").insert(wRows);
+  if (error) throw error;
+}
 
       // 2) Slices (borramos todos del usuario y reinsertamos el snapshot actual)
       const sRows = slices.map(s => ({
@@ -594,8 +602,14 @@ function AppInner() {
           if (mounted) setLoadingCloud(false);
         }
       } else {
-        // Si no hay sesión, puedes (opcional) limpiar estados locales:
-        // setWorkers([]); setSlices([]); setOverrides({}); setDescs({});
+        // === NUEVO: si NO hay sesión, intenta cargar del almacenamiento local
+        const snap = safeLocal<any>(STORAGE_KEY, null as any);
+        if (snap) {
+          setWorkers(snap.workers ?? []);
+          setSlices(snap.slices ?? []);
+          setOverrides(snap.overrides ?? {});
+          setDescs(snap.descs ?? {});
+        }
       }
     }
 
@@ -656,6 +670,13 @@ function AppInner() {
       if (saveTimer.current) window.clearTimeout(saveTimer.current);
     };
   }, [workers, slices, overrides, descs, userId, loadingCloud]);
+
+  // === NUEVO: guardado local automático cuando NO hay sesión ===
+  useEffect(() => {
+    if (userId) return; // si hay sesión, no guardes en local
+    const snapshot = JSON.stringify({ workers, slices, overrides, descs });
+    try { localStorage.setItem(STORAGE_KEY, snapshot); } catch {}
+  }, [workers, slices, overrides, descs, userId]);
 
   function triggerPrint(mode: PrintMode) {
     setPrintMode(mode);
@@ -736,6 +757,26 @@ function AppInner() {
     if (!canEdit) return;
     setWorkers((prev) => prev.map((w) => (w.id === id ? { ...w, ...patch } : w)));
   }
+// ——— Eliminar trabajador + limpiar sus datos ———
+function deleteWorker(id: string) {
+  if (!canEdit) return;
+  const w = workers.find(x => x.id === id);
+  const name = w?.nombre || id;
+  if (!confirm(`¿Eliminar a "${name}" y todas sus asignaciones? Esta acción no se puede deshacer.`)) return;
+
+  // 1) Quita el trabajador de la lista
+  setWorkers(prev => prev.filter(x => x.id !== id));
+
+  // 2) Elimina todos sus bloques/horas
+  setSlices(prev => prev.filter(s => s.trabajadorId !== id));
+
+  // 3) Borra overrides (extras/sábados) del trabajador
+  setOverrides(prev => {
+    const copy = { ...prev };
+    delete copy[id];
+    return copy;
+  });
+}
 
   // Drag & Drop
   const dragIdRef = useRef<string | null>(null);
@@ -847,7 +888,7 @@ function AppInner() {
     const urgent: QueueItem = {
       producto: prod.trim(),
       horas: Math.round(h * 2) / 2,
-      color: "#f59e0b",        // amarillo para urgencias
+      color: URGENT_COLOR,        // amarillo para urgencias
       taskId: "T" + Math.random().toString(36).slice(2, 8),
     };
 
@@ -1087,19 +1128,56 @@ function AppInner() {
                     <th style={th}>Nombre</th>
                     <th style={th}>Extra por defecto (L–V)</th>
                     <th style={th}>Sábado por defecto</th>
+                    <th style={th}>Acciones</th>
                   </tr>
                 </thead>
                 <tbody>
                   {workers.map((w) => (
-                    <tr key={`row-${w.id}`}>
-                      <td style={td}><input style={disabledIf(input, locked)} disabled={locked} value={w.nombre} onChange={(e) => editWorker(w.id, { nombre: e.target.value })} /></td>
-                      <td style={td}><input style={disabledIf(input, locked)} disabled={locked} type="number" min={0} step={0.5} value={w.extraDefault} onChange={(e) => editWorker(w.id, { extraDefault: Number(e.target.value) })} /></td>
-                      <td style={td}><input disabled={locked} type="checkbox" checked={w.sabadoDefault} onChange={(e) => editWorker(w.id, { sabadoDefault: e.target.checked })} /></td>
-                    </tr>
-                  ))}
+    <tr key={`row-${w.id}`}>
+      <td style={td}>
+        <input
+          style={disabledIf(input, locked)}
+          disabled={locked}
+          value={w.nombre}
+          onChange={(e) => editWorker(w.id, { nombre: e.target.value })}
+        />
+      </td>
+      <td style={td}>
+        <input
+          style={disabledIf(input, locked)}
+          disabled={locked}
+          type="number"
+          min={0}
+          step={0.5}
+          value={w.extraDefault}
+          onChange={(e) => editWorker(w.id, { extraDefault: Number(e.target.value) })}
+        />
+      </td>
+      <td style={td}>
+        <input
+          disabled={locked}
+          type="checkbox"
+          checked={w.sabadoDefault}
+          onChange={(e) => editWorker(w.id, { sabadoDefault: e.target.checked })}
+        />
+      </td>
+
+      {/* NUEVO: columna de acciones */}
+      <td style={{ ...td, width: 1, whiteSpace: "nowrap" }}>
+        <button
+          style={disabledIf(btnTinyDanger, locked)}
+          disabled={locked}
+          onClick={() => deleteWorker(w.id)}
+          title="Eliminar trabajador y todas sus asignaciones"
+        >
+          🗑 Eliminar
+        </button>
+      </td>
+    </tr>
+  ))}
                 </tbody>
               </table>
-              <div style={{ fontSize: 12, color: "#6b7280", marginTop: 6 }}>
+              <div style={{ fontSize: 18, color: "#000000ff", marginTop: 6 }}>
                 {locked ? "Bloqueado: solo lectura." :
                 <>Doble clic en una <b>celda</b> para fijar <b>extras/sábado</b> de ese <b>día</b>. Botón <b>＋</b> inserta un bloque desde ese día.</>}
               </div>
@@ -1147,16 +1225,18 @@ function AppInner() {
                         >
                           {/* Cabecera del día: número + avisos + botón ＋ */}
 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-  <div style={{ ...dayLabel, fontSize: 20, fontWeight: 800, color: "#000000" }}>
-  {format(d, "d")}
-  {" "}
-  {ow ? (
-    <span style={{ fontSize: 14, color: "#d81327", fontWeight: 700, marginLeft: 4 }}>
-      {getDay(d) !== 6 && ow.extra && Number(ow.extra) > 0 ? ("+" + ow.extra + " h extra") : ""}
-      {getDay(d) === 6 && ow.sabado ? "Sábado ON" : ""}
-    </span>
-  ) : null}
-</div>
+  <div style={dayLabel}>
+    {/* Solo el número del día */}
+    {format(d, "d")}
+    {" "}
+    {/* Avisos en rojo: extras o sábado ON */}
+    {ow ? (
+      <span style={{ fontSize: 14, color: "#d81327", fontWeight: 700 }}>
+       {getDay(d) !== 6 && ow.extra && Number(ow.extra) > 0 ? ("+" + ow.extra + " h extra") : ""}
+       {getDay(d) === 6 && ow.sabado ? "Sábado ON" : ""}
+      </span>
+    ) : null}
+  </div>
 
   {/* Botón + para insertar manual */}
   {canEdit && (
@@ -1174,6 +1254,10 @@ function AppInner() {
                           <div style={horizontalLane}>
                             {delDia.map((s) => {
                               const desc = descs[s.producto];
+                              const isUrgent =
+                               s.color === URGENT_COLOR ||
+                               /^⚠️/.test(s.producto) ||
+                              /urgenc/i.test(s.producto);
                               return (
                                 <div
                                   key={s.id}
@@ -1195,7 +1279,25 @@ function AppInner() {
                                   )}
 
                                   <div style={blockTop}>
-                                    <span style={productFull}>{s.producto}</span>
+                                    <span style={productFull}>
+                                      {isUrgent && (
+                                        <svg
+                                          xmlns="http://www.w3.org/2000/svg"
+                                          width="14"
+                                          height="14"
+                                          viewBox="0 0 24 24"
+                                          fill="#fff"
+                                          stroke="#000"
+                                          strokeWidth="2"
+                                          style={{ marginRight: 6 }}
+                                        >
+                                          <path d="M10.29 3.86L1.82 18a1 1 0 00.86 1.5h18.64a1 1 0 00.86-1.5L13.71 3.86a1 1 0 00-1.72 0z" />
+                                          <line x1="12" y1="9" x2="12" y2="13" />
+                                          <line x1="12" y1="17" x2="12" y2="17" />
+                                        </svg>
+                                      )}
+                                      {s.producto}
+                                    </span>
                                     <span>{s.horas}h</span>
                                   </div>
                                   {desc ? <div style={miniHint}>ⓘ</div> : null}
@@ -1439,7 +1541,7 @@ function DayCapacityBadge({ capacidad, usado }: { capacidad: number; usado: numb
 /* ===================== Estilos ===================== */
 const appShell: React.CSSProperties = {
   fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
-  background: "#a1d2ddff",
+  background: "#e6f7fb",
   minHeight: "100vh",
 };
 
@@ -1620,5 +1722,4 @@ const descItem: React.CSSProperties = {
   padding: 8,
   background: "#fafafa",
 };
-
 
