@@ -1079,17 +1079,17 @@ function deleteWorker(id: string) {
       payload.storage_path = storagePath;
 
       // 2) Registrar en la tabla (histórico/consulta rápida)
-      const { error: insErr } = await supabase.from("work_parts").insert({
-        user_id: payload.user_id,
-        tenant_id: payload.tenant_id,
-        fecha: payload.fecha,
-        trabajador_id: payload.trabajador_id,
-        trabajador_nombre: payload.trabajador_nombre,
-        producto: payload.producto,
-        horas_reales: payload.horas_reales,
-        observaciones: payload.observaciones,
-        storage_path: payload.storage_path,
-      });
+      const { error } = await supabase.from("work_parts").insert({
+  user_id: payload.user_id,
+  tenant_id: TENANT_ID,      // ← IMPRESCINDIBLE en tu modelo
+  fecha: payload.fecha,
+  trabajador_id: payload.trabajador_id,
+  trabajador_nombre: payload.trabajador_nombre,
+  producto: payload.producto,
+  horas_reales: payload.horas_reales,
+  observaciones: payload.observaciones,
+  storage_path: payload.storage_path,
+});
       if (insErr) throw insErr;
 
       setParteMsg("✅ Parte guardado correctamente.");
