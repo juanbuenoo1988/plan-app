@@ -378,7 +378,38 @@ function AppInner() {
   const [printMode, setPrintMode] = useState<PrintMode>("none");
   const [printWorker, setPrintWorker] = useState<string>("W1");
   const [printDate, setPrintDate] = useState<string>(fmt(new Date()));
+// === Partes de trabajo ===
+const [showPartes, setShowPartes] = useState(false);
+const [parteWorkerId, setParteWorkerId] = useState<string>("W1");
+const [parteQuery, setParteQuery] = useState<string>("");
+const [parteProducto, setParteProducto] = useState<string>("");
+const [parteHoras, setParteHoras] = useState<number>(0);
 
+// Productos planificados para el trabajador seleccionado (únicos, según el calendario)
+const productosDelTrabajador = useMemo(() => {
+  const set = new Set<string>();
+  slices
+    .filter(s => s.trabajadorId === parteWorkerId)
+    .forEach(s => set.add(s.producto.trim()));
+  return [...set].sort((a,b)=>a.localeCompare(b));
+}, [slices, parteWorkerId]);
+
+// Sugerencias por texto
+const sugerenciasProductos = useMemo(() => {
+  const q = parteQuery.trim().toLowerCase();
+  if (!q) return productosDelTrabajador;
+  return productosDelTrabajador.filter(p => p.toLowerCase().includes(q));
+}, [productosDelTrabajador, parteQuery]);
+
+// Elegir producto desde buscador/lista
+function elegirProducto(p: string) {
+  setParteProducto(p);
+  setParteQuery(p);
+  const totalPlan = slices
+    .filter(s => s.trabajadorId === parteWorkerId && s.producto.trim() === p.trim())
+    .reduce((a, s) => a + s.horas, 0);
+  setParteHoras(Math.round(totalPlan * 2) / 2); // valor inicial sugerido
+}
   // 🔽🔽🔽 Pega aquí todo este bloque completo 🔽🔽🔽
 
   function flattenOverrides(ov: OverridesState) {
@@ -1023,7 +1054,15 @@ function deleteWorker(id: string) {
 
     {/* ——— separador visual ——— */}
     <div style={{ width: 1, height: 22, background: "rgba(255,255,255,.25)", margin: "0 6px" }} />
-
+    
+    <button
+  style={btnPrimary}
+  className="no-print"
+  onClick={() => setShowPartes(v => !v)}
+  title="Abrir partes de trabajo"
+>
+  📋 Partes de trabajo
+</button>
     {/* === UI de autenticación === */}
     {userId ? (
       // Conectado
@@ -1076,6 +1115,111 @@ function deleteWorker(id: string) {
               <button style={btnPrimary} onClick={() => triggerPrint("dailyAll")}>🖨️ Imprimir diario (todos)</button>
             </div>
           </div>
+
+{showPartes && (
+  <div style={{ ...panel, borderColor: "#c7d2fe", background: "#eef2ff" }} className="no-print">
+    <div style={panelTitle}>Partes de trabajo</div>
+    <div style={{ display: "grid", gap: 10 }}>
+      {/* Trabajador */}
+      <label style={label}>Trabajador</label>
+      <select
+        style={disabledIf(input, locked)}
+        disabled={locked}
+        value={parteWorkerId}
+        onChange={(e) => { setParteWorkerId(e.target.value); setParteProducto(""); setParteQuery(""); }}
+      >
+        {workers.map(w => <option key={`pw-${w.id}`} value={w.id}>{w.nombre}</option>)}
+      </select>
+
+      {/* Buscador de descripción (producto) */}
+      <label style={label}>Descripción / Producto (de los bloques del calendario)</label>
+      <input
+        style={disabledIf(input, locked)}
+        disabled={locked}
+        placeholder="Escribe para buscar…"
+        value={parteQuery}
+        onChange={(e) => { setParteQuery(e.target.value); setParteProducto(""); }}
+        list="parte-productos"
+      />
+      <datalist id="parte-productos">
+        {sugerenciasProductos.map(p => <option key={`sug-${p}`} value={p} />)}
+      </datalist>
+
+      {/* Lista rápida de sugerencias (opcional) */}
+      {!!sugerenciasProductos.length && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {sugerenciasProductos.slice(0, 10).map(p => (
+            <button
+              key={`chip-${p}`}
+              style={disabledIf({ ...btnTiny, borderColor: "#a5b4fc", background: "#fff" }, locked)}
+              disabled={locked}
+              onClick={() => elegirProducto(p)}
+              title="Usar esta descripción"
+            >
+              {p}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Si hay producto elegido, mostramos la sección de horas reales */}
+      {parteQuery.trim() && (
+        <div style={{ marginTop: 6, display: "grid", gap: 8 }}>
+          <div style={{ fontWeight: 700, color: "#1f2937" }}>
+            Seleccionado: {parteProducto || parteQuery}
+          </div>
+
+          {/* Descripción larga si existe */}
+          {descs[parteProducto || parteQuery] ? (
+            <div style={{ fontSize: 12, background: "#fff", border: "1px solid #e5e7eb", borderRadius: 8, padding: 8 }}>
+              {descs[parteProducto || parteQuery]}
+            </div>
+          ) : (
+            <div style={{ fontSize: 12, color: "#6b7280" }}>
+              No hay descripción guardada para este producto en el panel de la derecha.
+            </div>
+          )}
+
+          {/* Campo para horas reales */}
+          <label style={label}>Horas reales trabajadas</label>
+          <input
+            style={disabledIf(input, locked)}
+            disabled={locked}
+            type="number"
+            step={0.5}
+            min={0}
+            value={parteHoras}
+            onChange={(e) => setParteHoras(Number(e.target.value))}
+          />
+
+          {/* Botones de acción (temporal) */}
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              style={disabledIf(btnPrimary, locked)}
+              disabled={locked}
+              onClick={() => {
+                alert(
+                  `Parte registrado (temporal):\n- Trabajador: ${
+                    workers.find(w=>w.id===parteWorkerId)?.nombre || parteWorkerId
+                  }\n- Producto: ${parteProducto || parteQuery}\n- Horas reales: ${parteHoras}h`
+                );
+              }}
+            >
+              💾 Registrar (temporal)
+            </button>
+            <button
+              style={btnLabeled}
+              onClick={() => { setParteProducto(""); setParteQuery(""); setParteHoras(0); }}
+            >
+              Limpiar
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  </div>
+)}
+
 
           {/* FORM + TRABAJADORES */}
           <div style={panelRow} className="no-print">
