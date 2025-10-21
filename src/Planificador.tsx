@@ -95,6 +95,28 @@ type CloudState = {
   base?: string;                     // mes base (guardado como texto ISO)
   locked?: boolean;                  // si el planificador está bloqueado
 };
+// === Tipos para Partes de trabajo ===
+type ParteTrabajo = {
+  id?: string;
+  fecha: string;          // YYYY-MM-DD
+  trabajadorId: string;
+  producto: string;       // clave/descripcion seleccionada
+  horasReales: number;
+  observaciones: string;
+};
+// === Parte de trabajo (para guardar en nube/BD/JSON) ===
+type WorkPartPayload = {
+  user_id: string;
+  tenant_id: string;
+  fecha: string;                 // YYYY-MM-DD
+  trabajador_id: string;
+  trabajador_nombre: string;
+  producto: string;              // nombre del bloque/“producto”
+  horas_reales: number;          // horas reales trabajadas
+  observaciones: string;
+  created_at: string;            // ISO
+  storage_path?: string;         // ruta de storage donde se guardó el JSON
+};
 
 /* ===================== Util ===================== */
 const fmt = (d: Date | null | undefined) => {
@@ -378,57 +400,6 @@ function AppInner() {
   const [printMode, setPrintMode] = useState<PrintMode>("none");
   const [printWorker, setPrintWorker] = useState<string>("W1");
   const [printDate, setPrintDate] = useState<string>(fmt(new Date()));
-
-// === Partes de trabajo ===
-const [showPartes, setShowPartes] = useState(false);
-
-// 1) Fecha primero
-const [parteFecha, setParteFecha] = useState<string>(fmt(new Date()));
-
-// 2) Luego trabajador
-const [parteWorkerId, setParteWorkerId] = useState<string>("W1");
-
-// 3) Búsqueda/selección de producto (de los bloques del calendario)
-const [parteQuery, setParteQuery] = useState<string>("");
-const [parteProducto, setParteProducto] = useState<string>("");
-
-// 4) Horas reales
-const [parteHoras, setParteHoras] = useState<number>(0);
-
-// Productos planificados para el trabajador seleccionado EN ESE DÍA (únicos)
-const productosDelTrabajador = useMemo(() => {
-  const set = new Set<string>();
-  slices
-    .filter(s =>
-      s.trabajadorId === parteWorkerId &&
-      s.fecha === parteFecha
-    )
-    .forEach(s => set.add(s.producto.trim()));
-  return [...set].sort((a,b)=>a.localeCompare(b));
-}, [slices, parteWorkerId, parteFecha]);
-
-// Sugerencias por texto
-const sugerenciasProductos = useMemo(() => {
-  const q = parteQuery.trim().toLowerCase();
-  if (!q) return productosDelTrabajador;
-  return productosDelTrabajador.filter(p => p.toLowerCase().includes(q));
-}, [productosDelTrabajador, parteQuery]);
-
-// Elegir producto desde buscador/lista
-function elegirProducto(p: string) {
-  setParteProducto(p);
-  setParteQuery(p);
-  // Horas planificadas para ese trabajador, ese día y ese producto
-  const totalPlan = slices
-    .filter(s =>
-      s.trabajadorId === parteWorkerId &&
-      s.fecha === parteFecha &&
-      s.producto.trim() === p.trim()
-    )
-    .reduce((a, s) => a + s.horas, 0);
-  // Sugerimos como valor inicial las horas planificadas ese día
-  setParteHoras(Math.round(totalPlan * 2) / 2);
-}
 
   // 🔽🔽🔽 Pega aquí todo este bloque completo 🔽🔽🔽
 
@@ -986,6 +957,35 @@ function deleteWorker(id: string) {
   const [ebMatches, setEbMatches] = useState<FoundBlock[]>([]);
   const [ebSelected, setEbSelected] = useState<string>("");
   const [ebHoras, setEbHoras] = useState<number>(0);
+    // ====== Partes de trabajo (UI y datos) ======
+  const [showPartes, setShowPartes] = useState<boolean>(false);
+  const [parteFecha, setParteFecha] = useState<string>(fmt(new Date()));
+  const [parteTrabajador, setParteTrabajador] = useState<string>("W1");
+  const [parteQuery, setParteQuery] = useState<string>("");
+  const [parteProducto, setParteProducto] = useState<string>("");
+  const [parteHoras, setParteHoras] = useState<number>(0);
+  const [parteObs, setParteObs] = useState<string>("");
+  const [savingParte, setSavingParte] = useState<boolean>(false);
+  const [parteMsg, setParteMsg] = useState<string | null>(null);
+
+  // Productos/bloques disponibles (del calendario) para ese trabajador y día
+  const productosDisponibles = useMemo(() => {
+    const set = new Set<string>();
+    const f = parteFecha;
+    const w = parteTrabajador;
+    slices.forEach(s => {
+      if (s.trabajadorId === w && (!f || s.fecha === f)) set.add(s.producto);
+    });
+    return Array.from(set).sort((a,b)=>a.localeCompare(b));
+  }, [slices, parteFecha, parteTrabajador]);
+
+  // Filtro buscador
+  const productosFiltrados = useMemo(() => {
+    const q = parteQuery.trim().toLowerCase();
+    if (!q) return productosDisponibles;
+    return productosDisponibles.filter(p => p.toLowerCase().includes(q));
+  }, [productosDisponibles, parteQuery]);
+
 
   function buscarBloques() {
     const w = workers.find((x) => x.id === ebWorker);
@@ -1035,6 +1035,68 @@ function deleteWorker(id: string) {
     });
   }
 
+    // Guardar parte de trabajo: sube un JSON a Storage y registra fila en BD
+  async function guardarParteTrabajo() {
+    if (!userId) { alert("Inicia sesión para guardar en la nube."); return; }
+    const w = workers.find(x => x.id === parteTrabajador);
+    if (!w) { alert("Trabajador no válido."); return; }
+    if (!parteFecha) { alert("Elige una fecha."); return; }
+    if (!parteProducto) { alert("Elige un producto/bloque."); return; }
+    if (!isFinite(parteHoras) || parteHoras < 0) { alert("Horas reales inválidas."); return; }
+
+    const payload: WorkPartPayload = {
+      user_id: userId,
+      tenant_id: TENANT_ID,
+      fecha: parteFecha,
+      trabajador_id: parteTrabajador,
+      trabajador_nombre: w.nombre,
+      producto: parteProducto,
+      horas_reales: Math.round(Number(parteHoras)*2)/2,
+      observaciones: parteObs.trim(),
+      created_at: new Date().toISOString(),
+    };
+
+    setSavingParte(true);
+    setParteMsg(null);
+    try {
+      // 1) Subir JSON a Storage (bucket: partes-taller-inoxidable, carpeta: "partes taller inoxidable")
+      const safeName = `${payload.fecha} - ${w.nombre}.json`;
+      const storagePath = `partes taller inoxidable/${safeName}`;
+
+      const { error: upErr } = await supabase.storage
+        .from("partes-taller-inoxidable")   // ← crea este bucket en el panel si no existe
+        .upload(storagePath, new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }), {
+          upsert: true,                     // sobrescribe si ya existe
+        });
+
+      if (upErr) throw upErr;
+      payload.storage_path = storagePath;
+
+      // 2) Registrar en la tabla (histórico/consulta rápida)
+      const { error: insErr } = await supabase.from("work_parts").insert({
+        user_id: payload.user_id,
+        tenant_id: payload.tenant_id,
+        fecha: payload.fecha,
+        trabajador_id: payload.trabajador_id,
+        trabajador_nombre: payload.trabajador_nombre,
+        producto: payload.producto,
+        horas_reales: payload.horas_reales,
+        observaciones: payload.observaciones,
+        storage_path: payload.storage_path,
+      });
+      if (insErr) throw insErr;
+
+      setParteMsg("✅ Parte guardado correctamente.");
+      // Si quieres limpiar campos, descomenta:
+      // setParteHoras(0); setParteObs(""); setParteProducto("");
+    } catch (e: any) {
+      setParteMsg(`⚠️ Error: ${e.message ?? String(e)}`);
+    } finally {
+      setSavingParte(false);
+    }
+  }
+
+
   /* ===================== Render ===================== */
   return (
     <div style={appShell}>
@@ -1074,15 +1136,18 @@ function deleteWorker(id: string) {
 
     {/* ——— separador visual ——— */}
     <div style={{ width: 1, height: 22, background: "rgba(255,255,255,.25)", margin: "0 6px" }} />
-    
+
+        {/* Botón para abrir/cerrar la pestaña de Partes */}
     <button
-  style={btnPrimary}
-  className="no-print"
-  onClick={() => setShowPartes(v => !v)}
-  title="Abrir partes de trabajo"
->
-  📋 Partes de trabajo
-</button>
+      className="no-print"
+      style={btnPrimary}
+      onClick={() => setShowPartes(v => !v)}
+      title="Crear un parte de trabajo"
+    >
+      📋 Partes de trabajo
+    </button>
+
+
     {/* === UI de autenticación === */}
     {userId ? (
       // Conectado
@@ -1123,129 +1188,86 @@ function deleteWorker(id: string) {
       <div style={mainLayout}>
         {/* COLUMNA PRINCIPAL */}
         <div style={{ minWidth: 0 }}>
-         
-{showPartes && (
-  <div style={{ ...panel, borderColor: "#c7d2fe", background: "#eef2ff" }} className="no-print">
-    <div style={panelTitle}>Partes de trabajo</div>
-    <div style={{ display: "grid", gap: 10 }}>
-      {/* === 1) FECHA === */}
-      <label style={label}>Fecha</label>
-      <input
-        style={disabledIf(input, locked)}
-        disabled={locked}
-        type="date"
-        value={parteFecha}
-        onChange={(e) => {
-          setParteFecha(e.target.value);
-          // Reiniciamos selección al cambiar el día
-          setParteProducto("");
-          setParteQuery("");
-          setParteHoras(0);
-        }}
-      />
-
-      {/* === 2) TRABAJADOR === */}
-      <label style={label}>Trabajador</label>
-      <select
-        style={disabledIf(input, locked)}
-        disabled={locked}
-        value={parteWorkerId}
-        onChange={(e) => {
-          setParteWorkerId(e.target.value);
-          setParteProducto("");
-          setParteQuery("");
-          setParteHoras(0);
-        }}
-      >
-        {workers.map(w => <option key={`pw-${w.id}`} value={w.id}>{w.nombre}</option>)}
-      </select>
-
-      {/* === 3) BUSCADOR DE PRODUCTO (de ese día y trabajador) === */}
-      <label style={label}>Descripción / Producto (de ese día)</label>
-      <input
-        style={disabledIf(input, locked)}
-        disabled={locked}
-        placeholder="Escribe para buscar…"
-        value={parteQuery}
-        onChange={(e) => { setParteQuery(e.target.value); setParteProducto(""); }}
-        list="parte-productos"
-      />
-      <datalist id="parte-productos">
-        {sugerenciasProductos.map(p => <option key={`sug-${p}`} value={p} />)}
-      </datalist>
-
-      {!!sugerenciasProductos.length && (
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-          {sugerenciasProductos.slice(0, 10).map(p => (
-            <button
-              key={`chip-${p}`}
-              style={disabledIf({ ...btnTiny, borderColor: "#a5b4fc", background: "#fff" }, locked)}
-              disabled={locked}
-              onClick={() => elegirProducto(p)}
-              title="Usar esta descripción"
-            >
-              {p}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* === 4) HORAS REALES === */}
-      {parteQuery.trim() && (
-        <div style={{ marginTop: 6, display: "grid", gap: 8 }}>
-          <div style={{ fontWeight: 700, color: "#1f2937" }}>
-            Seleccionado: {parteProducto || parteQuery}
+          {/* BARRA IMPRESIÓN */}
+          <div style={bar} className="no-print">
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button style={btnLabeled} onClick={() => triggerPrint("monthly")}>🖨️ Imprimir mensual</button>
+              <select style={input} value={printWorker} onChange={(e) => setPrintWorker(e.target.value)}>
+                {workers.map((w) => <option key={`op-${w.id}`} value={w.id}>{w.nombre}</option>)}
+              </select>
+              <input style={input} type="date" value={printDate} onChange={(e) => setPrintDate(e.target.value)} />
+              <button style={btnLabeled} onClick={() => triggerPrint("daily")}>🖨️ Imprimir diario</button>
+              <button style={btnPrimary} onClick={() => triggerPrint("dailyAll")}>🖨️ Imprimir diario (todos)</button>
+            </div>
           </div>
 
-          {descs[parteProducto || parteQuery] ? (
-            <div style={{ fontSize: 12, background: "#fff", border: "1px solid #e5e7eb", borderRadius: 8, padding: 8 }}>
-              {descs[parteProducto || parteQuery]}
-            </div>
-          ) : (
-            <div style={{ fontSize: 12, color: "#6b7280" }}>
-              No hay descripción guardada para este producto en el panel de la derecha.
+
+                    {/* ====== Pestaña: Partes de trabajo ====== */}
+          {showPartes && (
+            <div style={{ ...panel, marginBottom: 12 }} className="no-print">
+              <div style={panelTitle}>Partes de trabajo</div>
+              <div style={{ display: "grid", gap: 10 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "140px 1fr", gap: 8, alignItems: "center" }}>
+                  <label style={label}>Día</label>
+                  <input style={input} type="date" value={parteFecha} onChange={e=>setParteFecha(e.target.value)} />
+
+                  <label style={label}>Trabajador</label>
+                  <select style={input} value={parteTrabajador} onChange={e=>setParteTrabajador(e.target.value)}>
+                    {workers.map(w => <option key={`p-w-${w.id}`} value={w.id}>{w.nombre}</option>)}
+                  </select>
+
+                  <label style={label}>Buscar bloque</label>
+                  <input
+                    style={input}
+                    placeholder="Escribe para filtrar por nombre del bloque/producto"
+                    value={parteQuery}
+                    onChange={e=>setParteQuery(e.target.value)}
+                  />
+
+                  <label style={label}>Descripción/bloque</label>
+                  <select
+                    style={input}
+                    value={parteProducto}
+                    onChange={e=>setParteProducto(e.target.value)}
+                  >
+                    <option value="">— elige —</option>
+                    {productosFiltrados.map(p => (
+                      <option key={`p-opt-${p}`} value={p}>{p}</option>
+                    ))}
+                  </select>
+
+                  <label style={label}>Horas reales</label>
+                  <input
+                    style={input}
+                    type="number"
+                    min={0}
+                    step={0.5}
+                    value={parteHoras}
+                    onChange={e=>setParteHoras(Number(e.target.value))}
+                  />
+
+                  <label style={label}>Observaciones</label>
+                  <textarea
+                    style={textarea}
+                    rows={4}
+                    placeholder="Incidencias, materiales, notas…"
+                    value={parteObs}
+                    onChange={e=>setParteObs(e.target.value)}
+                  />
+                </div>
+
+                <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                  <button style={btnPrimary} onClick={guardarParteTrabajo} disabled={savingParte}>
+                    {savingParte ? "Guardando…" : "💾 Guardar parte"}
+                  </button>
+                  {parteMsg && <span style={{ fontSize: 13 }}>{parteMsg}</span>}
+                  <div style={{ fontSize: 12, color: "#6b7280" }}>
+                    Se guardará en la carpeta <b>“partes taller inoxidable”</b> de tu almacenamiento.
+                  </div>
+                </div>
+              </div>
             </div>
           )}
-
-          <label style={label}>Horas reales trabajadas</label>
-          <input
-            style={disabledIf(input, locked)}
-            disabled={locked}
-            type="number"
-            step={0.5}
-            min={0}
-            value={parteHoras}
-            onChange={(e) => setParteHoras(Number(e.target.value))}
-          />
-
-          <div style={{ display: "flex", gap: 8 }}>
-            <button
-              style={disabledIf(btnPrimary, locked)}
-              disabled={locked}
-              onClick={() => {
-                alert(
-                  `Parte registrado (temporal):\n` +
-                  `- Fecha: ${parteFecha}\n` +
-                  `- Trabajador: ${workers.find(w=>w.id===parteWorkerId)?.nombre || parteWorkerId}\n` +
-                  `- Producto: ${parteProducto || parteQuery}\n` +
-                  `- Horas reales: ${parteHoras}h`
-                );
-              }}
-            >
-              💾 Registrar (temporal)
-            </button>
-            <button
-              style={btnLabeled}
-              onClick={() => { setParteProducto(""); setParteQuery(""); setParteHoras(0); }}
-            >
-              Limpiar
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
-  </div>
-)}
 
 
           {/* FORM + TRABAJADORES */}
