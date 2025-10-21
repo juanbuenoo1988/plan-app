@@ -1138,7 +1138,7 @@ function deleteWorker(id: string) {
     const el = workerRefs.current[v];
     if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
   }, 0);
-})}>
+}}>
                     {workers.map((w) => <option key={`wopt-${w.id}`} value={w.id}>{w.nombre}</option>)}
                   </select>
                   <label style={label}>Fecha inicio</label>
