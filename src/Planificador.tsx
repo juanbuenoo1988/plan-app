@@ -378,21 +378,34 @@ function AppInner() {
   const [printMode, setPrintMode] = useState<PrintMode>("none");
   const [printWorker, setPrintWorker] = useState<string>("W1");
   const [printDate, setPrintDate] = useState<string>(fmt(new Date()));
+
 // === Partes de trabajo ===
 const [showPartes, setShowPartes] = useState(false);
+
+// 1) Fecha primero
+const [parteFecha, setParteFecha] = useState<string>(fmt(new Date()));
+
+// 2) Luego trabajador
 const [parteWorkerId, setParteWorkerId] = useState<string>("W1");
+
+// 3) Búsqueda/selección de producto (de los bloques del calendario)
 const [parteQuery, setParteQuery] = useState<string>("");
 const [parteProducto, setParteProducto] = useState<string>("");
+
+// 4) Horas reales
 const [parteHoras, setParteHoras] = useState<number>(0);
 
-// Productos planificados para el trabajador seleccionado (únicos, según el calendario)
+// Productos planificados para el trabajador seleccionado EN ESE DÍA (únicos)
 const productosDelTrabajador = useMemo(() => {
   const set = new Set<string>();
   slices
-    .filter(s => s.trabajadorId === parteWorkerId)
+    .filter(s =>
+      s.trabajadorId === parteWorkerId &&
+      s.fecha === parteFecha
+    )
     .forEach(s => set.add(s.producto.trim()));
   return [...set].sort((a,b)=>a.localeCompare(b));
-}, [slices, parteWorkerId]);
+}, [slices, parteWorkerId, parteFecha]);
 
 // Sugerencias por texto
 const sugerenciasProductos = useMemo(() => {
@@ -405,11 +418,18 @@ const sugerenciasProductos = useMemo(() => {
 function elegirProducto(p: string) {
   setParteProducto(p);
   setParteQuery(p);
+  // Horas planificadas para ese trabajador, ese día y ese producto
   const totalPlan = slices
-    .filter(s => s.trabajadorId === parteWorkerId && s.producto.trim() === p.trim())
+    .filter(s =>
+      s.trabajadorId === parteWorkerId &&
+      s.fecha === parteFecha &&
+      s.producto.trim() === p.trim()
+    )
     .reduce((a, s) => a + s.horas, 0);
-  setParteHoras(Math.round(totalPlan * 2) / 2); // valor inicial sugerido
+  // Sugerimos como valor inicial las horas planificadas ese día
+  setParteHoras(Math.round(totalPlan * 2) / 2);
 }
+
   // 🔽🔽🔽 Pega aquí todo este bloque completo 🔽🔽🔽
 
   function flattenOverrides(ov: OverridesState) {
@@ -1103,36 +1123,45 @@ function deleteWorker(id: string) {
       <div style={mainLayout}>
         {/* COLUMNA PRINCIPAL */}
         <div style={{ minWidth: 0 }}>
-          {/* BARRA IMPRESIÓN */}
-          <div style={bar} className="no-print">
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <button style={btnLabeled} onClick={() => triggerPrint("monthly")}>🖨️ Imprimir mensual</button>
-              <select style={input} value={printWorker} onChange={(e) => setPrintWorker(e.target.value)}>
-                {workers.map((w) => <option key={`op-${w.id}`} value={w.id}>{w.nombre}</option>)}
-              </select>
-              <input style={input} type="date" value={printDate} onChange={(e) => setPrintDate(e.target.value)} />
-              <button style={btnLabeled} onClick={() => triggerPrint("daily")}>🖨️ Imprimir diario</button>
-              <button style={btnPrimary} onClick={() => triggerPrint("dailyAll")}>🖨️ Imprimir diario (todos)</button>
-            </div>
-          </div>
-
+         
 {showPartes && (
   <div style={{ ...panel, borderColor: "#c7d2fe", background: "#eef2ff" }} className="no-print">
     <div style={panelTitle}>Partes de trabajo</div>
     <div style={{ display: "grid", gap: 10 }}>
-      {/* Trabajador */}
+      {/* === 1) FECHA === */}
+      <label style={label}>Fecha</label>
+      <input
+        style={disabledIf(input, locked)}
+        disabled={locked}
+        type="date"
+        value={parteFecha}
+        onChange={(e) => {
+          setParteFecha(e.target.value);
+          // Reiniciamos selección al cambiar el día
+          setParteProducto("");
+          setParteQuery("");
+          setParteHoras(0);
+        }}
+      />
+
+      {/* === 2) TRABAJADOR === */}
       <label style={label}>Trabajador</label>
       <select
         style={disabledIf(input, locked)}
         disabled={locked}
         value={parteWorkerId}
-        onChange={(e) => { setParteWorkerId(e.target.value); setParteProducto(""); setParteQuery(""); }}
+        onChange={(e) => {
+          setParteWorkerId(e.target.value);
+          setParteProducto("");
+          setParteQuery("");
+          setParteHoras(0);
+        }}
       >
         {workers.map(w => <option key={`pw-${w.id}`} value={w.id}>{w.nombre}</option>)}
       </select>
 
-      {/* Buscador de descripción (producto) */}
-      <label style={label}>Descripción / Producto (de los bloques del calendario)</label>
+      {/* === 3) BUSCADOR DE PRODUCTO (de ese día y trabajador) === */}
+      <label style={label}>Descripción / Producto (de ese día)</label>
       <input
         style={disabledIf(input, locked)}
         disabled={locked}
@@ -1145,7 +1174,6 @@ function deleteWorker(id: string) {
         {sugerenciasProductos.map(p => <option key={`sug-${p}`} value={p} />)}
       </datalist>
 
-      {/* Lista rápida de sugerencias (opcional) */}
       {!!sugerenciasProductos.length && (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
           {sugerenciasProductos.slice(0, 10).map(p => (
@@ -1162,14 +1190,13 @@ function deleteWorker(id: string) {
         </div>
       )}
 
-      {/* Si hay producto elegido, mostramos la sección de horas reales */}
+      {/* === 4) HORAS REALES === */}
       {parteQuery.trim() && (
         <div style={{ marginTop: 6, display: "grid", gap: 8 }}>
           <div style={{ fontWeight: 700, color: "#1f2937" }}>
             Seleccionado: {parteProducto || parteQuery}
           </div>
 
-          {/* Descripción larga si existe */}
           {descs[parteProducto || parteQuery] ? (
             <div style={{ fontSize: 12, background: "#fff", border: "1px solid #e5e7eb", borderRadius: 8, padding: 8 }}>
               {descs[parteProducto || parteQuery]}
@@ -1180,7 +1207,6 @@ function deleteWorker(id: string) {
             </div>
           )}
 
-          {/* Campo para horas reales */}
           <label style={label}>Horas reales trabajadas</label>
           <input
             style={disabledIf(input, locked)}
@@ -1192,16 +1218,17 @@ function deleteWorker(id: string) {
             onChange={(e) => setParteHoras(Number(e.target.value))}
           />
 
-          {/* Botones de acción (temporal) */}
           <div style={{ display: "flex", gap: 8 }}>
             <button
               style={disabledIf(btnPrimary, locked)}
               disabled={locked}
               onClick={() => {
                 alert(
-                  `Parte registrado (temporal):\n- Trabajador: ${
-                    workers.find(w=>w.id===parteWorkerId)?.nombre || parteWorkerId
-                  }\n- Producto: ${parteProducto || parteQuery}\n- Horas reales: ${parteHoras}h`
+                  `Parte registrado (temporal):\n` +
+                  `- Fecha: ${parteFecha}\n` +
+                  `- Trabajador: ${workers.find(w=>w.id===parteWorkerId)?.nombre || parteWorkerId}\n` +
+                  `- Producto: ${parteProducto || parteQuery}\n` +
+                  `- Horas reales: ${parteHoras}h`
                 );
               }}
             >
