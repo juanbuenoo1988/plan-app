@@ -359,18 +359,6 @@ function AppInner() {
     trabajadorId: "W1",
     fechaInicio: fmt(new Date()),
   });
-
-// --- handler seguro para el selector de Trabajador (evita errores de cierre) ---
-const handleChangeTrabajador: React.ChangeEventHandler<HTMLSelectElement> = (e) => {
-  const v = e.target.value;
-  setForm((prev) => ({ ...prev, trabajadorId: v }));
-  setFocusedWorkerId(v);
-  setTimeout(() => {
-    const el = workerRefs.current[v];
-    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
-  }, 0);
-};
-
   
 // === Vista enfocada por trabajador (acordeón animado + scroll) ===
 const [focusedWorkerId, setFocusedWorkerId] = useState<string | null>(null);
@@ -1142,8 +1130,15 @@ function deleteWorker(id: string) {
                     }}
                   />
                   <label style={label}>Trabajador</label>
-                  <select style={disabledIf(input, locked)} disabled={locked} value={form.trabajadorId} onChange={handleChangeTrabajador}>
-
+                  <select style={disabledIf(input, locked)} disabled={locked} value={form.trabajadorId} onChange={(e) => {
+  const v = e.target.value;
+  setForm({ ...form, trabajadorId: v });
+  setFocusedWorkerId(v);
+  setTimeout(() => {
+    const el = workerRefs.current[v];
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, 0);
+}}>
                     {workers.map((w) => <option key={`wopt-${w.id}`} value={w.id}>{w.nombre}</option>)}
                   </select>
                   <label style={label}>Fecha inicio</label>
@@ -1377,7 +1372,7 @@ function deleteWorker(id: string) {
           </div>
         </div>
       </div>
-    )})}
+    })}
 
           {/* Parte diario — individual (solo impresión) */}
           {printMode === "daily" && (
