@@ -1079,7 +1079,7 @@ function deleteWorker(id: string) {
       payload.storage_path = storagePath;
 
       // 2) Registrar en la tabla (histórico/consulta rápida)
-      const { error } = await supabase.from("work_parts").insert({
+      const { error: insErr } = await supabase.from("work_parts").insert({
   user_id: payload.user_id,
   tenant_id: TENANT_ID,      // ← IMPRESCINDIBLE en tu modelo
   fecha: payload.fecha,
@@ -1090,7 +1090,7 @@ function deleteWorker(id: string) {
   observaciones: payload.observaciones,
   storage_path: payload.storage_path,
 });
-      if (insErr) throw insErr;
+if (insErr) throw insErr;
 
       setParteMsg("✅ Parte guardado correctamente.");
       // Si quieres limpiar campos, descomenta:
