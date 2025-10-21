@@ -437,14 +437,14 @@ function AppInner() {
       if (!existingW || existingW.length === 0) {
         // Inserta un set inicial de trabajadores (puedes ajustar nombres/IDs)
         const initialWorkers = [
-          { user_id: uid, id: "W1", nombre: "ANGEL MORGADO",  extra_default: 0, sabado_default: false },
-          { user_id: uid, id: "W2", nombre: "ANTONIO MONTILLA", extra_default: 0, sabado_default: false },
-          { user_id: uid, id: "W3", nombre: "DANIEL MORGADO",  extra_default: 0, sabado_default: false },
-          { user_id: uid, id: "W4", nombre: "FIDEL RODRIGO",    extra_default: 0, sabado_default: false },
-          { user_id: uid, id: "W5", nombre: "LUCAS PRIETO",     extra_default: 0, sabado_default: false },
-          { user_id: uid, id: "W6", nombre: "LUIS AGUADO",      extra_default: 0, sabado_default: false },
-          { user_id: uid, id: "W7", nombre: "VICTOR HERNANDEZ", extra_default: 0, sabado_default: false },
-        ];
+  { user_id: uid, tenant_id: TENANT_ID, id: "W1", nombre: "ANGEL MORGADO",  extra_default: 0, sabado_default: false },
+  { user_id: uid, tenant_id: TENANT_ID, id: "W2", nombre: "ANTONIO MONTILLA", extra_default: 0, sabado_default: false },
+  { user_id: uid, tenant_id: TENANT_ID, id: "W3", nombre: "DANIEL MORGADO",  extra_default: 0, sabado_default: false },
+  { user_id: uid, tenant_id: TENANT_ID, id: "W4", nombre: "FIDEL RODRIGO",    extra_default: 0, sabado_default: false },
+  { user_id: uid, tenant_id: TENANT_ID, id: "W5", nombre: "LUCAS PRIETO",     extra_default: 0, sabado_default: false },
+  { user_id: uid, tenant_id: TENANT_ID, id: "W6", nombre: "LUIS AGUADO",      extra_default: 0, sabado_default: false },
+  { user_id: uid, tenant_id: TENANT_ID, id: "W7", nombre: "VICTOR HERNANDEZ", extra_default: 0, sabado_default: false },
+];
 
         const { error: insErr } = await supabase.from("workers").insert(initialWorkers);
         if (insErr) {
@@ -556,16 +556,18 @@ if (wRows.length) {
 }
 
       // 2) Slices (borramos todos del usuario y reinsertamos el snapshot actual)
-      const sRows = slices.map(s => ({
-        id: s.id,
-        task_id: s.taskId,
-        producto: s.producto,
-        fecha: s.fecha,
-        horas: s.horas,
-        trabajador_id: s.trabajadorId,
-        color: s.color,
-        user_id: uid,
-      }));
+     const sRows = slices.map(s => ({
+  id: s.id,
+  task_id: s.taskId,
+  producto: s.producto,
+  fecha: s.fecha,
+  horas: s.horas,
+  trabajador_id: s.trabajadorId,
+  color: s.color,
+  user_id: uid,
+  tenant_id: TENANT_ID, // ← necesario para RLS por tenant
+}));
+
       await supabase.from("task_slices").delete().eq("tenant_id", TENANT_ID);
       if (sRows.length) {
         const { error } = await supabase.from("task_slices").insert(sRows);
@@ -573,7 +575,11 @@ if (wRows.length) {
       }
 
       // 3) Overrides (lo mismo: borramos y subimos snapshot plano)
-      const oRows = flattenOverrides(overrides).map(r => ({ ...r, user_id: uid }));
+      const oRows = flattenOverrides(overrides).map(r => ({
+  ...r,
+  user_id: uid,
+  tenant_id: TENANT_ID, // ← necesario
+}));
       await supabase.from("day_overrides").delete().eq("tenant_id", TENANT_ID);
       if (oRows.length) {
         const { error } = await supabase.from("day_overrides").insert(oRows);
