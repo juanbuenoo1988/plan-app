@@ -359,7 +359,38 @@ function AppInner() {
     trabajadorId: "W1",
     fechaInicio: fmt(new Date()),
   });
-  // ⬇️ 3.3-C (estados de sesión/carga en la nube)
+  
+// === Vista enfocada por trabajador (acordeón animado + scroll) ===
+const [focusedWorkerId, setFocusedWorkerId] = useState<string | null>(null);
+// contenedor visible (para scrollIntoView)
+const workerRefs = useRef<Record<string, HTMLDivElement | null>>({});
+// contenedor medido (contenido real para calcular altura)
+const measureRefs = useRef<Record<string, HTMLDivElement | null>>({});
+const [measuredHeights, setMeasuredHeights] = useState<Record<string, number>>({});
+
+// Medición de alturas (cuando cambian datos o tamaño)
+useEffect(() => {
+  const h: Record<string, number> = {};
+  workers.forEach(w => {
+    const el = measureRefs.current[w.id];
+    if (el) h[w.id] = el.scrollHeight;
+  });
+  setMeasuredHeights(h);
+}, [workers, weeks, slices, overrides, descs, base]);
+
+useEffect(() => {
+  const onResize = () => {
+    const h: Record<string, number> = {};
+    workers.forEach(w => {
+      const el = measureRefs.current[w.id];
+      if (el) h[w.id] = el.scrollHeight;
+    });
+    setMeasuredHeights(h);
+  };
+  window.addEventListener('resize', onResize);
+  return () => window.removeEventListener('resize', onResize);
+}, [workers]);
+// ⬇️ 3.3-C (estados de sesión/carga en la nube)
   const [userId, setUserId] = useState<string | null>(null);
   const [loadingCloud, setLoadingCloud] = useState(false);
   // Estado de guardado en la nube
@@ -1080,7 +1111,7 @@ function deleteWorker(id: string) {
           {/* FORM + TRABAJADORES */}
           <div style={panelRow} className="no-print">
             <div style={panel}>
-              <div style={panelTitle}>Nuevo bloque</div>
+              <div style={panelTitle}>Nuevo bloque {focusedWorkerId && (<button className="no-print" style={{...btnLabeled, marginLeft: 8}} onClick={()=>setFocusedWorkerId(null)}>Ver todos</button>)}</div>
               <div style={panelInner}>
                 <div style={grid2}>
                   <label style={label}>Producto</label>
@@ -1099,7 +1130,15 @@ function deleteWorker(id: string) {
                     }}
                   />
                   <label style={label}>Trabajador</label>
-                  <select style={disabledIf(input, locked)} disabled={locked} value={form.trabajadorId} onChange={(e) => setForm({ ...form, trabajadorId: e.target.value })}>
+                  <select style={disabledIf(input, locked)} disabled={locked} value={form.trabajadorId} onChange={(e) => {
+  const v = e.target.value;
+  setForm({ ...form, trabajadorId: v });
+  setFocusedWorkerId(v);
+  setTimeout(() => {
+    const el = workerRefs.current[v];
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, 0);
+})}>
                     {workers.map((w) => <option key={`wopt-${w.id}`} value={w.id}>{w.nombre}</option>)}
                   </select>
                   <label style={label}>Fecha inicio</label>
@@ -1194,8 +1233,23 @@ function deleteWorker(id: string) {
 
           {/* CALENDARIO */}
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }} className={printMode === "monthly" ? "" : "no-print"}>
-            {workers.map((w) => (
-              <div key={`worker-${w.id}`}>
+            {workers.map((w) => {
+  const expanded = !focusedWorkerId || focusedWorkerId === w.id;
+  const mh = expanded ? (measuredHeights[w.id] ?? 9999) : 0;
+  return (
+              <div
+                key={`worker-${w.id}`}
+                ref={(el) => { workerRefs.current[w.id] = el; }}
+                style={{
+                  transition: "max-height 320ms ease, opacity 240ms ease, margin 200ms ease",
+                  overflow: "hidden",
+                  maxHeight: mh,
+                  marginBottom: expanded ? 8 : 0,
+                  opacity: expanded ? 1 : 0.15
+                }}
+              >
+                <div ref={(el) => { measureRefs.current[w.id] = el; }}>
+
                 <div style={{ fontSize: 25, fontWeight: 700, margin: "8px 0 4px", color: "#111827" }}>👤 {w.nombre}</div>
 
                 {weeks.map((week) => (
@@ -1316,6 +1370,9 @@ function deleteWorker(id: string) {
               </div>
             ))}
           </div>
+        </div>
+      </div>
+    )})}
 
           {/* Parte diario — individual (solo impresión) */}
           {printMode === "daily" && (
