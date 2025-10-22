@@ -1413,7 +1413,6 @@ ${items.map(it => `
 </div>
 </div>
 </div>
-</div>
           {/* FORM + TRABAJADORES */}
           <div style={panelRow} className="no-print">
             <div style={panel}>
