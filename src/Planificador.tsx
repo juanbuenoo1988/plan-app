@@ -1367,7 +1367,7 @@ ${items.map(it => `
                     onChange={e=>setParteObs(e.target.value)}
                       
 />
-/* === BLOQUE NUEVO: Añadir línea y listado === */}
+{/* === BLOQUE NUEVO: Añadir línea y listado === */}
   <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 8 }}>
     <button style={btnSecondary} type="button" onClick={agregarLineaParte}>
       ➕ Añadir línea
@@ -1427,32 +1427,6 @@ ${items.map(it => `
     Se guardará en la carpeta <b>“partes taller inoxidable”</b> de tu almacenamiento.
   </div>
 </div>
-
-{/* === BLOQUE NUEVO: Vista previa del parte === */}
-<div style={{ border: "1px solid #e5e7eb", borderRadius: 8, padding: 12, background: "#fff", marginTop: 12 }}>
-  <div style={{ fontWeight: 600, marginBottom: 8 }}>Vista previa del parte</div>
-  <div style={{ fontSize: 14, color: "#374151", marginBottom: 8 }}>
-    <div><b>Día:</b> {parteFecha || "—"}</div>
-    <div><b>Trabajador:</b> {workers.find(w => w.id === parteTrabajador)?.nombre || "—"}</div>
-  </div>
-  {(parteItems.length > 0 || (parteProducto && parteHoras > 0)) ? (
-    <div>
-      {(parteItems.length > 0 ? parteItems : [{ producto: parteProducto, horas_reales: parteHoras, observaciones: parteObs }]).map((it, i) => (
-        <div key={`pv-${i}`} style={{ padding: "6px 0", borderTop: i ? "1px solid #f3f4f6" : "none" }}>
-          <div><b>Descripción:</b> {it.producto}</div>
-          <div><b>Horas:</b> {it.horas_reales}</div>
-          {it.observaciones && <div style={{ whiteSpace: "pre-wrap" }}><b>Obs.:</b> {it.observaciones}</div>}
-        </div>
-      ))}
-      <div style={{ textAlign: "right", marginTop: 8, fontWeight: 700 }}>
-        Total (vista): {parteItems.length > 0 ? parteTotalHoras : (Number(parteHoras)||0)}
-      </div>
-    </div>
-  ) : (
-    <div style={{ color: "#6b7280" }}>Añade una línea para ver la vista previa…</div>
-  )}
-</div>
-{/* === FIN BLOQUE NUEVO === */}
 
 
                   {parteMsg && <span style={{ fontSize: 13 }}>{parteMsg}</span>}
