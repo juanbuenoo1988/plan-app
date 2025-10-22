@@ -1398,8 +1398,6 @@ ${items.map(it => `
   )}
   {/* === FIN BLOQUE NUEVO === */
 
-                </div>
-
                 <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
   {/* Guardar TODO el parte: se desactiva si no hay líneas */}
   <button
