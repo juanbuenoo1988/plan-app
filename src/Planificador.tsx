@@ -872,7 +872,7 @@ function AppInner() {
 
       const startF = toRemove.reduce((m, s) => (s.fecha < m ? s.fecha : m), toRemove[0].fecha);
       const newPlan = compactFrom(w, startF, overrides, filtered);
-       const others = filtered.filter((s) => s.trabajadorId !== w.id);
+      const others = filtered.filter((s) => (s) => s.trabajadorId !== w.id);
 
       return [...others, ...newPlan];
     });
@@ -1413,6 +1413,8 @@ ${items.map(it => `
 </div>
 </div>
 </div>
+</div>
+
           {/* FORM + TRABAJADORES */}
           <div style={panelRow} className="no-print">
             <div style={panel}>
