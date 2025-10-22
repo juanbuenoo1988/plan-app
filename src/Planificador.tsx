@@ -118,6 +118,12 @@ type WorkPartPayload = {
   storage_path?: string;         // ruta de storage donde se guardó el JSON
 };
 
+type ParteItem = {
+  producto: string;        // p.ej. "OT-250033"
+  horas_reales: number;    // p.ej. 6.5
+  observaciones?: string;  // opcional
+};
+
 /* ===================== Util ===================== */
 const fmt = (d: Date | null | undefined) => {
   if (!d || !(d instanceof Date) || isNaN(d.getTime())) return "";
@@ -971,6 +977,12 @@ function deleteWorker(id: string) {
   const [parteProducto, setParteProducto] = useState<string>("");
   const [parteHoras, setParteHoras] = useState<number>(0);
   const [parteObs, setParteObs] = useState<string>("");
+  const [parteItems, setParteItems] = useState<ParteItem[]>([]);
+
+    const parteTotalHoras = useMemo(
+  () => parteItems.reduce((acc, it) => acc + (Number(it.horas_reales) || 0), 0),
+  [parteItems]
+    );
   const [savingParte, setSavingParte] = useState<boolean>(false);
   const [parteMsg, setParteMsg] = useState<string | null>(null);
 
@@ -987,10 +999,16 @@ function deleteWorker(id: string) {
 
   // Filtro buscador
   const productosFiltrados = useMemo(() => {
-    const q = parteQuery.trim().toLowerCase();
-    if (!q) return productosDisponibles;
-    return productosDisponibles.filter(p => p.toLowerCase().includes(q));
-  }, [productosDisponibles, parteQuery]);
+  const set = new Set<string>();
+  // toma TODOS los slices (sin filtrar por trabajador)
+  slices.forEach(s => {
+    const name = (s.producto || "").trim();
+    if (name) set.add(name);
+  });
+  const all = [...set].sort((a, b) => a.localeCompare(b, "es"));
+  const q = (parteQuery || "").trim().toLowerCase();
+  return q ? all.filter(p => p.toLowerCase().includes(q)) : all;
+}, [slices, parteQuery]);
 
 
   function buscarBloques() {
@@ -1040,67 +1058,155 @@ function deleteWorker(id: string) {
       return [...restantes, ...plan];
     });
   }
+function agregarLineaParte() {
+  if (!parteProducto) { alert("Elige la descripción/bloque."); return; }
+  if (!isFinite(parteHoras) || Number(parteHoras) <= 0) { alert("Horas reales inválidas."); return; }
+
+  const item: ParteItem = {
+    producto: parteProducto,
+    horas_reales: Math.round(Number(parteHoras) * 2) / 2,
+    observaciones: parteObs.trim() || undefined,
+  };
+
+  setParteItems(prev => [...prev, item]);
+
+  // limpia campos para meter otra línea
+  setParteProducto("");
+  setParteHoras(0);
+  setParteObs("");
+}
+
+function eliminarLineaParte(idx: number) {
+  setParteItems(prev => prev.filter((_, i) => i !== idx));
+}
 
     // Guardar parte de trabajo: sube un JSON a Storage y registra fila en BD
   async function guardarParteTrabajo() {
-    if (!userId) { alert("Inicia sesión para guardar en la nube."); return; }
-    const w = workers.find(x => x.id === parteTrabajador);
-    if (!w) { alert("Trabajador no válido."); return; }
-    if (!parteFecha) { alert("Elige una fecha."); return; }
-    if (!parteProducto) { alert("Elige un producto/bloque."); return; }
-    if (!isFinite(parteHoras) || parteHoras < 0) { alert("Horas reales inválidas."); return; }
+  if (!userId) { alert("Inicia sesión para guardar en la nube."); return; }
+  const w = workers.find(x => x.id === parteTrabajador);
+  if (!w) { alert("Trabajador no válido."); return; }
+  if (!parteFecha) { alert("Elige una fecha."); return; }
 
-    const payload: WorkPartPayload = {
-      user_id: userId,
-      tenant_id: TENANT_ID,
-      fecha: parteFecha,
-      trabajador_id: parteTrabajador,
-      trabajador_nombre: w.nombre,
+  // Si no hay líneas acumuladas, usa la línea "rápida" actual
+  const items: ParteItem[] = (() => {
+    if (parteItems.length > 0) return parteItems;
+    if (!parteProducto) { alert("Elige la descripción/bloque."); return []; }
+    if (!isFinite(parteHoras) || parteHoras <= 0) { alert("Horas reales inválidas."); return []; }
+    return [{
       producto: parteProducto,
-      horas_reales: Math.round(Number(parteHoras)*2)/2,
-      observaciones: parteObs.trim(),
-      created_at: new Date().toISOString(),
-    };
+      horas_reales: Math.round(Number(parteHoras) * 2) / 2,
+      observaciones: parteObs.trim() || undefined,
+    }];
+  })();
+  if (items.length === 0) return;
 
-    setSavingParte(true);
-    setParteMsg(null);
-    try {
-      // 1) Subir JSON a Storage (bucket: partes-taller-inoxidable, carpeta: "partes taller inoxidable")
-      const safeName = `${payload.fecha} - ${w.nombre}.json`;
-      const storagePath = `partes taller inoxidable/${safeName}`;
+  const payload = {
+    user_id: userId,
+    tenant_id: TENANT_ID,
+    fecha: parteFecha,
+    trabajador_id: parteTrabajador,
+    trabajador_nombre: w.nombre,
+    created_at: new Date().toISOString(),
+    items,
+    total_horas: items.reduce((a, it) => a + (Number(it.horas_reales)||0), 0),
+  };
 
-      const { error: upErr } = await supabase.storage
-        .from("partes-taller-inoxidable")   // ← crea este bucket en el panel si no existe
-        .upload(storagePath, new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }), {
-          upsert: true,                     // sobrescribe si ya existe
-        });
+  setSavingParte(true);
+  setParteMsg(null);
+  try {
+    // 1) JSON único con todas las líneas
+    const safeName = `${payload.fecha} - ${w.nombre}.json`;
+    const storagePath = `partes taller inoxidable/${safeName}`;
+    const { error: upErr } = await supabase.storage
+      .from("partes-taller-inoxidable")
+      .upload(storagePath, new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }), { upsert: true });
+    if (upErr) { console.error("Storage upload error:", upErr); throw upErr; }
 
-      if (upErr) throw upErr;
-      payload.storage_path = storagePath;
+    // 2) Inserta una fila por línea en work_parts
+    const rows = items.map(it => ({
+      user_id: payload.user_id,
+      tenant_id: payload.tenant_id,
+      fecha: payload.fecha,
+      trabajador_id: payload.trabajador_id,
+      trabajador_nombre: payload.trabajador_nombre,
+      producto: it.producto,
+      horas_reales: it.horas_reales,
+      observaciones: it.observaciones ?? null,
+      storage_path: storagePath,
+    }));
 
-      // 2) Registrar en la tabla (histórico/consulta rápida)
-      const { error: insErr } = await supabase.from("work_parts").insert({
-  user_id: payload.user_id,
-  tenant_id: TENANT_ID,      // ← IMPRESCINDIBLE en tu modelo
-  fecha: payload.fecha,
-  trabajador_id: payload.trabajador_id,
-  trabajador_nombre: payload.trabajador_nombre,
-  producto: payload.producto,
-  horas_reales: payload.horas_reales,
-  observaciones: payload.observaciones,
-  storage_path: payload.storage_path,
-});
-if (insErr) throw insErr;
+    const { error: insErr } = await supabase.from("work_parts").insert(rows);
+    if (insErr) { console.error("work_parts insert error:", insErr); throw insErr; }
 
-      setParteMsg("✅ Parte guardado correctamente.");
-      // Si quieres limpiar campos, descomenta:
-      // setParteHoras(0); setParteObs(""); setParteProducto("");
-    } catch (e: any) {
-      setParteMsg(`⚠️ Error: ${e.message ?? String(e)}`);
-    } finally {
-      setSavingParte(false);
-    }
+    setParteMsg("✅ Parte guardado correctamente.");
+    // Si usaste varias líneas, vacía el acumulado
+    if (parteItems.length > 0) setParteItems([]);
+  } catch (e: any) {
+    setParteMsg(`⚠️ Error: ${e.message ?? String(e)}`);
+  } finally {
+    setSavingParte(false);
   }
+}
+
+function printParteDiario() {
+  const w = workers.find(x => x.id === parteTrabajador);
+  if (!w) { alert("Trabajador no válido."); return; }
+  if (!parteFecha) { alert("Elige una fecha."); return; }
+
+  // Si no hay líneas agregadas, imprime la línea del formulario si es válida
+  const items = parteItems.length > 0
+    ? parteItems
+    : (parteProducto && parteHoras > 0
+        ? [{ producto: parteProducto, horas_reales: parteHoras, observaciones: (parteObs||"").trim() || undefined }]
+        : []);
+
+  const total = items.reduce((a, it) => a + (Number(it.horas_reales)||0), 0);
+
+  const html = `<!doctype html>
+<html><head><meta charset="utf-8" />
+<title>Parte diario</title>
+<style>
+body{font-family: Arial, sans-serif; padding:24px; color:#111827}
+h1{margin:0 0 6px 0; font-size:20px}
+.sub{color:#6b7280; margin-bottom:16px}
+table{width:100%; border-collapse:collapse}
+th,td{border-bottom:1px solid #e5e7eb; padding:8px; text-align:left}
+th{background:#f9fafb}
+.right{text-align:right}
+.tot{font-weight:700}
+.obs{white-space:pre-wrap; color:#374151}
+@media print{ .noprint{display:none} }
+</style></head>
+<body>
+<div class="noprint" style="text-align:right;margin-bottom:12px">
+  <button onclick="window.print()">Imprimir</button>
+</div>
+<h1>Parte de trabajo</h1>
+<div class="sub">Fecha: <b>${parteFecha}</b> &nbsp;|&nbsp; Trabajador: <b>${w.nombre}</b></div>
+<table>
+<thead><tr><th>Descripción / bloque</th><th class="right">Horas</th><th>Observaciones</th></tr></thead>
+<tbody>
+${items.map(it => `
+<tr>
+  <td>${it.producto}</td>
+  <td class="right">${it.horas_reales}</td>
+  <td class="obs">${it.observaciones || ""}</td>
+</tr>
+`).join("")}
+</tbody>
+<tfoot>
+<tr><td class="tot">TOTAL</td><td class="right tot">${total}</td><td></td></tr>
+</tfoot>
+</table>
+</body></html>`;
+
+  const wwin = window.open("", "_blank");
+  if (!wwin) return alert("Permite la ventana emergente para imprimir.");
+  wwin.document.open(); wwin.document.write(html); wwin.document.close(); wwin.focus();
+}
+
+
+    
 
 
   /* ===================== Render ===================== */
@@ -1259,13 +1365,96 @@ if (insErr) throw insErr;
                     placeholder="Incidencias, materiales, notas…"
                     value={parteObs}
                     onChange={e=>setParteObs(e.target.value)}
-                  />
+                      
+/>
+/* === BLOQUE NUEVO: Añadir línea y listado === */}
+  <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 8 }}>
+    <button style={btnSecondary} type="button" onClick={agregarLineaParte}>
+      ➕ Añadir línea
+    </button>
+    <div style={{ fontSize: 12, color: "#6b7280" }}>
+      Añade varias descripciones con sus horas y luego guarda todo.
+    </div>
+  </div>
+
+  {parteItems.length > 0 && (
+    <div style={{ marginTop: 10, border: "1px solid #e5e7eb", borderRadius: 8, padding: 10 }}>
+      <div style={{ fontWeight: 600, marginBottom: 8 }}>Líneas añadidas</div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 100px 1fr 90px", gap: 8, fontSize: 14, fontWeight: 600, color: "#374151" }}>
+        <div>Descripción/bloque</div><div>Horas</div><div>Observaciones</div><div></div>
+      </div>
+      {parteItems.map((it, idx) => (
+        <div key={`pi-${idx}`} style={{ display: "grid", gridTemplateColumns: "1fr 100px 1fr 90px", gap: 8, alignItems: "center", padding: "6px 0", borderTop: "1px solid #f3f4f6" }}>
+          <div>{it.producto}</div>
+          <div>{it.horas_reales}</div>
+          <div style={{ whiteSpace: "pre-wrap" }}>{it.observaciones || "—"}</div>
+          <button style={btnDanger} onClick={() => eliminarLineaParte(idx)}>Eliminar</button>
+        </div>
+      ))}
+      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 8, fontWeight: 700 }}>
+        Total horas: {parteTotalHoras}
+      </div>
+    </div>
+  )}
+  {/* === FIN BLOQUE NUEVO === */
+
                 </div>
 
                 <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                  <button style={btnPrimary} onClick={guardarParteTrabajo} disabled={savingParte}>
-                    {savingParte ? "Guardando…" : "💾 Guardar parte"}
-                  </button>
+  {/* Guardar TODO el parte: se desactiva si no hay líneas */}
+  <button
+    style={btnPrimary}
+    onClick={guardarParteTrabajo}
+    disabled={savingParte || (parteItems.length === 0 && (!parteProducto || parteHoras <= 0))}
+    title={parteItems.length === 0 ? "Añade al menos una línea" : "Guardar parte"}
+  >
+    {savingParte ? "Guardando…" : "💾 Guardar parte (todo)"}
+  </button>
+
+  {/* Imprimir parte diario (opcional, si ya añadiste el modo de impresión) */}
+  <button
+    style={btnLabeled}
+    className="no-print"
+    onClick={printParteDiario}   // <- si aún no tienes este modo, déjalo para el siguiente paso
+    disabled={parteItems.length === 0}
+    title="Imprime el parte con las líneas añadidas"
+  >
+    🖨️ Imprimir parte diario
+  </button>
+
+  {parteMsg && <span style={{ fontSize: 13 }}>{parteMsg}</span>}
+  <div style={{ fontSize: 12, color: "#6b7280" }}>
+    Se guardará en la carpeta <b>“partes taller inoxidable”</b> de tu almacenamiento.
+  </div>
+</div>
+
+{/* === BLOQUE NUEVO: Vista previa del parte === */}
+<div style={{ border: "1px solid #e5e7eb", borderRadius: 8, padding: 12, background: "#fff", marginTop: 12 }}>
+  <div style={{ fontWeight: 600, marginBottom: 8 }}>Vista previa del parte</div>
+  <div style={{ fontSize: 14, color: "#374151", marginBottom: 8 }}>
+    <div><b>Día:</b> {parteFecha || "—"}</div>
+    <div><b>Trabajador:</b> {workers.find(w => w.id === parteTrabajador)?.nombre || "—"}</div>
+  </div>
+  {(parteItems.length > 0 || (parteProducto && parteHoras > 0)) ? (
+    <div>
+      {(parteItems.length > 0 ? parteItems : [{ producto: parteProducto, horas_reales: parteHoras, observaciones: parteObs }]).map((it, i) => (
+        <div key={`pv-${i}`} style={{ padding: "6px 0", borderTop: i ? "1px solid #f3f4f6" : "none" }}>
+          <div><b>Descripción:</b> {it.producto}</div>
+          <div><b>Horas:</b> {it.horas_reales}</div>
+          {it.observaciones && <div style={{ whiteSpace: "pre-wrap" }}><b>Obs.:</b> {it.observaciones}</div>}
+        </div>
+      ))}
+      <div style={{ textAlign: "right", marginTop: 8, fontWeight: 700 }}>
+        Total (vista): {parteItems.length > 0 ? parteTotalHoras : (Number(parteHoras)||0)}
+      </div>
+    </div>
+  ) : (
+    <div style={{ color: "#6b7280" }}>Añade una línea para ver la vista previa…</div>
+  )}
+</div>
+{/* === FIN BLOQUE NUEVO === */}
+
+
                   {parteMsg && <span style={{ fontSize: 13 }}>{parteMsg}</span>}
                   <div style={{ fontSize: 12, color: "#6b7280" }}>
                     Se guardará en la carpeta <b>“partes taller inoxidable”</b> de tu almacenamiento.
