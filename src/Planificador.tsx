@@ -1738,6 +1738,7 @@ ${items.map(it => `
               })()}
             </div>
           )}
+        </div> 
 
         {/* SIDEBAR */}
         <aside style={sidebar} className="no-print">
