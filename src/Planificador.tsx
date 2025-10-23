@@ -422,6 +422,7 @@ const orderedWorkers = useMemo(() => {
   // Referencias para "debounce" y última instantánea guardada
   const saveTimer = useRef<number | null>(null);
   const lastSavedRef = useRef<string>("");
+    const autosavePausedRef = useRef(false);
 
   type PrintMode = "none" | "monthly" | "daily" | "dailyAll";
   const [printMode, setPrintMode] = useState<PrintMode>("none");
@@ -589,8 +590,9 @@ function aplicarResumenAlCalendario(fechaStr: string, resumen: ParteResumenTraba
 
     for (const r of resumen) {
       const workerId = r.trabajador_id;
+      const f = fmt(fecha)!;
 
-      // Horas reales por producto
+      // 1) Horas reales acumuladas por producto
       const horasPorProducto = new Map<string, number>();
       for (const it of r.items) {
         const horas = Number(it.horas_reales) || 0;
@@ -598,29 +600,26 @@ function aplicarResumenAlCalendario(fechaStr: string, resumen: ParteResumenTraba
         horasPorProducto.set(it.producto, (horasPorProducto.get(it.producto) || 0) + horas);
       }
 
+      // 2) Ajusta el día concreto y empuja/trae horas del futuro de ese mismo producto
       for (const [producto, horasReales] of horasPorProducto.entries()) {
-        const f = fmt(fecha);
-
-        // Slices del mismo trabajador y producto
         const delDia = next.filter(s => s.trabajadorId === workerId && s.producto === producto && s.fecha === f);
         const futuros = next
-          .filter(s => s.trabajadorId === workerId && s.producto === producto && s.fecha! > f!)
+          .filter(s => s.trabajadorId === workerId && s.producto === producto && s.fecha > f)
           .sort((a, b) => a.fecha.localeCompare(b.fecha));
 
-        const horasAsignadas = delDia.reduce((a, s) => a + s.horas, 0);
-        const delta = Math.round((horasReales - horasAsignadas) * 2) / 2;
+        const asignadasHoy = delDia.reduce((a, s) => a + s.horas, 0);
+        const delta = Math.round((horasReales - asignadasHoy) * 2) / 2;
 
-        // Si ya coincide, no hacer nada
         if (Math.abs(delta) < 0.01) continue;
 
-        // Si no hay slice para hoy, creamos uno nuevo
+        // Si no hay slice hoy, crea uno basado en el primer futuro (para heredar taskId/color)
         if (delDia.length === 0) {
           const base = futuros[0];
           next.push({
             id: "S" + Math.random().toString(36).slice(2, 9),
             taskId: base ? base.taskId : "T" + Math.random().toString(36).slice(2, 8),
             producto,
-            fecha: f!,
+            fecha: f,
             horas: 0,
             trabajadorId: workerId,
             color: base ? base.color : colorFromId(producto),
@@ -631,7 +630,7 @@ function aplicarResumenAlCalendario(fechaStr: string, resumen: ParteResumenTraba
         if (!hoy) continue;
 
         if (delta > 0) {
-          // Falta horas hoy → traer desde el futuro
+          // Falta en hoy → traer de futuros
           let resta = delta;
           for (const fs of futuros) {
             if (resta <= 0) break;
@@ -642,11 +641,12 @@ function aplicarResumenAlCalendario(fechaStr: string, resumen: ParteResumenTraba
               resta = Math.round((resta - take) * 2) / 2;
             }
           }
-        } else if (delta < 0) {
-          // Sobran horas hoy → empujar al futuro
+        } else {
+          // Sobra en hoy → empuja al primer futuro (o crea mañana)
           let sobra = -delta;
-          if (futuros.length === 0) {
-            futuros.push({
+          let destino = futuros[0];
+          if (!destino) {
+            destino = {
               id: "S" + Math.random().toString(36).slice(2, 9),
               taskId: hoy.taskId,
               producto,
@@ -654,17 +654,34 @@ function aplicarResumenAlCalendario(fechaStr: string, resumen: ParteResumenTraba
               horas: 0,
               trabajadorId: workerId,
               color: hoy.color,
-            });
-            next.push(futuros[0]);
+            };
+            next.push(destino);
           }
-          const destino = futuros[0];
           const reduce = Math.min(hoy.horas, sobra);
           hoy.horas = Math.round((hoy.horas - reduce) * 2) / 2;
           destino.horas = Math.round((destino.horas + reduce) * 2) / 2;
         }
 
-        // Eliminar bloques vacíos
+        // Limpia slices vacíos de ese producto
         next = next.filter(s => !(s.trabajadorId === workerId && s.producto === producto && s.horas <= 0));
+      }
+
+      // 3) 🔁 Recompacta TODO el plan de ese trabajador desde la fecha del parte
+      const w = workers.find(x => x.id === workerId);
+      if (w) {
+        const startF = f;
+        const delTrab = next
+          .filter(s => s.trabajadorId === workerId)
+          .sort((a, b) => a.fecha.localeCompare(b.fecha));
+
+        const keepBefore = delTrab.filter(s => s.fecha < startF);
+        const tail = delTrab.filter(s => s.fecha >= startF);
+
+        const queue = aggregateToQueue(tail);
+        const replan = reflowFrom(w, new Date(startF), overrides, keepBefore, queue);
+
+        const others = next.filter(s => s.trabajadorId !== workerId);
+        next = [...others, ...replan];
       }
     }
 
@@ -942,24 +959,26 @@ function aplicarResumenAlCalendario(fechaStr: string, resumen: ParteResumenTraba
 
   // Autosave
   useEffect(() => {
-    if (!userId) return;
-    if (loadingCloud) return;
+  if (!userId) return;
+  if (loadingCloud) return;
+  if (autosavePausedRef.current) return;   // ⬅️ NO dispares si está pausado
 
-    const snapshot = JSON.stringify({ workers, slices, overrides, descs });
-    if (snapshot === lastSavedRef.current) return;
+  const snapshot = JSON.stringify({ workers, slices, overrides, descs });
+  if (snapshot === lastSavedRef.current) return;
 
-    if (saveTimer.current) window.clearTimeout(saveTimer.current);
-    saveTimer.current = window.setTimeout(async () => {
-      try {
-        await saveAll(userId);
-        lastSavedRef.current = snapshot;
-      } catch {
-        /* error ya gestionado */
-      }
-    }, 800);
+  if (saveTimer.current) window.clearTimeout(saveTimer.current);
+  saveTimer.current = window.setTimeout(async () => {
+    try {
+      await saveAll(userId);
+      lastSavedRef.current = snapshot;
+    } catch {
+      /* error ya gestionado */
+    }
+  }, 800);
 
-    return () => { if (saveTimer.current) window.clearTimeout(saveTimer.current); };
-  }, [workers, slices, overrides, descs, userId, loadingCloud]);
+  return () => { if (saveTimer.current) window.clearTimeout(saveTimer.current); };
+}, [workers, slices, overrides, descs, userId, loadingCloud, autosavePausedRef.current]);
+
 
   // Guardado local sin sesión
   useEffect(() => {
@@ -1365,20 +1384,18 @@ function eliminarLineaParteDe(wid: string, idx: number) {
     // Guardar parte de trabajo: sube un JSON a Storage y registra fila en BD
 
    async function guardarParteTrabajo() {
-  // Ya NO exigimos estar logueado: se puede imprimir sin guardar en BD
   const f = parteFecha;
   if (!f) { alert("Elige una fecha."); return; }
 
-  // 1) Construye un objeto por trabajador a partir de la UI
+  // 1) Clona lo acumulado por trabajador
   const porTrab: PartesPorTrabajador =
     typeof structuredClone === "function"
       ? structuredClone(partePorTrabajador)
       : JSON.parse(JSON.stringify(partePorTrabajador || {}));
 
-  // Si no hay líneas acumuladas y la línea rápida es válida, métela
+  // Línea rápida si no hay acumuladas
   const lineaRapidaValida = parteProducto && isFinite(parteHoras) && Number(parteHoras) > 0;
   const hayLineasAcumuladas = Object.values(porTrab).some(arr => (arr?.length ?? 0) > 0);
-
   if (!hayLineasAcumuladas && lineaRapidaValida) {
     porTrab[parteTrabajador] = porTrab[parteTrabajador] ?? [];
     porTrab[parteTrabajador].push({
@@ -1388,7 +1405,7 @@ function eliminarLineaParteDe(wid: string, idx: number) {
     });
   }
 
-  // 2) Construye el RESUMEN por trabajador (nombre, items, subtotal)
+  // 2) Resumen por trabajador
   const resumen: ParteResumenTrabajador[] = Object.entries(porTrab)
     .map(([wid, items]) => {
       const w = workers.find(x => x.id === wid);
@@ -1398,36 +1415,50 @@ function eliminarLineaParteDe(wid: string, idx: number) {
     })
     .filter(r => r.items.length > 0);
 
-  if (resumen.length === 0) {
-    alert("No hay líneas para guardar/imprimir.");
-    return;
-  }
+  if (resumen.length === 0) { alert("No hay líneas para guardar/imprimir."); return; }
 
-  // 3) Actualiza el calendario con las horas reales (tu función ya creada)
+  setSavingParte(true);
+  setParteMsg("Ajustando calendario…");
+
+  // 3) Pausa el autosave mientras reprogramas y guardas
+  autosavePausedRef.current = true;
+
   try {
-    setSavingParte(true);
-    setParteMsg("Ajustando calendario y generando PDF…");
-
-    // 👉 Esta función la añadimos en pasos previos: ajusta slices y reprograma
+    // 3.1 Ajusta el calendario (slices)
     aplicarResumenAlCalendario(f, resumen);
 
-    // 4) Abre la ventana de impresión del parte del taller (un único PDF)
-    setTimeout(() => {
-      generarVentanaPDFParteTaller(f, resumen);
-    }, 50);
+    // 3.2 (Opcional) si hay sesión, fuerza un guardado único ahora
+    if (userId) {
+      const snapshot = JSON.stringify({ workers, slices, overrides, descs });
+      try {
+        await saveAll(userId);
+        lastSavedRef.current = snapshot; // marca este estado como persistido
+      } catch (e) {
+        // No bloquees la UI por fallos de red; el autosave reintentará luego
+        console.error("saveAll after parte error:", e);
+      }
+    }
 
-    // 5) Limpia la UI del parte
+    // 4) PDF del parte del taller
+    setParteMsg("Generando PDF…");
+    setTimeout(() => { generarVentanaPDFParteTaller(f, resumen); }, 50);
+
+    // 5) Limpia UI del parte
     setPartePorTrabajador({});
     setParteProducto("");
     setParteHoras(0);
     setParteObs("");
-    setParteMsg("✅ Parte generado (descarga/imprime el PDF).");
+    setParteMsg("✅ Parte generado. (Descarga/Imprime el PDF)");
+
   } catch (e: any) {
     setParteMsg(`⚠️ Error: ${e?.message ?? String(e)}`);
   } finally {
+    // Reanuda autosave tras un pequeño margen
+    setTimeout(() => { autosavePausedRef.current = false; }, 300);
     setSavingParte(false);
   }
 }
+
 
 function printParteTaller() {
   // 1) Clona lo acumulado por trabajador
