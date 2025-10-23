@@ -1450,67 +1450,65 @@ ${items.map(it => `
                     onChange={e=>setParteObs(e.target.value)}
                       
 />
-
-{/* === BLOQUE NUEVO: Añadir línea (independiente) === */}
-<div
-  style={{
-    gridColumn: "1 / -1",
-    display: "flex",
-    flexDirection: "column",
-    alignItems: "center",
-    gap: 10,
+{/* === BLOQUE NUEVO: Añadir línea y listado === */}
+<div style={{
+    gridColumn: "1 / -1",               // usa todo el ancho del formulario
+    display: "grid",
+    gridTemplateColumns: "240px 1fr",   // 240px para la columna de botones, resto para la lista
+    gap: 16,
+    alignItems: "start",
     marginTop: 12,
-  }}
->
+  }}>
+
   <button style={btnAction} type="button" onClick={agregarLineaParte}>
     ➕ Añadir línea
+
   </button>
   <div style={{ fontSize: 12, color: "#6b7280" }}>
     Añade varias descripciones con sus horas y luego guarda todo.
   </div>
 </div>
 
-{/* === ACCIONES (izquierda) + LISTADO (derecha) === */}
-<div
-  style={{
+{/* === FIN BLOQUE NUEVO === */}
+
+<div style={{
     gridColumn: "1 / -1",
-    display: "grid",
-    gridTemplateColumns: "240px 1fr",
-    gap: 16,
-    alignItems: "start",
-    marginTop: 12,
-  }}
->
-  {/* Columna izquierda: botones apilados */}
-  <div
-    style={{
-      display: "flex",
-      flexDirection: "column",
-      gap: 10,
-      position: "sticky",
-      top: 8,
-    }}
-  >
-    <button
-      style={btnActionPrimary}
+    display: "flex",
+    flexDirection: "column", // 🔹 uno debajo del otro
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    position: "sticky",      // 🔹 se mantienen visibles
+    bottom: 10,              // 🔹 pegados al fondo si haces scroll
+    background: "#f9fafb",   // fondo claro para distinguirlos
+    padding: 12,
+    borderRadius: 8,
+    zIndex: 10,
+  }}>
+
+  {/* Guardar TODO el parte: se desactiva si no hay líneas */}
+  <button
+    style={btnActionPrimary}
       onClick={guardarParteTrabajo}
       disabled={savingParte || (parteItems.length === 0 && (!parteProducto || parteHoras <= 0))}
       title={parteItems.length === 0 ? "Añade al menos una línea" : "Guardar parte"}
-    >
-      {savingParte ? "Guardando..." : "💾 Guardar parte (todo)"}
-    </button>
+  >
+    {savingParte ? "Guardando…" : "💾 Guardar parte (todo)"}
+  </button>
 
-    <button
-      style={btnAction}
-      className="no-print"
-      onClick={printParteDiario}
-      disabled={parteItems.length === 0 && (!parteProducto || parteHoras <= 0)}
-      title="Imprime el parte con las líneas añadidas"
-    >
-      🖨️ Imprimir parte diario
-    </button>
+  {/* Imprimir parte diario */}
+  <button
+    style={btnAction}
+    className="no-print"
+    onClick={printParteDiario} 
+    disabled={parteItems.length === 0 && (!parteProducto || parteHoras <= 0)}
+    title="Imprime el parte con las líneas añadidas"
+  >
+    🖨️ Imprimir parte diario
+  </button>
 
-    {parteMsg && (
+  {/* Mensajes y ayudas (debajo, centrados) */}
+{parteMsg && (
       <div style={{ fontSize: 13 }}>{parteMsg}</div>
     )}
     <div style={{ fontSize: 12, color: "#6b7280" }}>
@@ -1518,64 +1516,43 @@ ${items.map(it => `
     </div>
     <div style={{ fontSize: 12, color: "#6b7280" }}>
       Se guardará en la carpeta <b>“partes taller inoxidable”</b> de tu almacenamiento.
-    </div>
-  </div>
-
-  {/* Columna derecha: listado de líneas añadidas (o placeholder) */}
-  {parteItems.length > 0 ? (
-    <div
-      style={{
-        border: "1px solid #e5e7eb",
-        borderRadius: 8,
-        padding: 10,
-        background: "#f9fafb",
-      }}
-    >
-      <div style={{ fontWeight: 600, marginBottom: 8 }}>Líneas añadidas</div>
-
-      <div style={{
-        display: "grid",
-        gridTemplateColumns: "1fr 100px 1fr 90px",
-        gap: 8, fontSize: 14, fontWeight: 600, color: "#374151"
-      }}>
-        <div>Descripción/bloque</div><div>Horas</div><div>Observaciones</div><div></div>
-      </div>
-
-      {parteItems.map((it, idx) => (
-        <div key={`pi-${idx}`} style={{
-          display: "grid",
-          gridTemplateColumns: "1fr 100px 1fr 90px",
-          gap: 8, alignItems: "center",
-          padding: "6px 0", borderTop: "1px solid #f3f4f6"
-        }}>
-          <div>{it.producto}</div>
-          <div>{it.horas_reales}</div>
-          <div style={{ whiteSpace: "pre-wrap" }}>{it.observaciones || "—"}</div>
-          <button style={btnDanger} onClick={() => eliminarLineaParte(idx)}>Eliminar</button>
-        </div>
-      ))}
-
-      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 8, fontWeight: 700 }}>
-        Total horas: {parteTotalHoras}
-      </div>
-    </div>
-  ) : (
-    <div
-      style={{
-        border: "1px dashed #e5e7eb",
-        borderRadius: 8,
-        padding: 16,
-        color: "#6b7280",
-        background: "#fafafa",
-      }}
-    >
-      Todavía no has añadido líneas.
-    </div>
-  )}
 </div>
 
+{parteItems.length > 0 && (
+  <div style={{ marginTop: 10, border: "1px solid #e5e7eb", borderRadius: 8, padding: 10 }}>
+    <div style={{ fontWeight: 600, marginBottom: 8 }}>Líneas añadidas</div>
 
+    <div style={{
+      display: "grid",
+      gridTemplateColumns: "1fr 100px 1fr 90px",
+      gap: 8, fontSize: 14, fontWeight: 600, color: "#374151"
+    }}>
+      <div>Descripción/bloque</div><div>Horas</div><div>Observaciones</div><div></div>
+    </div>
 
+    {parteItems.map((it, idx) => (
+      <div key={`pi-${idx}`} style={{
+        display: "grid",
+        gridTemplateColumns: "1fr 100px 1fr 90px",
+        gap: 8, alignItems: "center",
+        padding: "6px 0", borderTop: "1px solid #f3f4f6"
+      }}>
+        <div>{it.producto}</div>
+        <div>{it.horas_reales}</div>
+        <div style={{ whiteSpace: "pre-wrap" }}>{it.observaciones || "—"}</div>
+        <button style={btnDanger} onClick={() => eliminarLineaParte(idx)}>Eliminar</button>
+      </div>
+    ))}
+
+    <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 8, fontWeight: 700 }}>
+      Total horas: {parteTotalHoras}
+    </div>
+  </div>
+)}
+</div>
+</div>
+</div>
+</div>
           )}  
           {/* FORM + TRABAJADORES */}
           <div style={panelRow} className="no-print">
