@@ -581,113 +581,160 @@ ${seccionesHTML}
  * - Actualiza las horas del día exacto.
  * - Si faltan horas, resta del futuro; si sobran, empuja al siguiente día.
  */
-function aplicarResumenAlCalendario(fechaStr: string, resumen: ParteResumenTrabajador[]) {
-  const fecha = new Date(fechaStr);
-  if (isNaN(fecha.getTime?.() ?? NaN)) return;
+// === Reajuste del calendario a partir de un parte real ===
+// fecha: "YYYY-MM-DD"
+// resumen: [{ trabajador_id, trabajador_nombre, items:[{producto, horas_reales, observaciones?}], total_horas }]
+function aplicarResumenAlCalendario(fecha: string, resumen: ParteResumenTrabajador[]) {
+  // Redondeo a múltiplos de 0.5
+  const round05 = (n: number) => Math.max(0, Math.round(n * 2) / 2);
 
-  setSlices((prevSlices) => {
-    let next = [...prevSlices];
+  setSlices((prevAll) => {
+    let all = [...prevAll];
 
+    // Por cada trabajador en el parte…
     for (const r of resumen) {
       const workerId = r.trabajador_id;
-      const f = fmt(fecha)!;
 
-      // 1) Horas reales acumuladas por producto
-      const horasPorProducto = new Map<string, number>();
+      // Por cada línea (producto) de ese trabajador en esa fecha…
       for (const it of r.items) {
-        const horas = Number(it.horas_reales) || 0;
-        if (horas <= 0) continue;
-        horasPorProducto.set(it.producto, (horasPorProducto.get(it.producto) || 0) + horas);
-      }
+        const producto = (it.producto || "").trim();
+        const horasReales = round05(Number(it.horas_reales) || 0);
 
-      // 2) Ajusta el día concreto y empuja/trae horas del futuro de ese mismo producto
-      for (const [producto, horasReales] of horasPorProducto.entries()) {
-        const delDia = next.filter(s => s.trabajadorId === workerId && s.producto === producto && s.fecha === f);
-        const futuros = next
-          .filter(s => s.trabajadorId === workerId && s.producto === producto && s.fecha > f)
-          .sort((a, b) => a.fecha.localeCompare(b.fecha));
+        // 1) Slices del mismo trabajador+producto ordenados por fecha
+        const sameProd = all
+          .filter(s => s.trabajadorId === workerId && (s.producto || "").trim() === producto)
+          .sort((a,b) => a.fecha.localeCompare(b.fecha));
 
-        const asignadasHoy = delDia.reduce((a, s) => a + s.horas, 0);
-        const delta = Math.round((horasReales - asignadasHoy) * 2) / 2;
+        // 2) Busca si hay un tramo este día (mismo worker+producto+fecha)
+        const hoyIdx = sameProd.findIndex(s => s.fecha === fecha);
 
-        if (Math.abs(delta) < 0.01) continue;
-
-        // Si no hay slice hoy, crea uno basado en el primer futuro (para heredar taskId/color)
-        if (delDia.length === 0) {
-          const base = futuros[0];
-          next.push({
-            id: "S" + Math.random().toString(36).slice(2, 9),
-            taskId: base ? base.taskId : "T" + Math.random().toString(36).slice(2, 8),
-            producto,
-            fecha: f,
-            horas: 0,
-            trabajadorId: workerId,
-            color: base ? base.color : colorFromId(producto),
-          });
+        // Si NO hay nada planificado para ese producto, ese día:
+        if (hoyIdx === -1) {
+          if (horasReales > 0) {
+            // A) crea un tramo "real" SOLO de hoy (no hay futuro que ajustar)
+            const taskId = "T" + Math.random().toString(36).slice(2, 8);
+            const color = colorFromId(taskId);
+            all.push({
+              id: "S" + Math.random().toString(36).slice(2, 9),
+              taskId,
+              producto,
+              fecha,
+              horas: horasReales,
+              trabajadorId: workerId,
+              color,
+            });
+          }
+          // No hay más que ajustar si hoy no existía tramo planificado.
+          continue;
         }
 
-        const hoy = next.find(s => s.trabajadorId === workerId && s.producto === producto && s.fecha === f);
-        if (!hoy) continue;
+        // 3) Sí había tramo hoy
+        const tramoHoy = sameProd[hoyIdx];                       // el que toca hoy
+        const horasPlanHoy = round05(tramoHoy.horas);
+        const diff = round05(horasReales - horasPlanHoy);        // + => hicieron más, - => hicieron menos
 
-        if (delta > 0) {
-          // Falta en hoy → traer de futuros
-          let resta = delta;
-          for (const fs of futuros) {
-            if (resta <= 0) break;
-            const take = Math.min(fs.horas, resta);
-            if (take > 0) {
-              fs.horas = Math.max(0, Math.round((fs.horas - take) * 2) / 2);
-              hoy.horas = Math.round((hoy.horas + take) * 2) / 2;
-              resta = Math.round((resta - take) * 2) / 2;
+        // 3.a) Ajusta el tramo de HOY a lo real
+        if (horasReales <= 0) {
+          // Si realmente no trabajaron en esto hoy, elimina el tramo de hoy
+          all = all.filter(s => s.id !== tramoHoy.id);
+        } else {
+          // Fija exactamente lo trabajado hoy
+          all = all.map(s => (s.id === tramoHoy.id ? { ...s, horas: horasReales } : s));
+        }
+
+        // 3.b) Ajusta el RESTO de tramos del MISMO BLOQUE (taskId) hacia el futuro
+        //     La idea: mantenemos el total del bloque coherente con lo real.
+        //     - Si diff > 0 (trabajaron más hoy) → restamos horas del futuro.
+        //     - Si diff < 0 (trabajaron menos) → añadimos horas hacia el futuro (replanificar).
+        const taskId = tramoHoy.taskId;
+        const delMismoBloqueFuturo = all
+          .filter(s => s.trabajadorId === workerId && s.taskId === taskId && s.fecha > fecha)
+          .sort((a,b) => a.fecha.localeCompare(b.fecha));
+
+        if (diff > 0) {
+          // Trabajaron MÁS que lo planificado hoy → hay que quitar horas del futuro
+          let porQuitar = diff;
+          for (const t of delMismoBloqueFuturo) {
+            if (porQuitar <= 0) break;
+            const take = Math.min(porQuitar, round05(t.horas));
+            const nueva = round05(t.horas - take);
+            porQuitar = round05(porQuitar - take);
+            if (nueva <= 0) {
+              all = all.filter(s => s.id !== t.id);  // elimina totalmente ese tramo
+            } else {
+              all = all.map(s => (s.id === t.id ? { ...s, horas: nueva } : s));
             }
           }
-        } else {
-          // Sobra en hoy → empuja al primer futuro (o crea mañana)
-          let sobra = -delta;
-          let destino = futuros[0];
-          if (!destino) {
-            destino = {
-              id: "S" + Math.random().toString(36).slice(2, 9),
-              taskId: hoy.taskId,
+          // Si porQuitar > 0 y ya no queda futuro, simplemente se “acortó” el bloque total.
+        } else if (diff < 0) {
+          // Trabajaron MENOS que lo planificado hoy → hay que replanificar horas faltantes hacia adelante
+          // Convierto “lo faltante” a cola y la reflujo a partir de mañana
+          const faltante = round05(-diff); // positivo
+          if (faltante > 0) {
+            // 1) Recoge todo lo del trabajador
+            const delTrab = all
+              .filter(s => s.trabajadorId === workerId)
+              .sort((a,b) => a.fecha.localeCompare(b.fecha));
+
+            // 2) keepBefore: todo < (mañana)
+            const startDate = addDays(new Date(fecha), 1);
+            const startF = fmt(startDate);
+            const keepBefore = delTrab.filter(s => s.fecha < startF);
+
+            // 3) tail: todo >= (mañana)
+            const tail = delTrab.filter(s => s.fecha >= startF);
+
+            // 4) Creamos una "queue" que empieza con lo faltante de ESTE MISMO BLOQUE (taskId + color del bloque)
+            const bloqueColor = colorFromId(taskId);
+            const urgentQueueItem: QueueItem = {
               producto,
-              fecha: fmt(addDays(fecha, 1))!,
-              horas: 0,
-              trabajadorId: workerId,
-              color: hoy.color,
+              horas: faltante,
+              color: bloqueColor,
+              taskId, // mismo bloque
             };
-            next.push(destino);
+
+            // 5) Convertimos el tail en cola y metemos el faltante delante
+            const queue = [urgentQueueItem, ...aggregateToQueue(tail)];
+
+            // 6) Ejecutamos reflow desde mañana
+            const worker = workers.find(w => w.id === workerId);
+            if (worker) {
+              const reflujo = reflowFrom(worker, startDate, overrides, keepBefore, queue);
+              // “Otros” = todo lo que no es del trabajador
+              const otros = all.filter(s => s.trabajadorId !== workerId);
+              all = [...otros, ...reflujo];
+            }
           }
-          const reduce = Math.min(hoy.horas, sobra);
-          hoy.horas = Math.round((hoy.horas - reduce) * 2) / 2;
-          destino.horas = Math.round((destino.horas + reduce) * 2) / 2;
         }
 
-        // Limpia slices vacíos de ese producto
-        next = next.filter(s => !(s.trabajadorId === workerId && s.producto === producto && s.horas <= 0));
-      }
+        // 3.c) Limpieza: une tramos contiguos del mismo día y bloque (evita duplicados “same day”)
+        //     (tu helper pushOrMergeSameDay ya hace eso cuando replanifica;
+        //      aquí hacemos una pasada pequeña sólo por si hoy quedó duplicado)
+        all = mergeSameDaySameBlock(all);
+      } // items
+    } // resumen
 
-      // 3) 🔁 Recompacta TODO el plan de ese trabajador desde la fecha del parte
-      const w = workers.find(x => x.id === workerId);
-      if (w) {
-        const startF = f;
-        const delTrab = next
-          .filter(s => s.trabajadorId === workerId)
-          .sort((a, b) => a.fecha.localeCompare(b.fecha));
-
-        const keepBefore = delTrab.filter(s => s.fecha < startF);
-        const tail = delTrab.filter(s => s.fecha >= startF);
-
-        const queue = aggregateToQueue(tail);
-        const replan = reflowFrom(w, new Date(startF), overrides, keepBefore, queue);
-
-        const others = next.filter(s => s.trabajadorId !== workerId);
-        next = [...others, ...replan];
-      }
-    }
-
-    return next;
+    return all.sort((a,b)=> (a.trabajadorId + a.fecha).localeCompare(b.trabajadorId + b.fecha));
   });
 }
+
+// Une tramos duplicados (mismo trabajador+taskId+fecha) sumando horas redondeadas a 0.5
+function mergeSameDaySameBlock(input: TaskSlice[]) {
+  const key = (s: TaskSlice) => `${s.trabajadorId}__${s.taskId}__${s.fecha}`;
+  const map = new Map<string, TaskSlice>();
+  for (const s of input) {
+    const k = key(s);
+    if (!map.has(k)) {
+      map.set(k, { ...s });
+    } else {
+      const cur = map.get(k)!;
+      const horas = Math.max(0, Math.round((cur.horas + s.horas) * 2) / 2);
+      map.set(k, { ...cur, horas });
+    }
+  }
+  return [...map.values()];
+}
+
 
   // 🔽🔽🔽 Pega aquí todo este bloque completo 🔽🔽🔽
 
@@ -1425,7 +1472,7 @@ function eliminarLineaParteDe(wid: string, idx: number) {
 
   try {
     // 3.1 Ajusta el calendario (slices)
-    aplicarResumenAlCalendario(f, resumen);
+    aplicarResumenAlCalendario(parteFecha, resumen);
 
     // 3.2 (Opcional) si hay sesión, fuerza un guardado único ahora
     if (userId) {
