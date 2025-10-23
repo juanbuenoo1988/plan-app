@@ -1518,7 +1518,7 @@ ${items.map(it => `
                     onChange={(e) => {
                       const v = Number(e.target.value);
                       setForm({ ...form, horasTotales: isFinite(v) ? v : 0 });
-                    }}
+                    }
                   />
                   <label style={label}>Trabajador</label>
                   <select style={disabledIf(input, locked)} disabled={locked} value={form.trabajadorId} onChange={(e) => setForm({ ...form, trabajadorId: e.target.value })}>
