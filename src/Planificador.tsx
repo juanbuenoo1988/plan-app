@@ -367,21 +367,7 @@ function AppInner() {
   const [base, setBase] = useState(new Date());
   const { weeks } = useMemo(() => monthGrid(base), [base]);
 
-  const orderedWorkers = useMemo(() => {
-  // Copia para no mutar el estado original
-  const arr = [...workers];
-  // Si no hay selección, devolvemos tal cual
-  if (!form?.trabajadorId) return arr;
-
-  // Mueve al inicio al trabajador seleccionado en el formulario
-  arr.sort((a, b) => {
-    if (a.id === form.trabajadorId) return -1;
-    if (b.id === form.trabajadorId) return 1;
-    return 0;
-  });
-  return arr;
-}, [workers, form.trabajadorId]);
-
+  
   const [locked, setLocked] = useState(true); // bloqueado por defecto
   const canEdit = !locked;
 
@@ -410,6 +396,18 @@ function AppInner() {
     trabajadorId: "W1",
     fechaInicio: fmt(new Date()),
   });
+
+const orderedWorkers = useMemo(() => {
+  const arr = [...workers];
+  if (!form?.trabajadorId) return arr;
+  arr.sort((a, b) => {
+    if (a.id === form.trabajadorId) return -1;
+    if (b.id === form.trabajadorId) return 1;
+    return 0;
+  });
+  return arr;
+}, [workers, form.trabajadorId]); 
+
   // ⬇️ 3.3-C (estados de sesión/carga en la nube)
   const [userId, setUserId] = useState<string | null>(null);
   const [loadingCloud, setLoadingCloud] = useState(false);
@@ -866,6 +864,16 @@ ${seccionesHTML}
     try { localStorage.setItem(STORAGE_KEY, snapshot); } catch {}
   }, [workers, slices, overrides, descs, userId]);
 
+  useEffect(() => {
+  const t = setTimeout(() => {
+    try {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    } catch {}
+  }, 50);
+  return () => clearTimeout(t);
+}, [form.trabajadorId]);
+
+
   function triggerPrint(mode: PrintMode) {
     setPrintMode(mode);
     setTimeout(() => window.print(), 80);
@@ -1195,16 +1203,8 @@ useEffect(() => {
       setEbHoras(0);
     }
     // Al cambiar el trabajador del formulario, sube suavemente al inicio
-useEffect(() => {
-  // Pequeño retraso por si hay reflow del DOM
-  const t = setTimeout(() => {
-    try {
-      window.scrollTo({ top: 0, behavior: "smooth" });
-    } catch { /* no pasa nada en SSR/entornos sin window */ }
-  }, 50);
-  return () => clearTimeout(t);
-}, [form.trabajadorId]);
   }
+
 
   function aplicarEdicion() {
     if (!canEdit) return;
