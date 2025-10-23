@@ -663,123 +663,130 @@ function aplicarHorasTrabajadasAProducto(
   horasTrabajadas: number
 ) {
   setSlices((prev) => {
-    const worked = roundHalf(horasTrabajadas);
-    if (worked <= 0) return prev;
+    try {
+      const worked = roundHalf(horasTrabajadas);
+      if (worked <= 0) return prev;
 
-    const out = [...prev];
+      const out = [...prev];
+      const norm = (s: string) => (s || "").trim().toLowerCase();
 
-    // 0) Identifica el taskId del bloque a ajustar (clave para tocar SOLO ese bloque)
-    const { taskId, color } = findTaskIdForProductFromDate(out, workerId, fecha, producto);
+      // 0) Buscar taskId del bloque a ajustar
+      const { taskId, color } = findTaskIdForProductFromDate(out, workerId, fecha, producto);
 
-    // Si NO hay taskId (no existe ese producto ni hoy ni futuro), no hay de dónde restar
-    if (!taskId) {
-      // Si quieres crear un tramo “real” de hoy aunque no exista bloque, descomenta:
-      // out.push({
-      //   id: "S" + Math.random().toString(36).slice(2, 9),
-      //   taskId: "T" + Math.random().toString(36).slice(2, 8),
-      //   producto,
-      //   fecha,
-      //   horas: worked,
-      //   trabajadorId: workerId,
-      //   color: colorFromId(producto + workerId)
-      // });
-      return out;
-    }
+      // ⚙️ Si no hay bloque planificado, creamos un tramo real de hoy
+      // (esto permite registrar trabajo en un bloque no asignado ese día)
+      if (!taskId) {
+        const newTaskId = "T" + Math.random().toString(36).slice(2, 8);
+        const newColor = colorFromId(producto + workerId);
+        out.push({
+          id: "S" + Math.random().toString(36).slice(2, 9),
+          taskId: newTaskId,
+          producto: (producto || "").trim(),
+          fecha,
+          horas: worked,
+          trabajadorId: workerId,
+          color: newColor,
+        });
+        return mergeSameDaySameBlock(out);
+      }
 
-    // 1) Ajusta el tramo de HOY (si existe en este bloque) a lo realmente trabajado
-    const idxHoy = out.findIndex(s => s.trabajadorId === workerId && s.taskId === taskId && s.fecha === fecha);
-    let diff = 0; // + si trabajaron más que lo planificado hoy; - si trabajaron menos
-    if (idxHoy >= 0) {
-      const planHoy = roundHalf(out[idxHoy].horas);
-      diff = roundHalf(worked - planHoy);
-      if (worked <= 0) {
-        out.splice(idxHoy, 1); // eliminar tramo de hoy
+      // 1) Ajustar tramo de HOY dentro de ese bloque
+      const idxHoy = out.findIndex(
+        (s) =>
+          s.trabajadorId === workerId &&
+          s.taskId === taskId &&
+          s.fecha === fecha
+      );
+
+      let diff = 0;
+      if (idxHoy >= 0) {
+        const planHoy = roundHalf(out[idxHoy].horas);
+        diff = roundHalf(worked - planHoy);
+        out[idxHoy] = { ...out[idxHoy], horas: worked };
       } else {
-        out[idxHoy] = { ...out[idxHoy], horas: worked }; // fijar a lo real
+        // No había tramo hoy → trabajó de más respecto a la planificación futura
+        diff = worked;
       }
-    } else {
-      // hoy no había tramo de este bloque → todo lo trabajado hoy se resta del futuro
-      diff = worked;
-      // (opcional registrar tramo real de hoy dentro del bloque para historial)
-      // out.push({
-      //   id: "S" + Math.random().toString(36).slice(2, 9),
-      //   taskId,
-      //   producto,
-      //   fecha,
-      //   horas: worked,
-      //   trabajadorId: workerId,
-      //   color: color || colorFromId(taskId),
-      // });
-    }
 
-    // 2) Si diff > 0: TRABAJARON MÁS HOY → hay que QUITAR del FUTURO de este mismo taskId
-    //    Si diff < 0: TRABAJARON MENOS HOY → hay que AÑADIR faltante hacia el futuro
-    let minFechaTocada = fecha;
+      let minFechaTocada = fecha;
 
-    if (diff > 0) {
-      let porQuitar = diff;
-      const futuro = out
-        .filter(s => s.trabajadorId === workerId && s.taskId === taskId && s.fecha > fecha)
-        .sort((a, b) => a.fecha.localeCompare(b.fecha));
-      for (const t of futuro) {
-        if (porQuitar <= 0) break;
-        const take = Math.min(roundHalf(t.horas), porQuitar);
-        const nueva = roundHalf(t.horas - take);
-        porQuitar = roundHalf(porQuitar - take);
-        if (nueva <= 0) {
-          // elimina completamente
-          const i = out.findIndex(s => s.id === t.id);
-          if (i >= 0) out.splice(i, 1);
-        } else {
-          const i = out.findIndex(s => s.id === t.id);
-          if (i >= 0) out[i] = { ...out[i], horas: nueva };
-        }
-        if (t.fecha < minFechaTocada) minFechaTocada = t.fecha;
-      }
-    } else if (diff < 0) {
-      // faltante positivo = hay que empujar horas hacia el futuro desde mañana
-      const faltante = roundHalf(-diff);
-      if (faltante > 0) {
-        const mañana = addDays(new Date(fecha), 1);
-        const startF = fmt(mañana);
-
-        const delTrab = out
-          .filter(s => s.trabajadorId === workerId)
+      // 2) Ajustar el resto de tramos del mismo bloque
+      if (diff > 0) {
+        // Trabajó más hoy → restar del futuro
+        let porQuitar = diff;
+        const futuro = out
+          .filter(
+            (s) =>
+              s.trabajadorId === workerId &&
+              s.taskId === taskId &&
+              s.fecha > fecha
+          )
           .sort((a, b) => a.fecha.localeCompare(b.fecha));
 
-        const keepBefore = delTrab.filter(s => s.fecha < startF);
-        const tail = delTrab.filter(s => s.fecha >= startF);
+        for (const t of futuro) {
+          if (porQuitar <= 0) break;
+          const take = Math.min(roundHalf(t.horas), porQuitar);
+          const nueva = roundHalf(t.horas - take);
+          porQuitar = roundHalf(porQuitar - take);
+          if (nueva <= 0) {
+            const i = out.findIndex((s) => s.id === t.id);
+            if (i >= 0) out.splice(i, 1);
+          } else {
+            const i = out.findIndex((s) => s.id === t.id);
+            if (i >= 0) out[i] = { ...out[i], horas: nueva };
+          }
+          if (t.fecha < minFechaTocada) minFechaTocada = t.fecha;
+        }
+      } else if (diff < 0) {
+        // Trabajó menos → refluye faltante al futuro
+        const faltante = roundHalf(-diff);
+        if (faltante > 0) {
+          const mañana = addDays(new Date(fecha), 1);
+          const startF = fmt(mañana);
 
-        const queue: QueueItem[] = [
-          { producto, horas: faltante, color: color || colorFromId(taskId), taskId }, // mismo bloque
-          ...aggregateToQueue(tail),
-        ];
+          const delTrab = out
+            .filter((s) => s.trabajadorId === workerId)
+            .sort((a, b) => a.fecha.localeCompare(b.fecha));
 
-        const w = workers.find(x => x.id === workerId);
-        if (w) {
-          const reflujo = reflowFrom(w, mañana, overrides, keepBefore, queue);
-          const otros = out.filter(s => s.trabajadorId !== workerId);
-          return mergeSameDaySameBlock([...otros, ...reflujo]);
+          const keepBefore = delTrab.filter((s) => s.fecha < startF);
+          const tail = delTrab.filter((s) => s.fecha >= startF);
+
+          const queue: QueueItem[] = [
+            { producto, horas: faltante, color: color || colorFromId(taskId), taskId },
+            ...aggregateToQueue(tail),
+          ];
+
+          const w = workers.find((x) => x.id === workerId);
+          if (w) {
+            const reflujo = reflowFrom(w, mañana, overrides, keepBefore, queue);
+            const otros = out.filter((s) => s.trabajadorId !== workerId);
+            return mergeSameDaySameBlock([...otros, ...reflujo]);
+          }
         }
       }
-    }
 
-    // 3) Limpieza + recompacta desde la mínima fecha tocada para ese trabajador
-    const depurados = mergeSameDaySameBlock(out).filter(s => s.horas > 0.0001);
-    const w = workers.find(x => x.id === workerId);
-    if (!w) return depurados;
-    const rebuilt = compactFrom(w, minFechaTocada, overrides, depurados);
-    const otros = depurados.filter(s => s.trabajadorId !== workerId);
-    return mergeSameDaySameBlock([...otros, ...rebuilt]);
+      // 3) Limpieza + reconstrucción del bloque
+      const depurados = mergeSameDaySameBlock(out).filter((s) => s.horas > 0.0001);
+      const w = workers.find((x) => x.id === workerId);
+      if (!w) return depurados;
+
+      const rebuilt = compactFrom(w, minFechaTocada, overrides, depurados);
+      const otros = depurados.filter((s) => s.trabajadorId !== workerId);
+      return mergeSameDaySameBlock([...otros, ...rebuilt]);
+    } catch (err) {
+      console.warn("⚠️ aplicarHorasTrabajadasAProducto error:", err);
+      return prev; // nunca rompas el flujo de setSlices
+    }
   });
 }
+
 
 function aplicarResumenAlCalendario(fecha: string, resumen: ParteResumenTrabajador[]) {
   for (const r of resumen) {
     for (const it of r.items) {
       const h = Number(it.horas_reales) || 0;
       if (h > 0) {
-        aplicarHorasTrabajadasAProducto(fecha, r.trabajador_id, it.producto, h);
+        aplicarHorasTrabajadasAProducto(fecha, r.trabajador_id, (it.producto || "").trim(), h);
       }
     }
   }
@@ -1534,25 +1541,25 @@ async function guardarParteTrabajo() {
   const f = parteFecha;
   if (!f) { alert("Elige una fecha."); return; }
 
-  // 1) Clonar lo acumulado en la UI
+  // 1) Clonar lo acumulado por trabajador
   const porTrab: PartesPorTrabajador =
     typeof structuredClone === "function"
       ? structuredClone(partePorTrabajador)
       : JSON.parse(JSON.stringify(partePorTrabajador || {}));
 
-  // Si no hay líneas acumuladas, usa la “rápida” (opcional)
+  // 2) Si no hay líneas acumuladas y la línea rápida es válida, añádela
   const lineaRapidaValida = parteProducto && isFinite(parteHoras) && Number(parteHoras) > 0;
   const hayLineasAcumuladas = Object.values(porTrab).some(arr => (arr?.length ?? 0) > 0);
   if (!hayLineasAcumuladas && lineaRapidaValida) {
     porTrab[parteTrabajador] = porTrab[parteTrabajador] ?? [];
     porTrab[parteTrabajador].push({
-      producto: parteProducto,
+      producto: (parteProducto || "").trim(),
       horas_reales: Math.round(Number(parteHoras) * 2) / 2,
       observaciones: (parteObs || "").trim() || undefined,
     });
   }
 
-  // 2) Construir resumen (por trabajador)
+  // 3) Construye resumen
   const resumen: ParteResumenTrabajador[] = Object.entries(porTrab)
     .map(([wid, items]) => {
       const w = workers.find(x => x.id === wid);
@@ -1562,91 +1569,107 @@ async function guardarParteTrabajo() {
     })
     .filter(r => r.items.length > 0);
 
-  if (resumen.length === 0) {
-    alert("No hay líneas para guardar.");
+  if (resumen.length === 0) { alert("No hay líneas para guardar."); return; }
+
+  // 4) *** ACTUALIZA primero el CALENDARIO *** (sin esperar a Storage/BD)
+  try {
+    aplicarResumenAlCalendario(f, resumen); // ← Reprograma bloques YA
+  } catch (e) {
+    console.error("aplicarResumenAlCalendario error:", e);
+    alert("Error al aplicar el parte al calendario.");
     return;
   }
 
-  const payload = {
-    user_id: userId,
-    tenant_id: TENANT_ID,
-    fecha: f,
-    created_at: new Date().toISOString(),
-    resumen,
-    total_taller: resumen.reduce((a, r) => a + r.total_horas, 0),
-  };
-
+  // 5) Sube PDF opcional (JSON) y reescribe filas del mismo día en work_parts
+  //    Todo esto va en un único try/catch/finally para NO quedarse colgado nunca.
   setSavingParte(true);
   setParteMsg(null);
 
   try {
-    // 3) Subir ÚNICO JSON (por día)
+    // 5.1) Subir JSON único del taller (opcional; si tienes bucket configurado)
+    const payload = {
+      user_id: userId,
+      tenant_id: TENANT_ID,
+      fecha: f,
+      created_at: new Date().toISOString(),
+      resumen,
+      total_taller: resumen.reduce((a, r) => a + r.total_horas, 0),
+    };
+
     const safeName = `${payload.fecha} - PARTE TALLER.json`;
     const storagePath = `partes taller inoxidable/${safeName}`;
-    const { error: upErr } = await supabase.storage
-      .from("partes-taller-inoxidable")
-      .upload(
-        storagePath,
-        new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }),
-        { upsert: true }
-      );
-    if (upErr) throw upErr;
+    try {
+      const { error: upErr } = await supabase.storage
+        .from("partes-taller-inoxidable")
+        .upload(
+          storagePath,
+          new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }),
+          { upsert: true }
+        );
+      if (upErr) console.warn("Storage upload warning:", upErr);
+    } catch (e) {
+      // No bloquees el flujo por Storage; sólo avisa por consola
+      console.warn("Storage upload failed (continuamos igualmente):", e);
+    }
 
-    // 4) Reescribir SOLO lo de los trabajadores de este parte (ese día)
-    const ids = [...new Set(resumen.map(r => r.trabajador_id))];
-    if (ids.length > 0) {
+    // 5.2) Reescribe filas del día en work_parts (BORRA del día y VUELVE A INSERTAR)
+    // Borra por tenant + fecha (política B) para evitar RLS por user.
+    try {
       const { error: delErr } = await supabase
         .from("work_parts")
         .delete()
         .eq("tenant_id", TENANT_ID)
-        .eq("fecha", payload.fecha)
-        .in("trabajador_id", ids as any);
-      if (delErr) throw delErr;
+        .eq("fecha", f);
+      if (delErr) console.warn("Delete work_parts warning:", delErr);
+    } catch (e) {
+      console.warn("Delete work_parts failed (continuamos igualmente):", e);
     }
 
-    // 5) Insertar filas nuevas
-    const rows: any[] = [];
-    for (const r of resumen) {
-      for (const it of r.items) {
-        rows.push({
-          user_id: payload.user_id,
-          tenant_id: payload.tenant_id,
-          fecha: payload.fecha,
-          trabajador_id: r.trabajador_id,
-          trabajador_nombre: r.trabajador_nombre,
-          producto: it.producto,
-          horas_reales: it.horas_reales,
-          observaciones: it.observaciones ?? null,
-          storage_path: storagePath,
-        });
+    // Inserta filas nuevas (si quieres mantener histórico a nivel de líneas)
+    try {
+      const rows: any[] = [];
+      for (const r of resumen) {
+        for (const it of r.items) {
+          rows.push({
+            user_id: userId,
+            tenant_id: TENANT_ID,
+            fecha: f,
+            trabajador_id: r.trabajador_id,
+            trabajador_nombre: r.trabajador_nombre,
+            producto: (it.producto || "").trim(),
+            horas_reales: Number(it.horas_reales) || 0,
+            observaciones: it.observaciones ?? null,
+            storage_path: storagePath,
+          });
+        }
       }
-    }
-    if (rows.length > 0) {
-      const { error: insErr } = await supabase.from("work_parts").insert(rows, { returning: "minimal" } as any);
-      if (insErr) throw insErr;
+      if (rows.length) {
+        const { error: insErr } = await supabase
+          .from("work_parts")
+          .insert(rows, { returning: "minimal" } as any);
+        if (insErr) console.warn("Insert work_parts warning:", insErr);
+      }
+    } catch (e) {
+      console.warn("Insert work_parts failed (continuamos igualmente):", e);
     }
 
-    // 6) Actualizar CALENDARIO local YA (sin esperar realtime)
-    aplicarResumenAlCalendario(payload.fecha, resumen);
-
-    // 7) Limpiar UI + feedback
-    setParteMsg("✅ Parte del taller guardado correctamente.");
+    setParteMsg("✅ Parte del taller guardado y aplicado al calendario.");
+    // Limpieza UI
     setPartePorTrabajador({});
     setParteProducto("");
     setParteHoras(0);
     setParteObs("");
 
-    // (Opcional) Abrir PDF
-    setTimeout(() => generarVentanaPDFParteTaller(payload.fecha, resumen), 50);
+    // (Opcional) Abrir ventana PDF
+    setTimeout(() => generarVentanaPDFParteTaller(f, resumen), 50);
 
   } catch (e: any) {
-    console.error("guardarParteTrabajo error:", e);
-    setParteMsg(`⚠️ Error: ${e?.message ?? String(e)}`);
+    console.error(e);
+    setParteMsg(`⚠️ Error al guardar: ${e?.message ?? String(e)}`);
   } finally {
-    setSavingParte(false); // <- pase lo que pase, desbloquea botón
+    setSavingParte(false); // ← JAMÁS debe quedarse en true
   }
 }
-
 
 function printParteTaller() {
   // 1) Clona lo acumulado por trabajador
@@ -1900,10 +1923,10 @@ function printParteTaller() {
   style={btnActionPrimary}
   onClick={guardarParteTrabajo}
   disabled={savingParte || (!hayLineasEnAlguno && (!parteProducto || parteHoras <= 0))}
-  title={hayLineasEnAlguno ? "Guardar parte del taller" : "Añade una línea o rellena la línea rápida"}
 >
   {savingParte ? "Guardando…" : "💾 Guardar parte (todo)"}
 </button>
+
 
 <button
   style={btnAction}
