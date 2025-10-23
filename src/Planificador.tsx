@@ -1538,12 +1538,16 @@ async function guardarParteTrabajo() {
 
   try {
     // 2) BORRAR filas previas del mismo día (por tenant)
-    const { error: delErr } = await supabase
-      .from("work_parts")
-      .delete()
-      .eq("tenant_id", TENANT_ID)
-      .eq("fecha", parteFecha);
-    if (delErr) throw delErr;
+    const workerIdsDeEsteParte = [...new Set(resumen.map(r => r.trabajador_id))];
+if (workerIdsDeEsteParte.length > 0) {
+  const { error: delErr } = await supabase
+    .from("work_parts")
+    .delete()
+    .eq("tenant_id", TENANT_ID)
+    .eq("fecha", parteFecha)
+    .in("trabajador_id", workerIdsDeEsteParte as any); // supabase: filter IN
+  if (delErr) throw delErr;
+}
 
     // 3) INSERTAR nuevas filas del parte
     const rows: any[] = [];
