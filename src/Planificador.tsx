@@ -1629,7 +1629,7 @@ function printParteTaller() {
 <button
   style={btnAction}
   className="no-print"
-  onClick={printParteTaller}   {/* ← cambia la función de imprimir */}
+  onClick={printParteTaller}
   disabled={!hayLineasEnAlguno && (!parteProducto || parteHoras <= 0)}
   title="Imprime el parte del taller (todas las secciones)"
 >
