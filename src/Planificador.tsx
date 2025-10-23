@@ -15,7 +15,6 @@ import {
 } from "date-fns";
 import { es } from "date-fns/locale";
 
-
 /* ===================== Configuración ===================== */
 const PASSWORD = "taller2025"; // ← cámbiala por la que quieras
 const STORAGE_KEY = "planificador:v1";
@@ -122,6 +121,15 @@ type ParteItem = {
   producto: string;        // p.ej. "OT-250033"
   horas_reales: number;    // p.ej. 6.5
   observaciones?: string;  // opcional
+};
+
+type PartesPorTrabajador = Record<string, ParteItem[]>;
+
+type ParteResumenTrabajador = {
+  trabajador_id: string;
+  trabajador_nombre: string;
+  items: ParteItem[];
+  total_horas: number;
 };
 
 /* ===================== Util ===================== */
@@ -467,6 +475,69 @@ ${items.map(it => `
 </table>
 <script>
   // Abre diálogo de impresión al cargar (elige "Guardar como PDF")
+  window.onload = function(){ window.print(); };
+</script>
+</body></html>`;
+
+  const wwin = window.open("", "_blank");
+  if (!wwin) {
+    alert("Permite la ventana emergente para descargar/imprimir el PDF.");
+    return;
+  }
+  wwin.document.open();
+  wwin.document.write(html);
+  wwin.document.close();
+  wwin.focus();
+}
+
+function generarVentanaPDFParteTaller(fecha: string, resumen: ParteResumenTrabajador[]) {
+  const totalTaller = resumen.reduce((a, r) => a + (Number(r.total_horas) || 0), 0);
+
+  const seccionesHTML = resumen.map(r => {
+    const filas = r.items.map(it => `
+      <tr>
+        <td>${it.producto}</td>
+        <td class="right">${it.horas_reales}</td>
+        <td class="obs">${it.observaciones || ""}</td>
+      </tr>
+    `).join("");
+
+    return `
+      <h2 style="margin: 24px 0 6px 0; font-size:16px">👤 ${r.trabajador_nombre}</h2>
+      <table>
+        <thead><tr><th>Descripción / bloque</th><th class="right">Horas</th><th>Observaciones</th></tr></thead>
+        <tbody>${filas || `<tr><td colspan="3" style="color:#6b7280">— Sin líneas —</td></tr>`}</tbody>
+        <tfoot><tr><td class="tot">Subtotal ${r.trabajador_nombre}</td><td class="right tot">${r.total_horas}</td><td></td></tr></tfoot>
+      </table>
+    `;
+  }).join("");
+
+  const html = `<!doctype html>
+<html><head><meta charset="utf-8" />
+<title>Parte Taller ${fecha}</title>
+<style>
+body{font-family: Arial, sans-serif; padding:24px; color:#111827}
+h1{margin:0 0 6px 0; font-size:20px}
+.sub{color:#6b7280; margin-bottom:16px}
+table{width:100%; border-collapse:collapse; margin-top:8px}
+th,td{border-bottom:1px solid #e5e7eb; padding:8px; text-align:left}
+th{background:#f9fafb}
+.right{text-align:right}
+.tot{font-weight:700}
+.obs{white-space:pre-wrap; color:#374151}
+@page { size: auto; margin: 15mm; }
+</style></head>
+<body>
+<h1>Parte de trabajo — Taller completo</h1>
+<div class="sub">Fecha: <b>${fecha}</b></div>
+
+${seccionesHTML}
+
+<hr style="margin:24px 0" />
+<h2 style="margin:0 0 6px 0">TOTAL HORAS TALLER: ${totalTaller}</h2>
+
+<script>
+  // Abre el diálogo de impresión automáticamente (elige "Guardar como PDF")
   window.onload = function(){ window.print(); };
 </script>
 </body></html>`;
@@ -1029,7 +1100,24 @@ ${items.map(it => `
   const [parteProducto, setParteProducto] = useState<string>("");
   const [parteHoras, setParteHoras] = useState<number>(0);
   const [parteObs, setParteObs] = useState<string>("");
-  const [parteItems, setParteItems] = useState<ParteItem[]>([]);
+  const [partePorTrabajador, setPartePorTrabajador] = useState<PartesPorTrabajador>({});
+  const hayLineasEnAlguno = useMemo(() => {
+  return Object.values(partePorTrabajador).some(arr => (arr?.length ?? 0) > 0);
+}, [partePorTrabajador]);
+// Total por trabajador
+  const totalesPorTrabajador = useMemo(() => {
+  const map: Record<string, number> = {};
+  for (const [wid, items] of Object.entries(partePorTrabajador)) {
+    map[wid] = items.reduce((a, it) => a + (Number(it.horas_reales) || 0), 0);
+  }
+  return map;
+}, [partePorTrabajador]);
+
+// Total general del taller (suma de todos)
+const totalTaller = useMemo(
+  () => Object.values(totalesPorTrabajador).reduce((a, n) => a + n, 0),
+  [totalesPorTrabajador]
+);
 
     const parteTotalHoras = useMemo(
   () => parteItems.reduce((acc, it) => acc + (Number(it.horas_reales) || 0), 0),
@@ -1037,6 +1125,14 @@ ${items.map(it => `
     );
   const [savingParte, setSavingParte] = useState<boolean>(false);
   const [parteMsg, setParteMsg] = useState<string | null>(null);
+
+  // Si el trabajador actual no está en el objeto, lo creamos (para que aparezca su bloque vacío)
+useEffect(() => {
+  setPartePorTrabajador(prev => {
+    if (prev[parteTrabajador]) return prev;
+    return { ...prev, [parteTrabajador]: [] };
+  });
+}, [parteTrabajador]);
 
   // Productos/bloques disponibles (del calendario) para ese trabajador y día
   const productosDisponibles = useMemo(() => {
@@ -1120,7 +1216,10 @@ function agregarLineaParte() {
     observaciones: parteObs.trim() || undefined,
   };
 
-  setParteItems(prev => [...prev, item]);
+  setPartePorTrabajador(prev => {
+    const arr = prev[parteTrabajador] ?? [];
+    return { ...prev, [parteTrabajador]: [...arr, item] };
+  });
 
   // limpia campos para meter otra línea
   setParteProducto("");
@@ -1128,152 +1227,182 @@ function agregarLineaParte() {
   setParteObs("");
 }
 
-function eliminarLineaParte(idx: number) {
-  setParteItems(prev => prev.filter((_, i) => i !== idx));
+function eliminarLineaParteDe(wid: string, idx: number) {
+  setPartePorTrabajador(prev => {
+    const arr = prev[wid] ?? [];
+    return { ...prev, [wid]: arr.filter((_, i) => i !== idx) };
+  });
 }
 
     // Guardar parte de trabajo: sube un JSON a Storage y registra fila en BD
-  async function guardarParteTrabajo() {
-  if (!userId) { alert("Inicia sesión para guardar en la nube."); return; }
-  const w = workers.find(x => x.id === parteTrabajador);
-  if (!w) { alert("Trabajador no válido."); return; }
-  if (!parteFecha) { alert("Elige una fecha."); return; }
 
-  // Si no hay líneas acumuladas, usa la línea "rápida" actual
-  const items: ParteItem[] = (() => {
-    if (parteItems.length > 0) return parteItems;
-    if (!parteProducto) { alert("Elige la descripción/bloque."); return []; }
-    if (!isFinite(parteHoras) || parteHoras <= 0) { alert("Horas reales inválidas."); return []; }
-    return [{
+   async function guardarParteTrabajo() {
+  if (!userId) { alert("Inicia sesión para guardar en la nube."); return; }
+  const f = parteFecha;
+  if (!f) { alert("Elige una fecha."); return; }
+
+  // 1) Construye un objeto “por trabajador” con lo acumulado en la UI
+  //    + (opcional) la línea rápida actual si no hay ninguna línea acumulada.
+  // Nota: structuredClone está en navegadores modernos; si te da error,
+  // puedes sustituir por JSON.parse(JSON.stringify(partePorTrabajador))
+  const porTrab: PartesPorTrabajador =
+    typeof structuredClone === "function"
+      ? structuredClone(partePorTrabajador)
+      : JSON.parse(JSON.stringify(partePorTrabajador || {}));
+
+  const lineaRapidaValida = parteProducto && isFinite(parteHoras) && Number(parteHoras) > 0;
+  const hayLineasAcumuladas = Object.values(porTrab).some(arr => (arr?.length ?? 0) > 0);
+
+  if (!hayLineasAcumuladas && lineaRapidaValida) {
+    // si no hay nada acumulado, mete la línea rápida en el trabajador seleccionado
+    porTrab[parteTrabajador] = porTrab[parteTrabajador] ?? [];
+    porTrab[parteTrabajador].push({
       producto: parteProducto,
       horas_reales: Math.round(Number(parteHoras) * 2) / 2,
-      observaciones: parteObs.trim() || undefined,
-    }];
-  })();
-  if (items.length === 0) return;
+      observaciones: (parteObs || "").trim() || undefined,
+    });
+  }
+
+  // 2) Construye el RESUMEN por trabajador (nombre, items, subtotal)
+  const resumen: ParteResumenTrabajador[] = Object.entries(porTrab)
+    .map(([wid, items]) => {
+      const w = workers.find(x => x.id === wid);
+      const nombre = w?.nombre || wid;
+      const total = items.reduce((a, it) => a + (Number(it.horas_reales) || 0), 0);
+      return {
+        trabajador_id: wid,
+        trabajador_nombre: nombre,
+        items,
+        total_horas: total,
+      };
+    })
+    .filter(r => r.items.length > 0); // quitamos secciones vacías
+
+  if (resumen.length === 0) {
+    alert("No hay líneas para guardar.");
+    return;
+  }
 
   const payload = {
     user_id: userId,
     tenant_id: TENANT_ID,
-    fecha: parteFecha,
-    trabajador_id: parteTrabajador,
-    trabajador_nombre: w.nombre,
-    created_at: new Date().toISOString(),
-    items,
-    total_horas: items.reduce((a, it) => a + (Number(it.horas_reales)||0), 0),
+    fecha: f,                             // YYYY-MM-DD
+    created_at: new Date().toISOString(), // ISO
+    resumen,                              // secciones por trabajador
+    total_taller: resumen.reduce((a, r) => a + r.total_horas, 0),
   };
 
   setSavingParte(true);
   setParteMsg(null);
   try {
-    // 1) JSON único con todas las líneas
-    const safeName = `${payload.fecha} - ${w.nombre}.json`;
+    // 3) Sube un ÚNICO JSON del taller al Storage
+    //    - bucket: "partes-taller-inoxidable"
+    //    - carpeta: "partes taller inoxidable"
+    const safeName = `${payload.fecha} - PARTE TALLER.json`;
     const storagePath = `partes taller inoxidable/${safeName}`;
+
     const { error: upErr } = await supabase.storage
       .from("partes-taller-inoxidable")
-      .upload(storagePath, new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }), { upsert: true });
-    if (upErr) { console.error("Storage upload error:", upErr); throw upErr; }
+      .upload(
+        storagePath,
+        new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }),
+        { upsert: true }
+      );
 
-    // 2) Inserta una fila por línea en work_parts
-    const rows = items.map(it => ({
-      user_id: payload.user_id,
-      tenant_id: payload.tenant_id,
-      fecha: payload.fecha,
-      trabajador_id: payload.trabajador_id,
-      trabajador_nombre: payload.trabajador_nombre,
-      producto: it.producto,
-      horas_reales: it.horas_reales,
-      observaciones: it.observaciones ?? null,
-      storage_path: storagePath,
-    }));
+    if (upErr) {
+      console.error("Storage upload error:", upErr);
+      throw upErr;
+    }
 
-    const { error: insErr } = await supabase.from("work_parts").insert(rows);
-    if (insErr) { console.error("work_parts insert error:", insErr); throw insErr; }
+    // 4) Inserta una fila por línea en la tabla "work_parts"
+    //    (sirve para consultas/exports rápidos)
+    const rows: any[] = [];
+    for (const r of resumen) {
+      for (const it of r.items) {
+        rows.push({
+          user_id: payload.user_id,
+          tenant_id: payload.tenant_id,
+          fecha: payload.fecha,
+          trabajador_id: r.trabajador_id,
+          trabajador_nombre: r.trabajador_nombre,
+          producto: it.producto,
+          horas_reales: it.horas_reales,
+          observaciones: it.observaciones ?? null,
+          storage_path: storagePath, // dónde está el JSON del taller
+        });
+      }
+    }
 
-    setParteMsg("✅ Parte guardado correctamente.");
-    // Si usaste varias líneas, vacía el acumulado
-    // Genera ventana lista para "Guardar como PDF"
-// 1) Quita el “Guardando...” ya
-setSavingParte(false);
+    if (rows.length > 0) {
+      const { error: insErr } = await supabase.from("work_parts").insert(rows);
+      if (insErr) {
+        console.error("work_parts insert error:", insErr);
+        throw insErr;
+      }
+    }
 
-// 2) Y AHORA abre la ventana de imprimir con un pequeño retraso,
-//    para que la pantalla pueda mostrar el mensaje y cambiar el botón.
-setTimeout(() => {
-  generarVentanaPDFParte(
-    payload.fecha,
-    payload.trabajador_nombre,
-    items
-  );
-}, 50);
+    // 5) Éxito → mensaje y limpieza de estado
+    setParteMsg("✅ Parte del taller guardado correctamente.");
 
+    // Limpia todo lo acumulado para empezar de cero si quieres
+    setPartePorTrabajador({});
+    setParteProducto("");
+    setParteHoras(0);
+    setParteObs("");
 
-    if (parteItems.length > 0) setParteItems([]);
+    // 6) (Opcional pero recomendado) Abrir ventana de impresión del parte del taller:
+    //    Si AÚN NO tienes la función generarVentanaPDFParteTaller del paso 7,
+    //    comenta estas 4 líneas.
+    setTimeout(() => {
+      generarVentanaPDFParteTaller(payload.fecha, resumen);
+    }, 50);
+
   } catch (e: any) {
-    setParteMsg(`⚠️ Error: ${e.message ?? String(e)}`);
+    setParteMsg(`⚠️ Error: ${e?.message ?? String(e)}`);
   } finally {
     setSavingParte(false);
   }
 }
 
-function printParteDiario() {
-  const w = workers.find(x => x.id === parteTrabajador);
-  if (!w) { alert("Trabajador no válido."); return; }
-  if (!parteFecha) { alert("Elige una fecha."); return; }
+function printParteTaller() {
+  // 1) Clona lo acumulado por trabajador
+  const porTrab: PartesPorTrabajador =
+    typeof structuredClone === "function"
+      ? structuredClone(partePorTrabajador)
+      : JSON.parse(JSON.stringify(partePorTrabajador || {}));
 
-  // Si no hay líneas agregadas, imprime la línea del formulario si es válida
-  const items = parteItems.length > 0
-    ? parteItems
-    : (parteProducto && parteHoras > 0
-        ? [{ producto: parteProducto, horas_reales: parteHoras, observaciones: (parteObs||"").trim() || undefined }]
-        : []);
+  // 2) Si no hay nada acumulado y la línea rápida es válida, métela en el trabajador seleccionado
+  const lineaRapidaValida = parteProducto && isFinite(parteHoras) && Number(parteHoras) > 0;
+  const hayLineasAcumuladas = Object.values(porTrab).some(arr => (arr?.length ?? 0) > 0);
 
-  const total = items.reduce((a, it) => a + (Number(it.horas_reales)||0), 0);
+  if (!hayLineasAcumuladas && lineaRapidaValida) {
+    porTrab[parteTrabajador] = porTrab[parteTrabajador] ?? [];
+    porTrab[parteTrabajador].push({
+      producto: parteProducto,
+      horas_reales: Math.round(Number(parteHoras) * 2) / 2,
+      observaciones: (parteObs || "").trim() || undefined,
+    });
+  }
 
-  const html = `<!doctype html>
-<html><head><meta charset="utf-8" />
-<title>Parte diario</title>
-<style>
-body{font-family: Arial, sans-serif; padding:24px; color:#111827}
-h1{margin:0 0 6px 0; font-size:20px}
-.sub{color:#6b7280; margin-bottom:16px}
-table{width:100%; border-collapse:collapse}
-th,td{border-bottom:1px solid #e5e7eb; padding:8px; text-align:left}
-th{background:#f9fafb}
-.right{text-align:right}
-.tot{font-weight:700}
-.obs{white-space:pre-wrap; color:#374151}
-@media print{ .noprint{display:none} }
-</style></head>
-<body>
-<div class="noprint" style="text-align:right;margin-bottom:12px">
-  <button onclick="window.print()">Imprimir</button>
-</div>
-<h1>Parte de trabajo</h1>
-<div class="sub">Fecha: <b>${parteFecha}</b> &nbsp;|&nbsp; Trabajador: <b>${w.nombre}</b></div>
-<table>
-<thead><tr><th>Descripción / bloque</th><th class="right">Horas</th><th>Observaciones</th></tr></thead>
-<tbody>
-${items.map(it => `
-<tr>
-  <td>${it.producto}</td>
-  <td class="right">${it.horas_reales}</td>
-  <td class="obs">${it.observaciones || ""}</td>
-</tr>
-`).join("")}
-</tbody>
-<tfoot>
-<tr><td class="tot">TOTAL</td><td class="right tot">${total}</td><td></td></tr>
-</tfoot>
-</table>
-</body></html>`;
+  // 3) Construye el resumen por trabajador (con subtotales)
+  const resumen: ParteResumenTrabajador[] = Object.entries(porTrab)
+    .map(([wid, items]) => {
+      const w = workers.find(x => x.id === wid);
+      const nombre = w?.nombre || wid;
+      const total = items.reduce((a, it) => a + (Number(it.horas_reales) || 0), 0);
+      return { trabajador_id: wid, trabajador_nombre: nombre, items, total_horas: total };
+    })
+    .filter(r => r.items.length > 0);
 
-  const wwin = window.open("", "_blank");
-  if (!wwin) return alert("Permite la ventana emergente para imprimir.");
-  wwin.document.open(); wwin.document.write(html); wwin.document.close(); wwin.focus();
+  if (resumen.length === 0) {
+    alert("No hay líneas para imprimir.");
+    return;
+  }
+
+  // 4) Llama al generador de PDF del taller
+  generarVentanaPDFParteTaller(parteFecha, resumen);
 }
-
-
-    
+   
 
 
   /* ===================== Render ===================== */
@@ -1489,24 +1618,24 @@ ${items.map(it => `
 
   {/* Guardar TODO el parte: se desactiva si no hay líneas */}
   <button
-    style={btnActionPrimary}
-      onClick={guardarParteTrabajo}
-      disabled={savingParte || (parteItems.length === 0 && (!parteProducto || parteHoras <= 0))}
-      title={parteItems.length === 0 ? "Añade al menos una línea" : "Guardar parte"}
-  >
-    {savingParte ? "Guardando…" : "💾 Guardar parte (todo)"}
-  </button>
+  style={btnActionPrimary}
+  onClick={guardarParteTrabajo}
+  disabled={savingParte || (!hayLineasEnAlguno && (!parteProducto || parteHoras <= 0))}
+  title={hayLineasEnAlguno ? "Guardar parte del taller" : "Añade una línea o rellena la línea rápida"}
+>
+  {savingParte ? "Guardando…" : "💾 Guardar parte (todo)"}
+</button>
 
-  {/* Imprimir parte diario */}
-  <button
-    style={btnAction}
-    className="no-print"
-    onClick={printParteDiario} 
-    disabled={parteItems.length === 0 && (!parteProducto || parteHoras <= 0)}
-    title="Imprime el parte con las líneas añadidas"
-  >
-    🖨️ Imprimir parte diario
-  </button>
+<button
+  style={btnAction}
+  className="no-print"
+  onClick={printParteTaller}   {/* ← cambia la función de imprimir */}
+  disabled={!hayLineasEnAlguno && (!parteProducto || parteHoras <= 0)}
+  title="Imprime el parte del taller (todas las secciones)"
+>
+  🖨️ Imprimir parte del taller
+</button>
+
 
   {/* Mensajes y ayudas (debajo, centrados) */}
 {parteMsg && (
@@ -1519,37 +1648,84 @@ ${items.map(it => `
       Se guardará en la carpeta <b>“partes taller inoxidable”</b> de tu almacenamiento.
 </div>
 
-{parteItems.length > 0 && (
-  <div style={{ marginTop: 10, border: "1px solid #e5e7eb", borderRadius: 8, padding: 10 }}>
-    <div style={{ fontWeight: 600, marginBottom: 8 }}>Líneas añadidas</div>
+  {/* === LISTADO AGRUPADO POR TRABAJADOR === */}
+<div style={{ marginTop: 10, border: "1px solid #e5e7eb", borderRadius: 8, padding: 10 }}>
+  <div style={{ fontWeight: 600, marginBottom: 8 }}>Líneas por trabajador</div>
 
-    <div style={{
-      display: "grid",
-      gridTemplateColumns: "1fr 100px 1fr 90px",
-      gap: 8, fontSize: 14, fontWeight: 600, color: "#374151"
-    }}>
-      <div>Descripción/bloque</div><div>Horas</div><div>Observaciones</div><div></div>
-    </div>
+  {(() => {
+    // Aseguramos que aparece el trabajador seleccionado, aunque no tenga líneas
+    const trabajadoresConSeccion = new Set<string>(Object.keys(partePorTrabajador));
+    trabajadoresConSeccion.add(parteTrabajador);
 
-    {parteItems.map((it, idx) => (
-      <div key={`pi-${idx}`} style={{
-        display: "grid",
-        gridTemplateColumns: "1fr 100px 1fr 90px",
-        gap: 8, alignItems: "center",
-        padding: "6px 0", borderTop: "1px solid #f3f4f6"
-      }}>
-        <div>{it.producto}</div>
-        <div>{it.horas_reales}</div>
-        <div style={{ whiteSpace: "pre-wrap" }}>{it.observaciones || "—"}</div>
-        <button style={btnDanger} onClick={() => eliminarLineaParte(idx)}>Eliminar</button>
-      </div>
-    ))}
+    // Lo pasamos a array y ordenamos por nombre visible
+    const lista = Array.from(trabajadoresConSeccion).sort((a, b) => {
+      const wa = workers.find(w => w.id === a)?.nombre || a;
+      const wb = workers.find(w => w.id === b)?.nombre || b;
+      return wa.localeCompare(wb, "es");
+    });
 
-    <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 8, fontWeight: 700 }}>
-      Total horas: {parteTotalHoras}
-    </div>
-  </div>
-)}
+    if (lista.length === 0) {
+      return <div style={{ color: "#6b7280", fontSize: 13 }}>Aún no hay líneas.</div>;
+    }
+
+    return (
+      <>
+        {lista.map(wid => {
+          const w = workers.find(x => x.id === wid);
+          const nombre = w?.nombre || wid;
+          const items = partePorTrabajador[wid] ?? [];
+          const total = totalesPorTrabajador[wid] ?? 0;
+
+          return (
+            <div key={`sec-${wid}`} style={{ marginBottom: 16 }}>
+              <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 6 }}>
+                👤 {nombre}
+              </div>
+
+              <div style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 100px 1fr 90px",
+                gap: 8, fontSize: 14, fontWeight: 600, color: "#374151"
+              }}>
+                <div>Descripción/bloque</div><div>Horas</div><div>Observaciones</div><div></div>
+              </div>
+
+              {items.length === 0 ? (
+                <div style={{ padding: "8px 0", color: "#6b7280", fontSize: 13 }}>— Sin líneas aún —</div>
+              ) : (
+                items.map((it, idx) => (
+                  <div key={`pi-${wid}-${idx}`} style={{
+                    display: "grid",
+                    gridTemplateColumns: "1fr 100px 1fr 90px",
+                    gap: 8, alignItems: "center",
+                    padding: "6px 0", borderTop: "1px solid #f3f4f6"
+                  }}>
+                    <div>{it.producto}</div>
+                    <div>{it.horas_reales}</div>
+                    <div style={{ whiteSpace: "pre-wrap" }}>{it.observaciones || "—"}</div>
+                    <button style={btnDanger} onClick={() => eliminarLineaParteDe(wid, idx)}>Eliminar</button>
+                  </div>
+                ))
+              )}
+
+              <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 8, fontWeight: 700 }}>
+                Subtotal {nombre}: {total}
+              </div>
+            </div>
+          );
+        })}
+
+        <div style={{
+          marginTop: 12, paddingTop: 8, borderTop: "2px solid #e5e7eb",
+          display: "flex", justifyContent: "flex-end", fontWeight: 800
+        }}>
+          TOTAL HORAS TALLER: {totalTaller}
+        </div>
+      </>
+    );
+  })()}
+</div>
+
 </div>
 </div>
 </div>
