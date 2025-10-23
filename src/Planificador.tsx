@@ -1388,6 +1388,13 @@ ${items.map(it => `
                   </select>
 
 
+<label style={label}>Buscar bloque</label>
+<div style={{ display: "flex", gap: 8 }}>
+  <input
+    style={input}
+    placeholder="Escribe para filtrar por nombre del bloque/producto"
+    value={parteQuery}
+    onChange={e=>setParteQuery(e.target.value)}
   />
   <button
     type="button"
