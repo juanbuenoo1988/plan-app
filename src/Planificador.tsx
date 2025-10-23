@@ -567,107 +567,143 @@ ${seccionesHTML}
   wwin.focus();
 }
 
-// === Ajusta el calendario a partir de los PARTES reales (por fecha) ===
-// Toma el resumen por trabajador (lo que guardas/imprimes) y reprograma cada bloque
+/**
+ * Ajusta el calendario con las horas reales introducidas en un PARTE para una fecha dada.
+ * - Solo toca los slices del mismo trabajador y producto.
+ * - Ajusta exactamente las horas del día a las horas reales (“objetivo”).
+ * - Si sobran/faltan horas, compensa con los días futuros del mismo bloque.
+ * - Recompacta SOLO desde esa fecha para ese trabajador.
+ */
 function aplicarResumenAlCalendario(fechaStr: string, resumen: ParteResumenTrabajador[]) {
   const fecha = new Date(fechaStr);
-  const fHoy = fmt(fecha);
+  if (isNaN(fecha.getTime?.() ?? NaN)) return;
 
-  setSlices(prev => {
-    let out = [...prev];
+  setSlices((prevAll) => {
+    let next = [...prevAll];
 
-    // Por cada trabajador que tenga líneas ese día
     for (const r of resumen) {
-      const w = workers.find(x => x.id === r.trabajador_id);
-      if (!w) continue;
+      const workerId = r.trabajador_id;
 
-      // Agrupa horas reales del día por producto (por si hay varias líneas del mismo producto)
+      // Trabajamos por producto (sumando líneas repetidas)
       const horasPorProducto = new Map<string, number>();
       for (const it of r.items) {
-        const h = Math.max(0, Math.round(Number(it.horas_reales) * 2) / 2);
-        horasPorProducto.set(it.producto, (horasPorProducto.get(it.producto) || 0) + h);
+        const h = Number(it.horas_reales) || 0;
+        if (h <= 0) continue;
+        horasPorProducto.set(it.producto, Math.round(((horasPorProducto.get(it.producto) || 0) + h) * 2) / 2);
       }
 
-      // Reprograma cada producto del que haya parte ese día
-      for (const [producto, horasRealesHoy] of horasPorProducto.entries()) {
-        // Todas las slices de ese trabajador y producto
-        const delWProd = out
-          .filter(s => s.trabajadorId === w.id && s.producto === producto)
+      // Si no hay líneas válidas, no tocamos nada
+      if (horasPorProducto.size === 0) continue;
+
+      for (const [producto, horasObjetivo] of horasPorProducto.entries()) {
+        // 1) Slices del día y del futuro para este worker+producto
+        const f = fmt(fecha);
+        const delDia = next.filter(s => s.trabajadorId === workerId && s.producto === producto && s.fecha === f);
+        const futuros = next
+          .filter(s => s.trabajadorId === workerId && s.producto === producto && s.fecha! > f!)
           .sort((a, b) => a.fecha.localeCompare(b.fecha));
 
-        if (delWProd.length === 0) {
-          // Si no estaba planificado pero hay parte, lo insertamos como "manual" ese día
-          if (horasRealesHoy > 0) {
-            out.push({
-              id: "S" + Math.random().toString(36).slice(2, 9),
-              taskId: "T" + Math.random().toString(36).slice(2, 8),
-              producto,
-              fecha: fHoy,
-              horas: horasRealesHoy,
-              trabajadorId: w.id,
-              color: URGENT_COLOR, // lo marcas en amarillo
-            });
+        const asignadoHoy = delDia.reduce((a, s) => a + s.horas, 0);
+        const delta = Math.round((horasObjetivo - asignadoHoy) * 2) / 2;
+
+        // 2) Si ya coincide, no hacemos nada
+        if (Math.abs(delta) < 1e-9) continue;
+
+        // 3) Asegura que existe al menos 1 slice para hoy (creamos uno si hace falta)
+        let daySlices = delDia;
+        if (daySlices.length === 0) {
+          // generamos un slice nuevo TOMANDO el color/taskId de un futuro si existe, o uno nuevo
+          let baseTaskId = "T" + Math.random().toString(36).slice(2, 8);
+          let baseColor = colorFromId(baseTaskId);
+          if (futuros.length > 0) {
+            baseTaskId = futuros[0].taskId;
+            baseColor = futuros[0].color;
           }
-          continue;
-        }
-
-        // 1) Elige el taskId "correcto" para reprogramar:
-        //    - si hay una slice exactamente en fHoy, usa ese taskId
-        //    - si no, usa el primer taskId con slice futura >= fHoy
-        let taskId: string | null = null;
-        const sameDay = delWProd.find(s => s.fecha === fHoy);
-        if (sameDay) {
-          taskId = sameDay.taskId;
-        } else {
-          const futuros = delWProd.filter(s => s.fecha >= fHoy);
-          taskId = (futuros[0]?.taskId) || delWProd[0].taskId;
-        }
-
-        // Color del bloque (mantener el existente)
-        const colorExistente = delWProd.find(s => s.taskId === taskId)?.color || colorFromId(taskId!);
-
-        // 2) Total programado del bloque desde HOY (incluido)
-        const totalDesdeHoy = delWProd
-          .filter(s => s.taskId === taskId && s.fecha >= fHoy)
-          .reduce((a, s) => a + s.horas, 0);
-
-        // 3) Elimina TODAS las slices de ese bloque (taskId) desde HOY en adelante
-        out = out.filter(s => !(s.trabajadorId === w.id && s.taskId === taskId && s.fecha >= fHoy));
-
-        // 4) Inserta la slice de HOY con las HORAS REALES
-        if (horasRealesHoy > 0) {
-          pushOrMergeSameDay(out, {
+          daySlices = [{
             id: "S" + Math.random().toString(36).slice(2, 9),
-            taskId: taskId!,
+            taskId: baseTaskId,
             producto,
-            fecha: fHoy,
-            horas: horasRealesHoy,
-            trabajadorId: w.id,
-            color: colorExistente,
-          });
+            fecha: f!,
+            horas: 0,
+            trabajadorId: workerId,
+            color: baseColor,
+          }];
+          next.push(daySlices[0]);
         }
 
-        // 5) Recalcula lo que queda del bloque a partir de MAÑANA
-        const restante = Math.max(0, Math.round((totalDesdeHoy - horasRealesHoy) * 2) / 2);
-        if (restante > 0) {
-          const plan = planificarBloqueAuto(
-            producto,
-            restante,
-            w,
-            addDays(fecha, 1),
-            base,
-            out,        // "existentes" ya sin las slices borradas del bloque
-            overrides
-          ).map(s => ({ ...s, taskId: taskId!, color: colorExistente }));
-
-          out = [...out, ...plan];
+        // 4) Ajusta hoy al objetivo, tomando/soltando horas de los futuros del MISMO producto
+        if (delta > 0) {
+          // Falta horas hoy → traer desde el futuro
+          let resta = delta;
+          for (const fs of futuros) {
+            if (resta <= 0) break;
+            const take = Math.min(fs.horas, resta);
+            if (take > 0) {
+              fs.horas = Math.round((fs.horas - take) * 2) / 2;
+              // las añadimos a hoy (al primer slice del día)
+              daySlices[0].horas = Math.round((daySlices[0].horas + take) * 2) / 2;
+              resta = Math.round((resta - take) * 2) / 2;
+            }
+          }
+          // Si aún resta (>0) y no hay más futuro, igualmente fijamos hoy al máximo posible
+          // (esto respeta que no podemos "inventar" horas futuras).
+        } else {
+          // delta < 0 → sobra horas hoy → devolver al futuro (al primer día futuro del mismo bloque)
+          let sobra = -delta;
+          // Si no hay futuro, creamos un slice futuro al día siguiente para devolver esas horas
+          let targetFuture = futuros[0];
+          if (!targetFuture) {
+            targetFuture = {
+              id: "S" + Math.random().toString(36).slice(2, 9),
+              taskId: daySlices[0].taskId,
+              producto,
+              fecha: fmt(addDays(fecha, 1))!,
+              horas: 0,
+              trabajadorId: workerId,
+              color: daySlices[0].color,
+            };
+            next.push(targetFuture);
+          }
+          // Quitamos de hoy
+          const reduceFrom = daySlices.reduce((a, s) => a + s.horas, 0);
+          const toReduce = Math.min(reduceFrom, sobra);
+          if (toReduce > 0) {
+            // Reducimos solo del primer slice del día (simplifica mucho)
+            daySlices[0].horas = Math.max(0, Math.round((daySlices[0].horas - toReduce) * 2) / 2);
+            targetFuture.horas = Math.round((targetFuture.horas + toReduce) * 2) / 2;
+            sobra = Math.round((sobra - toReduce) * 2) / 2;
+          }
         }
-      } // fin for productos del trabajador
-    } // fin for trabajadores
 
-    return out;
+        // 5) Limpieza: elimina futuros con 0h del mismo producto/worker
+        next = next.filter(s => !(s.trabajadorId === workerId && s.producto === producto && s.fecha! > f! && s.horas <= 0));
+
+        // 6) Compacta SOLO al trabajador afectado desde esa fecha
+        const worker = workers.find(w => w.id === workerId);
+        if (worker) {
+          const otros = next.filter(s => s.trabajadorId !== workerId);
+          const delWorker = next.filter(s => s.trabajadorId === workerId);
+
+          const keepBefore = delWorker.filter(s => s.fecha < f!);
+          const tail = delWorker.filter(s => s.fecha >= f!);
+
+          // Reagrupar la cola de tail por taskId manteniendo producto/color
+          const queue = aggregateToQueue(tail);
+          const reflowed = reflowFrom(worker, fecha, overrides, keepBefore, queue);
+
+          next = [...otros, ...reflowed];
+        }
+      }
+    }
+
+    // Seguridad: no dejes “valores negativos” por error
+    for (const s of next) {
+      if (s.horas < 0) s.horas = 0;
+    }
+    return next;
   });
 }
+
 
   // 🔽🔽🔽 Pega aquí todo este bloque completo 🔽🔽🔽
 
@@ -1426,7 +1462,6 @@ function eliminarLineaParteDe(wid: string, idx: number) {
   }
 }
 
-
 function printParteTaller() {
   // 1) Clona lo acumulado por trabajador
   const porTrab: PartesPorTrabajador =
@@ -1466,8 +1501,6 @@ function printParteTaller() {
   generarVentanaPDFParteTaller(parteFecha, resumen);
 }
    
-
-
   /* ===================== Render ===================== */
   return (
     <div style={appShell}>
@@ -1517,7 +1550,6 @@ function printParteTaller() {
     >
       📋 Partes de trabajo
     </button>
-
 
     {/* === UI de autenticación === */}
     {userId ? (
@@ -1610,8 +1642,6 @@ function printParteTaller() {
 </div>
 
 
-
-
                   <label style={label}>Descripción/bloque</label>
                   <select
                     style={input}
@@ -1699,7 +1729,6 @@ function printParteTaller() {
   🖨️ Imprimir parte del taller
 </button>
 
-
   {/* Mensajes y ayudas (debajo, centrados) */}
 {parteMsg && (
       <div style={{ fontSize: 13 }}>{parteMsg}</div>
@@ -1730,7 +1759,7 @@ function printParteTaller() {
     if (lista.length === 0) {
       return <div style={{ color: "#6b7280", fontSize: 13 }}>Aún no hay líneas.</div>;
     }
-
+    
     return (
       <>
         {lista.map(wid => {
