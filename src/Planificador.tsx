@@ -366,6 +366,22 @@ export default function Planificador() {
 function AppInner() {
   const [base, setBase] = useState(new Date());
   const { weeks } = useMemo(() => monthGrid(base), [base]);
+
+  const orderedWorkers = useMemo(() => {
+  // Copia para no mutar el estado original
+  const arr = [...workers];
+  // Si no hay selección, devolvemos tal cual
+  if (!form?.trabajadorId) return arr;
+
+  // Mueve al inicio al trabajador seleccionado en el formulario
+  arr.sort((a, b) => {
+    if (a.id === form.trabajadorId) return -1;
+    if (b.id === form.trabajadorId) return 1;
+    return 0;
+  });
+  return arr;
+}, [workers, form.trabajadorId]);
+
   const [locked, setLocked] = useState(true); // bloqueado por defecto
   const canEdit = !locked;
 
@@ -1130,6 +1146,17 @@ useEffect(() => {
   });
 }, [parteTrabajador]);
 
+// Al cambiar el trabajador del formulario, sube suavemente al inicio
+useEffect(() => {
+  // Pequeño retraso por si hay reflow del DOM
+  const t = setTimeout(() => {
+    try {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    } catch { /* no pasa nada en SSR/entornos sin window */ }
+  }, 50);
+  return () => clearTimeout(t);
+}, [form.trabajadorId]);
+
   // Productos/bloques disponibles (del calendario) para ese trabajador y día
   const productosDisponibles = useMemo(() => {
     const set = new Set<string>();
@@ -1844,7 +1871,7 @@ function printParteTaller() {
 
           {/* CALENDARIO */}
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }} className={printMode === "monthly" ? "" : "no-print"}>
-            {workers.map((w) => (
+            {orderedWorkers.map((w) => (
               <div key={`worker-${w.id}`}>
                 <div style={{ fontSize: 25, fontWeight: 700, margin: "8px 0 4px", color: "#111827" }}>👤 {w.nombre}</div>
 
