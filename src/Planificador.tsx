@@ -1366,7 +1366,10 @@ function eliminarLineaParteDe(wid: string, idx: number) {
   const f = parteFecha;
   if (!f) { alert("Elige una fecha."); return; }
 
-  // 1) Construir objeto por trabajador (incluye línea rápida si no hay acumuladas)
+  // 1) Construye un objeto “por trabajador” con lo acumulado en la UI
+  //    + (opcional) la línea rápida actual si no hay ninguna línea acumulada.
+  // Nota: structuredClone está en navegadores modernos; si te da error,
+  // puedes sustituir por JSON.parse(JSON.stringify(partePorTrabajador))
   const porTrab: PartesPorTrabajador =
     typeof structuredClone === "function"
       ? structuredClone(partePorTrabajador)
@@ -1376,6 +1379,7 @@ function eliminarLineaParteDe(wid: string, idx: number) {
   const hayLineasAcumuladas = Object.values(porTrab).some(arr => (arr?.length ?? 0) > 0);
 
   if (!hayLineasAcumuladas && lineaRapidaValida) {
+    // si no hay nada acumulado, mete la línea rápida en el trabajador seleccionado
     porTrab[parteTrabajador] = porTrab[parteTrabajador] ?? [];
     porTrab[parteTrabajador].push({
       producto: parteProducto,
@@ -1384,15 +1388,20 @@ function eliminarLineaParteDe(wid: string, idx: number) {
     });
   }
 
-  // 2) Resumen por trabajador
+  // 2) Construye el RESUMEN por trabajador (nombre, items, subtotal)
   const resumen: ParteResumenTrabajador[] = Object.entries(porTrab)
     .map(([wid, items]) => {
       const w = workers.find(x => x.id === wid);
       const nombre = w?.nombre || wid;
       const total = items.reduce((a, it) => a + (Number(it.horas_reales) || 0), 0);
-      return { trabajador_id: wid, trabajador_nombre: nombre, items, total_horas: total };
+      return {
+        trabajador_id: wid,
+        trabajador_nombre: nombre,
+        items,
+        total_horas: total,
+      };
     })
-    .filter(r => r.items.length > 0);
+    .filter(r => r.items.length > 0); // quitamos secciones vacías
 
   if (resumen.length === 0) {
     alert("No hay líneas para guardar.");
@@ -1404,71 +1413,93 @@ function eliminarLineaParteDe(wid: string, idx: number) {
     tenant_id: TENANT_ID,
     fecha: f,                             // YYYY-MM-DD
     created_at: new Date().toISOString(), // ISO
-    resumen,
+    resumen,                              // secciones por trabajador
     total_taller: resumen.reduce((a, r) => a + r.total_horas, 0),
   };
 
   setSavingParte(true);
   setParteMsg(null);
-
   try {
-    // 3) Subir JSON único del taller (una sola vez)
-    const safeName = `${payload.fecha} - PARTE TALLER.json`;
-    const storagePath = `partes taller inoxidable/${safeName}`;
-    const { error: upErr } = await supabase.storage
-      .from("partes-taller-inoxidable")
-      .upload(
-        storagePath,
-        new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }),
-        { upsert: true }
-      );
-    if (upErr) throw upErr;
+    // 3) Sube un ÚNICO JSON del taller al Storage
+//    - bucket: "partes-taller-inoxidable"
+//    - carpeta: "partes taller inoxidable"
+const safeName = `${payload.fecha} - PARTE TALLER.json`;
+const storagePath = `partes taller inoxidable/${safeName}`;
 
-    // 4) Reescribir el parte del mismo día en BD: borrar + insertar
-    //    (si prefieres borrar solo tus filas, añade .eq('user_id', userId))
-    const { error: delErr } = await supabase
-      .from("work_parts")
-      .delete()
-      .eq("tenant_id", TENANT_ID)
-      .eq("fecha", payload.fecha);
-    if (delErr) throw delErr;
+console.log("[parte] subiendo JSON…");
+const { error: upErr } = await supabase.storage
+  .from("partes-taller-inoxidable")
+  .upload(
+    storagePath,
+    new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }),
+    { upsert: true }
+  );
+if (upErr) {
+  console.error("[parte] upload error:", upErr);
+  throw upErr;
+}
+console.log("[parte] JSON OK");
 
-    // Construir filas para insertar
-    const rows: any[] = [];
-    for (const r of resumen) {
-      for (const it of r.items) {
-        rows.push({
-          user_id: payload.user_id,
-          tenant_id: payload.tenant_id,
-          fecha: payload.fecha,
-          trabajador_id: r.trabajador_id,
-          trabajador_nombre: r.trabajador_nombre,
-          producto: it.producto,
-          horas_reales: it.horas_reales,
-          observaciones: it.observaciones ?? null,
-          storage_path: storagePath,
-        });
-      }
-    }
+// 4) Reescribir el parte del mismo día en BD: borrar + insertar
+//    👉 Borramos SOLO tus filas (user_id) para evitar bloqueos con RLS
+console.log("[parte] borrando filas previas del día…");
+const { error: delErr } = await supabase
+  .from("work_parts")
+  .delete({ returning: "minimal" } as any)
+  .eq("tenant_id", TENANT_ID)
+  .eq("fecha", payload.fecha);
+if (delErr) {
+  console.error("[parte] delete error:", delErr);
+  throw delErr;
+}
+console.log("[parte] borrado OK");
 
-    if (rows.length > 0) {
-      const { error: insErr } = await supabase
-        .from("work_parts")
-        .insert(rows, { returning: "minimal" } as any);
-      if (insErr) throw insErr;
-    }
+// 4.1) Construir filas a insertar
+const rows: any[] = [];
+for (const r of resumen) {
+  for (const it of r.items) {
+    rows.push({
+      user_id: payload.user_id,
+      tenant_id: payload.tenant_id,
+      fecha: payload.fecha,
+      trabajador_id: r.trabajador_id,
+      trabajador_nombre: r.trabajador_nombre,
+      producto: it.producto,
+      horas_reales: it.horas_reales,
+      observaciones: it.observaciones ?? null,
+      storage_path: storagePath, // dónde está el JSON del taller
+    });
+  }
+}
 
-    // 5) Mensaje + aplicar al calendario
+// 4.2) Insert rápido (sin devolver filas)
+if (rows.length > 0) {
+  console.log("[parte] insertando filas…");
+  const { error: insErr } = await supabase
+    .from("work_parts")
+    .insert(rows, { returning: "minimal" } as any);
+  if (insErr) {
+    console.error("[parte] insert error:", insErr);
+    throw insErr;
+  }
+  console.log("[parte] insert OK");
+}
+
+    // 5) Éxito → mensaje y limpieza de estado
     setParteMsg("✅ Parte del taller guardado correctamente.");
-    aplicarResumenAlCalendario(payload.fecha, resumen);
 
-    // 6) Limpiar UI
+    // 👉 Actualiza el calendario con lo realmente trabajado
+aplicarResumenAlCalendario(payload.fecha, resumen);
+
+    // Limpia todo lo acumulado para empezar de cero si quieres
     setPartePorTrabajador({});
     setParteProducto("");
     setParteHoras(0);
     setParteObs("");
 
-    // 7) (Opcional) PDF
+    // 6) (Opcional pero recomendado) Abrir ventana de impresión del parte del taller:
+    //    Si AÚN NO tienes la función generarVentanaPDFParteTaller del paso 7,
+    //    comenta estas 4 líneas.
     setTimeout(() => {
       generarVentanaPDFParteTaller(payload.fecha, resumen);
     }, 50);
@@ -1479,7 +1510,6 @@ function eliminarLineaParteDe(wid: string, idx: number) {
     setSavingParte(false);
   }
 }
-
 
 function printParteTaller() {
   // 1) Clona lo acumulado por trabajador
