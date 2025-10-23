@@ -1375,7 +1375,10 @@ ${items.map(it => `
 
                     {/* ====== Pestaña: Partes de trabajo ====== */}
           {showPartes && (
-            <div style={{ ...panel, marginBottom: 12 }} className="no-print">
+            <div
+    style={{ ...panel, marginBottom: 12, width: "50%", minWidth: 520, margin: "0 auto" }}
+    className="no-print"
+  >
               <div style={panelTitle}>Partes de trabajo</div>
               <div style={{ display: "grid", gap: 10 }}>
                 <div style={{ display: "grid", gridTemplateColumns: "140px 1fr", gap: 8, alignItems: "center" }}>
@@ -1442,7 +1445,7 @@ ${items.map(it => `
 />
 {/* === BLOQUE NUEVO: Añadir línea y listado === */}
 <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 8 }}>
-  <button style={btnSecondary} type="button" onClick={agregarLineaParte}>
+  <button style={btnAction} type="button" onClick={agregarLineaParte}>
     ➕ Añadir línea
   </button>
   <div style={{ fontSize: 12, color: "#6b7280" }}>
@@ -1483,10 +1486,10 @@ ${items.map(it => `
 )}
 {/* === FIN BLOQUE NUEVO === */}
 
-<div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+<div style={{ display: "flex", gap: 10, alignItems: "center", justifyContent: "center" }}>
   {/* Guardar TODO el parte: se desactiva si no hay líneas */}
   <button
-    style={btnPrimary}
+    style={btnActionPrimary}
     onClick={guardarParteTrabajo}
     disabled={savingParte || (parteItems.length === 0 && (!parteProducto || parteHoras <= 0))}
     title={parteItems.length === 0 ? "Añade al menos una línea" : "Guardar parte"}
@@ -1496,7 +1499,7 @@ ${items.map(it => `
 
   {/* Imprimir parte diario */}
   <button
-    style={btnLabeled}
+    style={btnAction}
     className="no-print"
     onClick={printParteDiario} 
     disabled={parteItems.length === 0 && (!parteProducto || parteHoras <= 0)}
@@ -2108,6 +2111,26 @@ const btnBase: React.CSSProperties = {
   background: "#fff",
   color: "#111827",
 };
+
+const btnAction: React.CSSProperties = {
+  ...btnBase,
+  height: 38,
+  padding: "0 24px",
+  fontSize: 14,
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  borderRadius: 8,
+  fontWeight: 500,
+};
+
+const btnActionPrimary: React.CSSProperties = {
+  ...btnAction,
+  background: "#111827",
+  color: "#fff",
+  border: "1px solid #111827",
+};
+
 const btnLabeled: React.CSSProperties = { ...btnBase };
 const btnSecondary: React.CSSProperties = { ...btnBase };
 const btnDanger: React.CSSProperties = { 
