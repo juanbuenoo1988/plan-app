@@ -1192,11 +1192,18 @@ function eliminarLineaParte(idx: number) {
     setParteMsg("✅ Parte guardado correctamente.");
     // Si usaste varias líneas, vacía el acumulado
     // Genera ventana lista para "Guardar como PDF"
-generarVentanaPDFParte(
-  payload.fecha,
-  payload.trabajador_nombre,
-  items
-);
+// 1) Quita el “Guardando...” ya
+setSavingParte(false);
+
+// 2) Y AHORA abre la ventana de imprimir con un pequeño retraso,
+//    para que la pantalla pueda mostrar el mensaje y cambiar el botón.
+setTimeout(() => {
+  generarVentanaPDFParte(
+    payload.fecha,
+    payload.trabajador_nombre,
+    items
+  );
+}, 50);
 
 
     if (parteItems.length > 0) setParteItems([]);
