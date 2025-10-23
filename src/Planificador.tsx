@@ -574,64 +574,62 @@ ${seccionesHTML}
  * - Si sobran/faltan horas, compensa con los días futuros del mismo bloque.
  * - Recompacta SOLO desde esa fecha para ese trabajador.
  */
+/**
+ * Ajusta el calendario (slices) según las horas reales del parte.
+ * - Modifica solo los bloques (task slices) del trabajador y producto afectados.
+ * - Actualiza las horas del día exacto.
+ * - Si faltan horas, resta del futuro; si sobran, empuja al siguiente día.
+ */
 function aplicarResumenAlCalendario(fechaStr: string, resumen: ParteResumenTrabajador[]) {
   const fecha = new Date(fechaStr);
   if (isNaN(fecha.getTime?.() ?? NaN)) return;
 
-  setSlices((prevAll) => {
-    let next = [...prevAll];
+  setSlices((prevSlices) => {
+    let next = [...prevSlices];
 
     for (const r of resumen) {
       const workerId = r.trabajador_id;
 
-      // Trabajamos por producto (sumando líneas repetidas)
+      // Horas reales por producto
       const horasPorProducto = new Map<string, number>();
       for (const it of r.items) {
-        const h = Number(it.horas_reales) || 0;
-        if (h <= 0) continue;
-        horasPorProducto.set(it.producto, Math.round(((horasPorProducto.get(it.producto) || 0) + h) * 2) / 2);
+        const horas = Number(it.horas_reales) || 0;
+        if (horas <= 0) continue;
+        horasPorProducto.set(it.producto, (horasPorProducto.get(it.producto) || 0) + horas);
       }
 
-      // Si no hay líneas válidas, no tocamos nada
-      if (horasPorProducto.size === 0) continue;
-
-      for (const [producto, horasObjetivo] of horasPorProducto.entries()) {
-        // 1) Slices del día y del futuro para este worker+producto
+      for (const [producto, horasReales] of horasPorProducto.entries()) {
         const f = fmt(fecha);
+
+        // Slices del mismo trabajador y producto
         const delDia = next.filter(s => s.trabajadorId === workerId && s.producto === producto && s.fecha === f);
         const futuros = next
           .filter(s => s.trabajadorId === workerId && s.producto === producto && s.fecha! > f!)
           .sort((a, b) => a.fecha.localeCompare(b.fecha));
 
-        const asignadoHoy = delDia.reduce((a, s) => a + s.horas, 0);
-        const delta = Math.round((horasObjetivo - asignadoHoy) * 2) / 2;
+        const horasAsignadas = delDia.reduce((a, s) => a + s.horas, 0);
+        const delta = Math.round((horasReales - horasAsignadas) * 2) / 2;
 
-        // 2) Si ya coincide, no hacemos nada
-        if (Math.abs(delta) < 1e-9) continue;
+        // Si ya coincide, no hacer nada
+        if (Math.abs(delta) < 0.01) continue;
 
-        // 3) Asegura que existe al menos 1 slice para hoy (creamos uno si hace falta)
-        let daySlices = delDia;
-        if (daySlices.length === 0) {
-          // generamos un slice nuevo TOMANDO el color/taskId de un futuro si existe, o uno nuevo
-          let baseTaskId = "T" + Math.random().toString(36).slice(2, 8);
-          let baseColor = colorFromId(baseTaskId);
-          if (futuros.length > 0) {
-            baseTaskId = futuros[0].taskId;
-            baseColor = futuros[0].color;
-          }
-          daySlices = [{
+        // Si no hay slice para hoy, creamos uno nuevo
+        if (delDia.length === 0) {
+          const base = futuros[0];
+          next.push({
             id: "S" + Math.random().toString(36).slice(2, 9),
-            taskId: baseTaskId,
+            taskId: base ? base.taskId : "T" + Math.random().toString(36).slice(2, 8),
             producto,
             fecha: f!,
             horas: 0,
             trabajadorId: workerId,
-            color: baseColor,
-          }];
-          next.push(daySlices[0]);
+            color: base ? base.color : colorFromId(producto),
+          });
         }
 
-        // 4) Ajusta hoy al objetivo, tomando/soltando horas de los futuros del MISMO producto
+        const hoy = next.find(s => s.trabajadorId === workerId && s.producto === producto && s.fecha === f);
+        if (!hoy) continue;
+
         if (delta > 0) {
           // Falta horas hoy → traer desde el futuro
           let resta = delta;
@@ -639,71 +637,40 @@ function aplicarResumenAlCalendario(fechaStr: string, resumen: ParteResumenTraba
             if (resta <= 0) break;
             const take = Math.min(fs.horas, resta);
             if (take > 0) {
-              fs.horas = Math.round((fs.horas - take) * 2) / 2;
-              // las añadimos a hoy (al primer slice del día)
-              daySlices[0].horas = Math.round((daySlices[0].horas + take) * 2) / 2;
+              fs.horas = Math.max(0, Math.round((fs.horas - take) * 2) / 2);
+              hoy.horas = Math.round((hoy.horas + take) * 2) / 2;
               resta = Math.round((resta - take) * 2) / 2;
             }
           }
-          // Si aún resta (>0) y no hay más futuro, igualmente fijamos hoy al máximo posible
-          // (esto respeta que no podemos "inventar" horas futuras).
-        } else {
-          // delta < 0 → sobra horas hoy → devolver al futuro (al primer día futuro del mismo bloque)
+        } else if (delta < 0) {
+          // Sobran horas hoy → empujar al futuro
           let sobra = -delta;
-          // Si no hay futuro, creamos un slice futuro al día siguiente para devolver esas horas
-          let targetFuture = futuros[0];
-          if (!targetFuture) {
-            targetFuture = {
+          if (futuros.length === 0) {
+            futuros.push({
               id: "S" + Math.random().toString(36).slice(2, 9),
-              taskId: daySlices[0].taskId,
+              taskId: hoy.taskId,
               producto,
               fecha: fmt(addDays(fecha, 1))!,
               horas: 0,
               trabajadorId: workerId,
-              color: daySlices[0].color,
-            };
-            next.push(targetFuture);
+              color: hoy.color,
+            });
+            next.push(futuros[0]);
           }
-          // Quitamos de hoy
-          const reduceFrom = daySlices.reduce((a, s) => a + s.horas, 0);
-          const toReduce = Math.min(reduceFrom, sobra);
-          if (toReduce > 0) {
-            // Reducimos solo del primer slice del día (simplifica mucho)
-            daySlices[0].horas = Math.max(0, Math.round((daySlices[0].horas - toReduce) * 2) / 2);
-            targetFuture.horas = Math.round((targetFuture.horas + toReduce) * 2) / 2;
-            sobra = Math.round((sobra - toReduce) * 2) / 2;
-          }
+          const destino = futuros[0];
+          const reduce = Math.min(hoy.horas, sobra);
+          hoy.horas = Math.round((hoy.horas - reduce) * 2) / 2;
+          destino.horas = Math.round((destino.horas + reduce) * 2) / 2;
         }
 
-        // 5) Limpieza: elimina futuros con 0h del mismo producto/worker
-        next = next.filter(s => !(s.trabajadorId === workerId && s.producto === producto && s.fecha! > f! && s.horas <= 0));
-
-        // 6) Compacta SOLO al trabajador afectado desde esa fecha
-        const worker = workers.find(w => w.id === workerId);
-        if (worker) {
-          const otros = next.filter(s => s.trabajadorId !== workerId);
-          const delWorker = next.filter(s => s.trabajadorId === workerId);
-
-          const keepBefore = delWorker.filter(s => s.fecha < f!);
-          const tail = delWorker.filter(s => s.fecha >= f!);
-
-          // Reagrupar la cola de tail por taskId manteniendo producto/color
-          const queue = aggregateToQueue(tail);
-          const reflowed = reflowFrom(worker, fecha, overrides, keepBefore, queue);
-
-          next = [...otros, ...reflowed];
-        }
+        // Eliminar bloques vacíos
+        next = next.filter(s => !(s.trabajadorId === workerId && s.producto === producto && s.horas <= 0));
       }
     }
 
-    // Seguridad: no dejes “valores negativos” por error
-    for (const s of next) {
-      if (s.horas < 0) s.horas = 0;
-    }
     return next;
   });
 }
-
 
   // 🔽🔽🔽 Pega aquí todo este bloque completo 🔽🔽🔽
 
