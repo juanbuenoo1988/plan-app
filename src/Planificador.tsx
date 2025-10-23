@@ -15,6 +15,7 @@ import {
 } from "date-fns";
 import { es } from "date-fns/locale";
 
+
 /* ===================== Configuración ===================== */
 const PASSWORD = "taller2025"; // ← cámbiala por la que quieras
 const STORAGE_KEY = "planificador:v1";
