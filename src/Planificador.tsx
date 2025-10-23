@@ -1444,8 +1444,12 @@ ${items.map(it => `
                       
 />
 {/* === BLOQUE NUEVO: Añadir línea y listado === */}
-<div style={{ display: "flex", gap: 10, alignItems: "center",justifyContent: "center",
-    flexWrap: "wrap", marginTop: 12 }}>
+<div style={{ display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    gap: 10,
+    marginTop: 12,
+  }}>
 
   <button style={btnAction} type="button" onClick={agregarLineaParte}>
     ➕ Añadir línea
