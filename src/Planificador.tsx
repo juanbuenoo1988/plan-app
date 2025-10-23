@@ -1362,24 +1362,21 @@ function eliminarLineaParteDe(wid: string, idx: number) {
     // Guardar parte de trabajo: sube un JSON a Storage y registra fila en BD
 
    async function guardarParteTrabajo() {
-  if (!userId) { alert("Inicia sesión para guardar en la nube."); return; }
+  // Ya NO exigimos estar logueado: se puede imprimir sin guardar en BD
   const f = parteFecha;
   if (!f) { alert("Elige una fecha."); return; }
 
-  // 1) Construye un objeto “por trabajador” con lo acumulado en la UI
-  //    + (opcional) la línea rápida actual si no hay ninguna línea acumulada.
-  // Nota: structuredClone está en navegadores modernos; si te da error,
-  // puedes sustituir por JSON.parse(JSON.stringify(partePorTrabajador))
+  // 1) Construye un objeto por trabajador a partir de la UI
   const porTrab: PartesPorTrabajador =
     typeof structuredClone === "function"
       ? structuredClone(partePorTrabajador)
       : JSON.parse(JSON.stringify(partePorTrabajador || {}));
 
+  // Si no hay líneas acumuladas y la línea rápida es válida, métela
   const lineaRapidaValida = parteProducto && isFinite(parteHoras) && Number(parteHoras) > 0;
   const hayLineasAcumuladas = Object.values(porTrab).some(arr => (arr?.length ?? 0) > 0);
 
   if (!hayLineasAcumuladas && lineaRapidaValida) {
-    // si no hay nada acumulado, mete la línea rápida en el trabajador seleccionado
     porTrab[parteTrabajador] = porTrab[parteTrabajador] ?? [];
     porTrab[parteTrabajador].push({
       producto: parteProducto,
@@ -1394,122 +1391,41 @@ function eliminarLineaParteDe(wid: string, idx: number) {
       const w = workers.find(x => x.id === wid);
       const nombre = w?.nombre || wid;
       const total = items.reduce((a, it) => a + (Number(it.horas_reales) || 0), 0);
-      return {
-        trabajador_id: wid,
-        trabajador_nombre: nombre,
-        items,
-        total_horas: total,
-      };
+      return { trabajador_id: wid, trabajador_nombre: nombre, items, total_horas: total };
     })
-    .filter(r => r.items.length > 0); // quitamos secciones vacías
+    .filter(r => r.items.length > 0);
 
   if (resumen.length === 0) {
-    alert("No hay líneas para guardar.");
+    alert("No hay líneas para guardar/imprimir.");
     return;
   }
 
-  const payload = {
-    user_id: userId,
-    tenant_id: TENANT_ID,
-    fecha: f,                             // YYYY-MM-DD
-    created_at: new Date().toISOString(), // ISO
-    resumen,                              // secciones por trabajador
-    total_taller: resumen.reduce((a, r) => a + r.total_horas, 0),
-  };
-
-  setSavingParte(true);
-  setParteMsg(null);
+  // 3) Actualiza el calendario con las horas reales (tu función ya creada)
   try {
-    // 3) Sube un ÚNICO JSON del taller al Storage
-//    - bucket: "partes-taller-inoxidable"
-//    - carpeta: "partes taller inoxidable"
-const safeName = `${payload.fecha} - PARTE TALLER.json`;
-const storagePath = `partes taller inoxidable/${safeName}`;
+    setSavingParte(true);
+    setParteMsg("Ajustando calendario y generando PDF…");
 
-console.log("[parte] subiendo JSON…");
-const { error: upErr } = await supabase.storage
-  .from("partes-taller-inoxidable")
-  .upload(
-    storagePath,
-    new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }),
-    { upsert: true }
-  );
-if (upErr) {
-  console.error("[parte] upload error:", upErr);
-  throw upErr;
-}
-console.log("[parte] JSON OK");
+    // 👉 Esta función la añadimos en pasos previos: ajusta slices y reprograma
+    aplicarResumenAlCalendario(f, resumen);
 
-// 4) Reescribir el parte del mismo día en BD: borrar + insertar
-//    👉 Borramos SOLO tus filas (user_id) para evitar bloqueos con RLS
-console.log("[parte] borrando filas previas del día…");
-const { error: delErr } = await supabase
-  .from("work_parts")
-  .delete({ returning: "minimal" } as any)
-  .eq("tenant_id", TENANT_ID)
-  .eq("fecha", payload.fecha);
-if (delErr) {
-  console.error("[parte] delete error:", delErr);
-  throw delErr;
-}
-console.log("[parte] borrado OK");
+    // 4) Abre la ventana de impresión del parte del taller (un único PDF)
+    setTimeout(() => {
+      generarVentanaPDFParteTaller(f, resumen);
+    }, 50);
 
-// 4.1) Construir filas a insertar
-const rows: any[] = [];
-for (const r of resumen) {
-  for (const it of r.items) {
-    rows.push({
-      user_id: payload.user_id,
-      tenant_id: payload.tenant_id,
-      fecha: payload.fecha,
-      trabajador_id: r.trabajador_id,
-      trabajador_nombre: r.trabajador_nombre,
-      producto: it.producto,
-      horas_reales: it.horas_reales,
-      observaciones: it.observaciones ?? null,
-      storage_path: storagePath, // dónde está el JSON del taller
-    });
-  }
-}
-
-// 4.2) Insert rápido (sin devolver filas)
-if (rows.length > 0) {
-  console.log("[parte] insertando filas…");
-  const { error: insErr } = await supabase
-    .from("work_parts")
-    .insert(rows, { returning: "minimal" } as any);
-  if (insErr) {
-    console.error("[parte] insert error:", insErr);
-    throw insErr;
-  }
-  console.log("[parte] insert OK");
-}
-
-    // 5) Éxito → mensaje y limpieza de estado
-    setParteMsg("✅ Parte del taller guardado correctamente.");
-
-    // 👉 Actualiza el calendario con lo realmente trabajado
-aplicarResumenAlCalendario(payload.fecha, resumen);
-
-    // Limpia todo lo acumulado para empezar de cero si quieres
+    // 5) Limpia la UI del parte
     setPartePorTrabajador({});
     setParteProducto("");
     setParteHoras(0);
     setParteObs("");
-
-    // 6) (Opcional pero recomendado) Abrir ventana de impresión del parte del taller:
-    //    Si AÚN NO tienes la función generarVentanaPDFParteTaller del paso 7,
-    //    comenta estas 4 líneas.
-    setTimeout(() => {
-      generarVentanaPDFParteTaller(payload.fecha, resumen);
-    }, 50);
-
+    setParteMsg("✅ Parte generado (descarga/imprime el PDF).");
   } catch (e: any) {
     setParteMsg(`⚠️ Error: ${e?.message ?? String(e)}`);
   } finally {
     setSavingParte(false);
   }
 }
+
 
 function printParteTaller() {
   // 1) Clona lo acumulado por trabajador
@@ -1792,7 +1708,7 @@ function printParteTaller() {
       Añade varias descripciones con sus horas y luego guarda todo.
     </div>
     <div style={{ fontSize: 12, color: "#6b7280" }}>
-      Se guardará en la carpeta <b>“partes taller inoxidable”</b> de tu almacenamiento.
+       Se abrirá una ventana para imprimir o guardar en PDF. No se guarda en base de datos.
 </div>
 
   {/* === LISTADO AGRUPADO POR TRABAJADOR === */}
