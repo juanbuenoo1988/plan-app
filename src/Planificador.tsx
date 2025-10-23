@@ -643,51 +643,73 @@ function aplicarHorasTrabajadasAProducto(
   horasTrabajadas: number
 ) {
   setSlices((prev) => {
+    // nada que hacer
     if (!horasTrabajadas || horasTrabajadas <= 0) return prev;
+
+    // normalizador para comparar nombres de bloque
+    const norm = (s: string) => (s || "").trim().toLowerCase();
+
     const d0 = new Date(fecha);
     if (isNaN(d0.getTime?.() ?? NaN)) return prev;
 
-    // 1) Obtener TODOS los tramos de ese trabajador y producto desde "fecha" en adelante
+    // 1) TODOS los tramos de ese trabajador *y* producto desde "fecha" en adelante
     const afectados = prev
-      .filter(s => s.trabajadorId === workerId && s.producto === producto && s.fecha >= fecha)
+      .filter(
+        (s) =>
+          s.trabajadorId === workerId &&
+          norm(s.producto) === norm(producto) &&
+          s.fecha >= fecha
+      )
       .sort((a, b) => a.fecha.localeCompare(b.fecha));
 
+    // Si no hay nada planificado a partir de esa fecha: no reflow (no hay de dónde quitar)
     if (afectados.length === 0) {
-      // Nada planificado a partir de esa fecha → no hacemos nada
       return prev;
     }
 
     let restante = roundHalf(horasTrabajadas);
     const nuevo = [...prev];
-    let minFechaTocada = afectados[0].fecha;
 
+    // IMPORTANTE: arranca el reflow como mínimo en la FECHA DEL PARTE
+    let minFechaTocada = fecha;
+
+    // 2) Recorre los tramos futuros y ve quitando horas reales trabajadas
     for (const sl of afectados) {
       if (restante <= 0) break;
-      const idx = nuevo.findIndex(s => s.id === sl.id);
+      const idx = nuevo.findIndex((s) => s.id === sl.id);
       if (idx < 0) continue;
 
       const disponible = nuevo[idx].horas;
       const quita = Math.min(disponible, restante);
+
       if (quita > 0) {
         nuevo[idx] = { ...nuevo[idx], horas: roundHalf(disponible - quita) };
         restante = roundHalf(restante - quita);
+        // “tocamos” al menos desde la fecha de este tramo
         if (nuevo[idx].fecha < minFechaTocada) minFechaTocada = nuevo[idx].fecha;
       }
     }
 
-    // 2) Borra tramos que han quedado a 0 horas
-    const depurados = nuevo.filter(s => s.horas > 0.0001);
+    // 3) Borra tramos que han quedado a 0
+    let depurados = nuevo.filter((s) => s.horas > 0.0001);
 
-    // 3) Reprograma a partir de la fecha más temprana tocada
-    const w = workers.find(x => x.id === workerId);
+    // 4) Une duplicados del mismo día/bloque (seguridad)
+    depurados = mergeSameDaySameBlock(depurados);
+
+    // 5) Recompacta SOLO al trabajador, desde la fecha mínima tocada (o la del parte)
+    const w = workers.find((x) => x.id === workerId);
     if (!w) return depurados;
-    const startF = minFechaTocada || fecha;
 
+    const startF = minFechaTocada || fecha;
     const rebuilt = compactFrom(w, startF, overrides, depurados);
-    const others = depurados.filter(s => s.trabajadorId !== workerId);
-    return [...others, ...rebuilt];
+    const others = depurados.filter((s) => s.trabajadorId !== workerId);
+
+    return [...others, ...rebuilt].sort((a, b) =>
+      (a.trabajadorId + a.fecha).localeCompare(b.trabajadorId + b.fecha)
+    );
   });
 }
+    
 
   // Crea datos base si el usuario aún no tiene nada en la nube
   async function seedIfEmpty(uid: string) {
