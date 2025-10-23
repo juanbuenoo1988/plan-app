@@ -567,6 +567,107 @@ ${seccionesHTML}
   wwin.focus();
 }
 
+// === Ajusta el calendario a partir de los PARTES reales (por fecha) ===
+// Toma el resumen por trabajador (lo que guardas/imprimes) y reprograma cada bloque
+function aplicarResumenAlCalendario(fechaStr: string, resumen: ParteResumenTrabajador[]) {
+  const fecha = new Date(fechaStr);
+  const fHoy = fmt(fecha);
+
+  setSlices(prev => {
+    let out = [...prev];
+
+    // Por cada trabajador que tenga líneas ese día
+    for (const r of resumen) {
+      const w = workers.find(x => x.id === r.trabajador_id);
+      if (!w) continue;
+
+      // Agrupa horas reales del día por producto (por si hay varias líneas del mismo producto)
+      const horasPorProducto = new Map<string, number>();
+      for (const it of r.items) {
+        const h = Math.max(0, Math.round(Number(it.horas_reales) * 2) / 2);
+        horasPorProducto.set(it.producto, (horasPorProducto.get(it.producto) || 0) + h);
+      }
+
+      // Reprograma cada producto del que haya parte ese día
+      for (const [producto, horasRealesHoy] of horasPorProducto.entries()) {
+        // Todas las slices de ese trabajador y producto
+        const delWProd = out
+          .filter(s => s.trabajadorId === w.id && s.producto === producto)
+          .sort((a, b) => a.fecha.localeCompare(b.fecha));
+
+        if (delWProd.length === 0) {
+          // Si no estaba planificado pero hay parte, lo insertamos como "manual" ese día
+          if (horasRealesHoy > 0) {
+            out.push({
+              id: "S" + Math.random().toString(36).slice(2, 9),
+              taskId: "T" + Math.random().toString(36).slice(2, 8),
+              producto,
+              fecha: fHoy,
+              horas: horasRealesHoy,
+              trabajadorId: w.id,
+              color: URGENT_COLOR, // lo marcas en amarillo
+            });
+          }
+          continue;
+        }
+
+        // 1) Elige el taskId "correcto" para reprogramar:
+        //    - si hay una slice exactamente en fHoy, usa ese taskId
+        //    - si no, usa el primer taskId con slice futura >= fHoy
+        let taskId: string | null = null;
+        const sameDay = delWProd.find(s => s.fecha === fHoy);
+        if (sameDay) {
+          taskId = sameDay.taskId;
+        } else {
+          const futuros = delWProd.filter(s => s.fecha >= fHoy);
+          taskId = (futuros[0]?.taskId) || delWProd[0].taskId;
+        }
+
+        // Color del bloque (mantener el existente)
+        const colorExistente = delWProd.find(s => s.taskId === taskId)?.color || colorFromId(taskId!);
+
+        // 2) Total programado del bloque desde HOY (incluido)
+        const totalDesdeHoy = delWProd
+          .filter(s => s.taskId === taskId && s.fecha >= fHoy)
+          .reduce((a, s) => a + s.horas, 0);
+
+        // 3) Elimina TODAS las slices de ese bloque (taskId) desde HOY en adelante
+        out = out.filter(s => !(s.trabajadorId === w.id && s.taskId === taskId && s.fecha >= fHoy));
+
+        // 4) Inserta la slice de HOY con las HORAS REALES
+        if (horasRealesHoy > 0) {
+          pushOrMergeSameDay(out, {
+            id: "S" + Math.random().toString(36).slice(2, 9),
+            taskId: taskId!,
+            producto,
+            fecha: fHoy,
+            horas: horasRealesHoy,
+            trabajadorId: w.id,
+            color: colorExistente,
+          });
+        }
+
+        // 5) Recalcula lo que queda del bloque a partir de MAÑANA
+        const restante = Math.max(0, Math.round((totalDesdeHoy - horasRealesHoy) * 2) / 2);
+        if (restante > 0) {
+          const plan = planificarBloqueAuto(
+            producto,
+            restante,
+            w,
+            addDays(fecha, 1),
+            base,
+            out,        // "existentes" ya sin las slices borradas del bloque
+            overrides
+          ).map(s => ({ ...s, taskId: taskId!, color: colorExistente }));
+
+          out = [...out, ...plan];
+        }
+      } // fin for productos del trabajador
+    } // fin for trabajadores
+
+    return out;
+  });
+}
 
   // 🔽🔽🔽 Pega aquí todo este bloque completo 🔽🔽🔽
 
@@ -1367,6 +1468,9 @@ function eliminarLineaParteDe(wid: string, idx: number) {
 
     // 5) Éxito → mensaje y limpieza de estado
     setParteMsg("✅ Parte del taller guardado correctamente.");
+
+    // 👉 Actualiza el calendario con lo realmente trabajado
+aplicarResumenAlCalendario(payload.fecha, resumen);
 
     // Limpia todo lo acumulado para empezar de cero si quieres
     setPartePorTrabajador({});
