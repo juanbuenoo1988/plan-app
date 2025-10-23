@@ -584,36 +584,56 @@ ${seccionesHTML}
 // === Reajuste del calendario a partir de un parte real ===
 // fecha: "YYYY-MM-DD"
 // resumen: [{ trabajador_id, trabajador_nombre, items:[{producto, horas_reales, observaciones?}], total_horas }]
-function aplicarResumenAlCalendario(fecha: string, resumen: ParteResumenTrabajador[]) {
-  // Para cada trabajador y cada línea, descuenta horas desde "fecha" hacia adelante
-  for (const r of resumen) {
-    for (const it of r.items) {
-      const h = Number(it.horas_reales) || 0;
-      if (h > 0) {
-        aplicarHorasTrabajadasAProducto(fecha, r.trabajador_id, it.producto, h);
-      }
-    }
-  }
-}
 
 
 // Une tramos duplicados (mismo trabajador+taskId+fecha) sumando horas redondeadas a 0.5
-function mergeSameDaySameBlock(input: TaskSlice[]) {
-  const key = (s: TaskSlice) => `${s.trabajadorId}__${s.taskId}__${s.fecha}`;
+function mergeSameDaySameBlock(all: TaskSlice[]) {
+  const key = (s: TaskSlice) => `${s.trabajadorId}|${s.taskId}|${s.fecha}`;
   const map = new Map<string, TaskSlice>();
-  for (const s of input) {
+  for (const s of all) {
     const k = key(s);
     if (!map.has(k)) {
       map.set(k, { ...s });
     } else {
-      const cur = map.get(k)!;
-      const horas = Math.max(0, Math.round((cur.horas + s.horas) * 2) / 2);
-      map.set(k, { ...cur, horas });
+      const x = map.get(k)!;
+      x.horas = roundHalf(x.horas + s.horas);
     }
   }
-  return [...map.values()];
+  return Array.from(map.values());
 }
 
+function findTaskIdForProductFromDate(
+  all: TaskSlice[],
+  workerId: string,
+  fecha: string,
+  producto: string
+): { taskId: string | null; color?: string } {
+  const norm = (s: string) => (s || "").trim().toLowerCase();
+
+  // tramo de hoy
+  const hoy = all.find(
+    s =>
+      s.trabajadorId === workerId &&
+      s.fecha === fecha &&
+      norm(s.producto) === norm(producto)
+  );
+  if (hoy) return { taskId: hoy.taskId, color: hoy.color };
+
+  // primer tramo futuro del mismo producto
+  const futuro = all
+    .filter(
+      s =>
+        s.trabajadorId === workerId &&
+        s.fecha > fecha &&
+        norm(s.producto) === norm(producto)
+    )
+    .sort((a, b) => a.fecha.localeCompare(b.fecha))[0];
+
+  if (futuro) return { taskId: futuro.taskId, color: futuro.color };
+
+  // nada planificado de ese producto a partir de esa fecha
+  return { taskId: null };
+}
 
   // 🔽🔽🔽 Pega aquí todo este bloque completo 🔽🔽🔽
 
@@ -632,8 +652,8 @@ function mergeSameDaySameBlock(input: TaskSlice[]) {
     try { const s = localStorage.getItem(k); return s ? (JSON.parse(s) as T) : fallback; }
     catch { return fallback; }
   }
-  function roundHalf(x: number) {
-  return Math.max(0, Math.round(x * 2) / 2);
+  function roundHalf(n: number) {
+  return Math.max(0, Math.round((Number(n) || 0) * 2) / 2);
 }
 
 function aplicarHorasTrabajadasAProducto(
@@ -643,73 +663,127 @@ function aplicarHorasTrabajadasAProducto(
   horasTrabajadas: number
 ) {
   setSlices((prev) => {
-    // nada que hacer
-    if (!horasTrabajadas || horasTrabajadas <= 0) return prev;
+    const worked = roundHalf(horasTrabajadas);
+    if (worked <= 0) return prev;
 
-    // normalizador para comparar nombres de bloque
-    const norm = (s: string) => (s || "").trim().toLowerCase();
+    const out = [...prev];
 
-    const d0 = new Date(fecha);
-    if (isNaN(d0.getTime?.() ?? NaN)) return prev;
+    // 0) Identifica el taskId del bloque a ajustar (clave para tocar SOLO ese bloque)
+    const { taskId, color } = findTaskIdForProductFromDate(out, workerId, fecha, producto);
 
-    // 1) TODOS los tramos de ese trabajador *y* producto desde "fecha" en adelante
-    const afectados = prev
-      .filter(
-        (s) =>
-          s.trabajadorId === workerId &&
-          norm(s.producto) === norm(producto) &&
-          s.fecha >= fecha
-      )
-      .sort((a, b) => a.fecha.localeCompare(b.fecha));
-
-    // Si no hay nada planificado a partir de esa fecha: no reflow (no hay de dónde quitar)
-    if (afectados.length === 0) {
-      return prev;
+    // Si NO hay taskId (no existe ese producto ni hoy ni futuro), no hay de dónde restar
+    if (!taskId) {
+      // Si quieres crear un tramo “real” de hoy aunque no exista bloque, descomenta:
+      // out.push({
+      //   id: "S" + Math.random().toString(36).slice(2, 9),
+      //   taskId: "T" + Math.random().toString(36).slice(2, 8),
+      //   producto,
+      //   fecha,
+      //   horas: worked,
+      //   trabajadorId: workerId,
+      //   color: colorFromId(producto + workerId)
+      // });
+      return out;
     }
 
-    let restante = roundHalf(horasTrabajadas);
-    const nuevo = [...prev];
+    // 1) Ajusta el tramo de HOY (si existe en este bloque) a lo realmente trabajado
+    const idxHoy = out.findIndex(s => s.trabajadorId === workerId && s.taskId === taskId && s.fecha === fecha);
+    let diff = 0; // + si trabajaron más que lo planificado hoy; - si trabajaron menos
+    if (idxHoy >= 0) {
+      const planHoy = roundHalf(out[idxHoy].horas);
+      diff = roundHalf(worked - planHoy);
+      if (worked <= 0) {
+        out.splice(idxHoy, 1); // eliminar tramo de hoy
+      } else {
+        out[idxHoy] = { ...out[idxHoy], horas: worked }; // fijar a lo real
+      }
+    } else {
+      // hoy no había tramo de este bloque → todo lo trabajado hoy se resta del futuro
+      diff = worked;
+      // (opcional registrar tramo real de hoy dentro del bloque para historial)
+      // out.push({
+      //   id: "S" + Math.random().toString(36).slice(2, 9),
+      //   taskId,
+      //   producto,
+      //   fecha,
+      //   horas: worked,
+      //   trabajadorId: workerId,
+      //   color: color || colorFromId(taskId),
+      // });
+    }
 
-    // IMPORTANTE: arranca el reflow como mínimo en la FECHA DEL PARTE
+    // 2) Si diff > 0: TRABAJARON MÁS HOY → hay que QUITAR del FUTURO de este mismo taskId
+    //    Si diff < 0: TRABAJARON MENOS HOY → hay que AÑADIR faltante hacia el futuro
     let minFechaTocada = fecha;
 
-    // 2) Recorre los tramos futuros y ve quitando horas reales trabajadas
-    for (const sl of afectados) {
-      if (restante <= 0) break;
-      const idx = nuevo.findIndex((s) => s.id === sl.id);
-      if (idx < 0) continue;
+    if (diff > 0) {
+      let porQuitar = diff;
+      const futuro = out
+        .filter(s => s.trabajadorId === workerId && s.taskId === taskId && s.fecha > fecha)
+        .sort((a, b) => a.fecha.localeCompare(b.fecha));
+      for (const t of futuro) {
+        if (porQuitar <= 0) break;
+        const take = Math.min(roundHalf(t.horas), porQuitar);
+        const nueva = roundHalf(t.horas - take);
+        porQuitar = roundHalf(porQuitar - take);
+        if (nueva <= 0) {
+          // elimina completamente
+          const i = out.findIndex(s => s.id === t.id);
+          if (i >= 0) out.splice(i, 1);
+        } else {
+          const i = out.findIndex(s => s.id === t.id);
+          if (i >= 0) out[i] = { ...out[i], horas: nueva };
+        }
+        if (t.fecha < minFechaTocada) minFechaTocada = t.fecha;
+      }
+    } else if (diff < 0) {
+      // faltante positivo = hay que empujar horas hacia el futuro desde mañana
+      const faltante = roundHalf(-diff);
+      if (faltante > 0) {
+        const mañana = addDays(new Date(fecha), 1);
+        const startF = fmt(mañana);
 
-      const disponible = nuevo[idx].horas;
-      const quita = Math.min(disponible, restante);
+        const delTrab = out
+          .filter(s => s.trabajadorId === workerId)
+          .sort((a, b) => a.fecha.localeCompare(b.fecha));
 
-      if (quita > 0) {
-        nuevo[idx] = { ...nuevo[idx], horas: roundHalf(disponible - quita) };
-        restante = roundHalf(restante - quita);
-        // “tocamos” al menos desde la fecha de este tramo
-        if (nuevo[idx].fecha < minFechaTocada) minFechaTocada = nuevo[idx].fecha;
+        const keepBefore = delTrab.filter(s => s.fecha < startF);
+        const tail = delTrab.filter(s => s.fecha >= startF);
+
+        const queue: QueueItem[] = [
+          { producto, horas: faltante, color: color || colorFromId(taskId), taskId }, // mismo bloque
+          ...aggregateToQueue(tail),
+        ];
+
+        const w = workers.find(x => x.id === workerId);
+        if (w) {
+          const reflujo = reflowFrom(w, mañana, overrides, keepBefore, queue);
+          const otros = out.filter(s => s.trabajadorId !== workerId);
+          return mergeSameDaySameBlock([...otros, ...reflujo]);
+        }
       }
     }
 
-    // 3) Borra tramos que han quedado a 0
-    let depurados = nuevo.filter((s) => s.horas > 0.0001);
-
-    // 4) Une duplicados del mismo día/bloque (seguridad)
-    depurados = mergeSameDaySameBlock(depurados);
-
-    // 5) Recompacta SOLO al trabajador, desde la fecha mínima tocada (o la del parte)
-    const w = workers.find((x) => x.id === workerId);
+    // 3) Limpieza + recompacta desde la mínima fecha tocada para ese trabajador
+    const depurados = mergeSameDaySameBlock(out).filter(s => s.horas > 0.0001);
+    const w = workers.find(x => x.id === workerId);
     if (!w) return depurados;
-
-    const startF = minFechaTocada || fecha;
-    const rebuilt = compactFrom(w, startF, overrides, depurados);
-    const others = depurados.filter((s) => s.trabajadorId !== workerId);
-
-    return [...others, ...rebuilt].sort((a, b) =>
-      (a.trabajadorId + a.fecha).localeCompare(b.trabajadorId + b.fecha)
-    );
+    const rebuilt = compactFrom(w, minFechaTocada, overrides, depurados);
+    const otros = depurados.filter(s => s.trabajadorId !== workerId);
+    return mergeSameDaySameBlock([...otros, ...rebuilt]);
   });
 }
-    
+
+function aplicarResumenAlCalendario(fecha: string, resumen: ParteResumenTrabajador[]) {
+  for (const r of resumen) {
+    for (const it of r.items) {
+      const h = Number(it.horas_reales) || 0;
+      if (h > 0) {
+        aplicarHorasTrabajadasAProducto(fecha, r.trabajador_id, it.producto, h);
+      }
+    }
+  }
+}
 
   // Crea datos base si el usuario aún no tiene nada en la nube
   async function seedIfEmpty(uid: string) {
