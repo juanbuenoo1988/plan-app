@@ -405,6 +405,83 @@ function AppInner() {
   const [printWorker, setPrintWorker] = useState<string>("W1");
   const [printDate, setPrintDate] = useState<string>(fmt(new Date()));
 
+  function buscarYSeleccionarBloqueParte() {
+  const q = (parteQuery || "").trim().toLowerCase();
+  if (!q) {
+    alert("Escribe algo en 'Buscar bloque'.");
+    return;
+  }
+
+  // 1) Coincidencia exacta primero
+  const exact = productosFiltrados.find(p => p.toLowerCase() === q);
+  if (exact) {
+    setParteProducto(exact);
+    return;
+  }
+
+  // 2) Primera coincidencia parcial
+  const parcial = productosFiltrados.find(p => p.toLowerCase().includes(q));
+  if (parcial) {
+    setParteProducto(parcial);
+    return;
+  }
+
+  alert("No se encontraron bloques que coincidan.");
+}
+
+function generarVentanaPDFParte(fecha: string, trabajadorNombre: string, items: ParteItem[]) {
+  const total = items.reduce((a, it) => a + (Number(it.horas_reales)||0), 0);
+
+  const html = `<!doctype html>
+<html><head><meta charset="utf-8" />
+<title>Parte ${fecha} - ${trabajadorNombre}</title>
+<style>
+body{font-family: Arial, sans-serif; padding:24px; color:#111827}
+h1{margin:0 0 6px 0; font-size:20px}
+.sub{color:#6b7280; margin-bottom:16px}
+table{width:100%; border-collapse:collapse}
+th,td{border-bottom:1px solid #e5e7eb; padding:8px; text-align:left}
+th{background:#f9fafb}
+.right{text-align:right}
+.tot{font-weight:700}
+.obs{white-space:pre-wrap; color:#374151}
+@page { size: auto; margin: 15mm; }
+</style></head>
+<body>
+<h1>Parte de trabajo</h1>
+<div class="sub">Fecha: <b>${fecha}</b> &nbsp;|&nbsp; Trabajador: <b>${trabajadorNombre}</b></div>
+<table>
+<thead><tr><th>Descripción / bloque</th><th class="right">Horas</th><th>Observaciones</th></tr></thead>
+<tbody>
+${items.map(it => `
+<tr>
+  <td>${it.producto}</td>
+  <td class="right">${it.horas_reales}</td>
+  <td class="obs">${it.observaciones || ""}</td>
+</tr>`).join("")}
+</tbody>
+<tfoot>
+<tr><td class="tot">TOTAL</td><td class="right tot">${total}</td><td></td></tr>
+</tfoot>
+</table>
+<script>
+  // Abre diálogo de impresión al cargar (elige "Guardar como PDF")
+  window.onload = function(){ window.print(); };
+</script>
+</body></html>`;
+
+  const wwin = window.open("", "_blank");
+  if (!wwin) {
+    alert("Permite la ventana emergente para descargar/imprimir el PDF.");
+    return;
+  }
+  wwin.document.open();
+  wwin.document.write(html);
+  wwin.document.close();
+  wwin.focus();
+}
+
+
   // 🔽🔽🔽 Pega aquí todo este bloque completo 🔽🔽🔽
 
   function flattenOverrides(ov: OverridesState) {
@@ -1114,6 +1191,14 @@ function eliminarLineaParte(idx: number) {
 
     setParteMsg("✅ Parte guardado correctamente.");
     // Si usaste varias líneas, vacía el acumulado
+    // Genera ventana lista para "Guardar como PDF"
+generarVentanaPDFParte(
+  payload.fecha,
+  payload.trabajador_nombre,
+  items
+);
+
+
     if (parteItems.length > 0) setParteItems([]);
   } catch (e: any) {
     setParteMsg(`⚠️ Error: ${e.message ?? String(e)}`);
@@ -1309,6 +1394,27 @@ ${items.map(it => `
                     value={parteQuery}
                     onChange={e=>setParteQuery(e.target.value)}
                   />
+
+<label style={label}>Buscar bloque</label>
+<div style={{ display: "flex", gap: 8 }}>
+  <input
+    style={input}
+    placeholder="Escribe para filtrar por nombre del bloque/producto"
+    value={parteQuery}
+    onChange={e=>setParteQuery(e.target.value)}
+  />
+  <button
+    type="button"
+    style={btnLabeled}
+    onClick={buscarYSeleccionarBloqueParte}
+    title="Selecciona la primera coincidencia"
+  >
+    🔎 Buscar bloques
+  </button>
+</div>
+
+
+
 
                   <label style={label}>Descripción/bloque</label>
                   <select
