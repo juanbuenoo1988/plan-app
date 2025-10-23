@@ -944,6 +944,32 @@ function mergeSameDaySameBlock(input: TaskSlice[]) {
     }
   }
 
+  // 👇 Pega aquí dentro de AppInner (antes de tus useEffect)
+function resumenDesdeFilas(
+  rows: Array<{ trabajador_id: string; producto: string; horas_reales: number; observaciones: string | null }>
+): ParteResumenTrabajador[] {
+  const porTrab = new Map<string, ParteItem[]>();
+
+  for (const r of rows) {
+    const arr = porTrab.get(r.trabajador_id) ?? [];
+    arr.push({
+      producto: r.producto,
+      horas_reales: Number(r.horas_reales) || 0,
+      observaciones: r.observaciones ?? undefined,
+    });
+    porTrab.set(r.trabajador_id, arr);
+  }
+
+  const out: ParteResumenTrabajador[] = [];
+  for (const [wid, items] of porTrab.entries()) {
+    const w = workers.find(x => x.id === wid);
+    const nombre = w?.nombre || wid;
+    const total = items.reduce((a, it) => a + (Number(it.horas_reales) || 0), 0);
+    out.push({ trabajador_id: wid, trabajador_nombre: nombre, items, total_horas: total });
+  }
+  return out;
+}
+
   // Detecta sesión y carga
   useEffect(() => {
     let mounted = true;
@@ -1324,6 +1350,48 @@ useEffect(() => {
   });
 }, [parteTrabajador]);
 
+// 👇 Añade este useEffect DENTRO de AppInner, antes del return()
+useEffect(() => {
+  // Escucha todos los cambios en la tabla "work_parts" de tu tenant
+  const ch = supabase
+    .channel("wp-realtime")
+    .on(
+      "postgres_changes",
+      {
+        event: "*",
+        schema: "public",
+        table: "work_parts",
+        filter: `tenant_id=eq.${TENANT_ID}`,
+      },
+      async (payload) => {
+        // Determina qué fecha se modificó (según si fue INSERT/UPDATE/DELETE)
+        const fecha: string | undefined = (payload.new as any)?.fecha || (payload.old as any)?.fecha;
+        if (!fecha) return;
+
+        // Carga las filas actualizadas de ese día
+        const { data, error } = await supabase
+          .from("work_parts")
+          .select("trabajador_id, producto, horas_reales, observaciones")
+          .eq("tenant_id", TENANT_ID)
+          .eq("fecha", fecha);
+
+        if (error) {
+          console.error("Realtime load work_parts error:", error);
+          return;
+        }
+
+        // Convierte los datos a resumen y actualiza el calendario
+        const resumen = resumenDesdeFilas((data ?? []) as any);
+        aplicarResumenAlCalendario(fecha, resumen);
+      }
+    )
+    .subscribe();
+
+  // Limpieza al desmontar
+  return () => {
+    try { supabase.removeChannel(ch); } catch {}
+  };
+}, [workers]);
 
 
   // Productos/bloques disponibles (del calendario) para ese trabajador y día
@@ -1430,19 +1498,18 @@ function eliminarLineaParteDe(wid: string, idx: number) {
 
     // Guardar parte de trabajo: sube un JSON a Storage y registra fila en BD
 
-   async function guardarParteTrabajo() {
-  const f = parteFecha;
-  if (!f) { alert("Elige una fecha."); return; }
+async function guardarParteTrabajo() {
+  if (!parteFecha) { alert("Elige una fecha."); return; }
 
-  // 1) Clona lo acumulado por trabajador
+  // 1) Prepara el resumen a partir de la UI (igual que antes)
   const porTrab: PartesPorTrabajador =
     typeof structuredClone === "function"
       ? structuredClone(partePorTrabajador)
       : JSON.parse(JSON.stringify(partePorTrabajador || {}));
 
-  // Línea rápida si no hay acumuladas
   const lineaRapidaValida = parteProducto && isFinite(parteHoras) && Number(parteHoras) > 0;
   const hayLineasAcumuladas = Object.values(porTrab).some(arr => (arr?.length ?? 0) > 0);
+
   if (!hayLineasAcumuladas && lineaRapidaValida) {
     porTrab[parteTrabajador] = porTrab[parteTrabajador] ?? [];
     porTrab[parteTrabajador].push({
@@ -1452,7 +1519,6 @@ function eliminarLineaParteDe(wid: string, idx: number) {
     });
   }
 
-  // 2) Resumen por trabajador
   const resumen: ParteResumenTrabajador[] = Object.entries(porTrab)
     .map(([wid, items]) => {
       const w = workers.find(x => x.id === wid);
@@ -1462,46 +1528,64 @@ function eliminarLineaParteDe(wid: string, idx: number) {
     })
     .filter(r => r.items.length > 0);
 
-  if (resumen.length === 0) { alert("No hay líneas para guardar/imprimir."); return; }
+  if (resumen.length === 0) {
+    alert("No hay líneas para guardar.");
+    return;
+  }
 
   setSavingParte(true);
-  setParteMsg("Ajustando calendario…");
-
-  // 3) Pausa el autosave mientras reprogramas y guardas
-  autosavePausedRef.current = true;
+  setParteMsg(null);
 
   try {
-    // 3.1 Ajusta el calendario (slices)
-    aplicarResumenAlCalendario(parteFecha, resumen);
+    // 2) BORRAR filas previas del mismo día (por tenant)
+    const { error: delErr } = await supabase
+      .from("work_parts")
+      .delete()
+      .eq("tenant_id", TENANT_ID)
+      .eq("fecha", parteFecha);
+    if (delErr) throw delErr;
 
-    // 3.2 (Opcional) si hay sesión, fuerza un guardado único ahora
-    if (userId) {
-      const snapshot = JSON.stringify({ workers, slices, overrides, descs });
-      try {
-        await saveAll(userId);
-        lastSavedRef.current = snapshot; // marca este estado como persistido
-      } catch (e) {
-        // No bloquees la UI por fallos de red; el autosave reintentará luego
-        console.error("saveAll after parte error:", e);
+    // 3) INSERTAR nuevas filas del parte
+    const rows: any[] = [];
+    for (const r of resumen) {
+      for (const it of r.items) {
+        rows.push({
+          user_id: userId ?? null,
+          tenant_id: TENANT_ID,
+          fecha: parteFecha,
+          trabajador_id: r.trabajador_id,
+          trabajador_nombre: r.trabajador_nombre,
+          producto: it.producto,
+          horas_reales: it.horas_reales,
+          observaciones: it.observaciones ?? null,
+        });
       }
     }
 
-    // 4) PDF del parte del taller
-    setParteMsg("Generando PDF…");
-    setTimeout(() => { generarVentanaPDFParteTaller(f, resumen); }, 50);
+    if (rows.length) {
+      const { error: insErr } = await supabase
+        .from("work_parts")
+        .insert(rows, { returning: "minimal" } as any);
+      if (insErr) throw insErr;
+    }
 
-    // 5) Limpia UI del parte
+    // 4) Aplica localmente el ajuste del calendario (los demás lo verán por Realtime)
+    aplicarResumenAlCalendario(parteFecha, resumen);
+    setParteMsg("✅ Parte guardado y calendario actualizado.");
+
+    // 5) Limpia UI para poder guardar otra vez enseguida
     setPartePorTrabajador({});
     setParteProducto("");
     setParteHoras(0);
     setParteObs("");
-    setParteMsg("✅ Parte generado. (Descarga/Imprime el PDF)");
+
+    // (Opcional) Imprimir
+    setTimeout(() => generarVentanaPDFParteTaller(parteFecha, resumen), 50);
 
   } catch (e: any) {
-    setParteMsg(`⚠️ Error: ${e?.message ?? String(e)}`);
+    console.error("guardarParteTrabajo error:", e);
+    setParteMsg(`⚠️ Error al guardar: ${e?.message ?? String(e)}`);
   } finally {
-    // Reanuda autosave tras un pequeño margen
-    setTimeout(() => { autosavePausedRef.current = false; }, 300);
     setSavingParte(false);
   }
 }
