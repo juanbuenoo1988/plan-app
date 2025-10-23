@@ -1387,21 +1387,7 @@ ${items.map(it => `
                     {workers.map(w => <option key={`p-w-${w.id}`} value={w.id}>{w.nombre}</option>)}
                   </select>
 
-                  <label style={label}>Buscar bloque</label>
-                  <input
-                    style={input}
-                    placeholder="Escribe para filtrar por nombre del bloque/producto"
-                    value={parteQuery}
-                    onChange={e=>setParteQuery(e.target.value)}
-                  />
 
-<label style={label}>Buscar bloque</label>
-<div style={{ display: "flex", gap: 8 }}>
-  <input
-    style={input}
-    placeholder="Escribe para filtrar por nombre del bloque/producto"
-    value={parteQuery}
-    onChange={e=>setParteQuery(e.target.value)}
   />
   <button
     type="button"
