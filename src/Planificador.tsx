@@ -1493,8 +1493,19 @@ ${items.map(it => `
 )}
 {/* === FIN BLOQUE NUEVO === */}
 
-<div style={{ display: "flex", gap: 10, alignItems: "center", justifyContent: "center" }}>
-
+<div style={{
+    display: "flex",
+    flexDirection: "column", // 🔹 uno debajo del otro
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    position: "sticky",      // 🔹 se mantienen visibles
+    bottom: 10,              // 🔹 pegados al fondo si haces scroll
+    background: "#f9fafb",   // fondo claro para distinguirlos
+    padding: 12,
+    borderRadius: 8,
+    zIndex: 10,
+  }}>
 
   {/* Guardar TODO el parte: se desactiva si no hay líneas */}
   <button
