@@ -1146,16 +1146,7 @@ useEffect(() => {
   });
 }, [parteTrabajador]);
 
-// Al cambiar el trabajador del formulario, sube suavemente al inicio
-useEffect(() => {
-  // Pequeño retraso por si hay reflow del DOM
-  const t = setTimeout(() => {
-    try {
-      window.scrollTo({ top: 0, behavior: "smooth" });
-    } catch { /* no pasa nada en SSR/entornos sin window */ }
-  }, 50);
-  return () => clearTimeout(t);
-}, [form.trabajadorId]);
+
 
   // Productos/bloques disponibles (del calendario) para ese trabajador y día
   const productosDisponibles = useMemo(() => {
@@ -1203,6 +1194,16 @@ useEffect(() => {
       setEbSelected("");
       setEbHoras(0);
     }
+    // Al cambiar el trabajador del formulario, sube suavemente al inicio
+useEffect(() => {
+  // Pequeño retraso por si hay reflow del DOM
+  const t = setTimeout(() => {
+    try {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    } catch { /* no pasa nada en SSR/entornos sin window */ }
+  }, 50);
+  return () => clearTimeout(t);
+}, [form.trabajadorId]);
   }
 
   function aplicarEdicion() {
