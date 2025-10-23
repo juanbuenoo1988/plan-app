@@ -1119,10 +1119,6 @@ const totalTaller = useMemo(
   [totalesPorTrabajador]
 );
 
-    const parteTotalHoras = useMemo(
-  () => parteItems.reduce((acc, it) => acc + (Number(it.horas_reales) || 0), 0),
-  [parteItems]
-    );
   const [savingParte, setSavingParte] = useState<boolean>(false);
   const [parteMsg, setParteMsg] = useState<string | null>(null);
 
@@ -1629,7 +1625,7 @@ function printParteTaller() {
 <button
   style={btnAction}
   className="no-print"
-  onClick={printParteTaller}
+  onClick={printParteTaller}  
   disabled={!hayLineasEnAlguno && (!parteProducto || parteHoras <= 0)}
   title="Imprime el parte del taller (todas las secciones)"
 >
