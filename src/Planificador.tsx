@@ -1444,7 +1444,8 @@ ${items.map(it => `
                       
 />
 {/* === BLOQUE NUEVO: Añadir línea y listado === */}
-<div style={{ display: "flex",
+<div style={{ gridColumn: "1 / -1", 
+    display: "flex",
     flexDirection: "column",
     alignItems: "center",
     gap: 10,
@@ -1460,40 +1461,10 @@ ${items.map(it => `
   </div>
 </div>
 
-{parteItems.length > 0 && (
-  <div style={{ marginTop: 10, border: "1px solid #e5e7eb", borderRadius: 8, padding: 10 }}>
-    <div style={{ fontWeight: 600, marginBottom: 8 }}>Líneas añadidas</div>
-
-    <div style={{
-      display: "grid",
-      gridTemplateColumns: "1fr 100px 1fr 90px",
-      gap: 8, fontSize: 14, fontWeight: 600, color: "#374151"
-    }}>
-      <div>Descripción/bloque</div><div>Horas</div><div>Observaciones</div><div></div>
-    </div>
-
-    {parteItems.map((it, idx) => (
-      <div key={`pi-${idx}`} style={{
-        display: "grid",
-        gridTemplateColumns: "1fr 100px 1fr 90px",
-        gap: 8, alignItems: "center",
-        padding: "6px 0", borderTop: "1px solid #f3f4f6"
-      }}>
-        <div>{it.producto}</div>
-        <div>{it.horas_reales}</div>
-        <div style={{ whiteSpace: "pre-wrap" }}>{it.observaciones || "—"}</div>
-        <button style={btnDanger} onClick={() => eliminarLineaParte(idx)}>Eliminar</button>
-      </div>
-    ))}
-
-    <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 8, fontWeight: 700 }}>
-      Total horas: {parteTotalHoras}
-    </div>
-  </div>
-)}
 {/* === FIN BLOQUE NUEVO === */}
 
 <div style={{
+    gridColumn: "1 / -1",
     display: "flex",
     flexDirection: "column", // 🔹 uno debajo del otro
     alignItems: "center",
@@ -1540,7 +1511,37 @@ ${items.map(it => `
 <div style={{ textAlign: "center", fontSize: 12, color: "#6b7280", marginTop: 4 }}>
   Se guardará en la carpeta <b>“partes taller inoxidable”</b> de tu almacenamiento.
 </div>
+{parteItems.length > 0 && (
+  <div style={{ marginTop: 10, border: "1px solid #e5e7eb", borderRadius: 8, padding: 10 }}>
+    <div style={{ fontWeight: 600, marginBottom: 8 }}>Líneas añadidas</div>
 
+    <div style={{
+      display: "grid",
+      gridTemplateColumns: "1fr 100px 1fr 90px",
+      gap: 8, fontSize: 14, fontWeight: 600, color: "#374151"
+    }}>
+      <div>Descripción/bloque</div><div>Horas</div><div>Observaciones</div><div></div>
+    </div>
+
+    {parteItems.map((it, idx) => (
+      <div key={`pi-${idx}`} style={{
+        display: "grid",
+        gridTemplateColumns: "1fr 100px 1fr 90px",
+        gap: 8, alignItems: "center",
+        padding: "6px 0", borderTop: "1px solid #f3f4f6"
+      }}>
+        <div>{it.producto}</div>
+        <div>{it.horas_reales}</div>
+        <div style={{ whiteSpace: "pre-wrap" }}>{it.observaciones || "—"}</div>
+        <button style={btnDanger} onClick={() => eliminarLineaParte(idx)}>Eliminar</button>
+      </div>
+    ))}
+
+    <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 8, fontWeight: 700 }}>
+      Total horas: {parteTotalHoras}
+    </div>
+  </div>
+)}
 </div>
 </div>
 </div>
