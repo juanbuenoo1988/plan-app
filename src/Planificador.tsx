@@ -359,7 +359,50 @@ function AppInner() {
     trabajadorId: "W1",
     fechaInicio: fmt(new Date()),
   });
-  // ⬇️ 3.3-C (estados de sesión/carga en la nube)
+
+// --- handler seguro para el selector de Trabajador (evita errores de cierre) ---
+const handleChangeTrabajador: React.ChangeEventHandler<HTMLSelectElement> = (e) => {
+  const v = e.target.value;
+  setForm((prev) => ({ ...prev, trabajadorId: v }));
+  setFocusedWorkerId(v);
+  setTimeout(() => {
+    const el = workerRefs.current[v];
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, 0);
+};
+
+  
+// === Vista enfocada por trabajador (acordeón animado + scroll) ===
+const [focusedWorkerId, setFocusedWorkerId] = useState<string | null>(null);
+// contenedor visible (para scrollIntoView)
+const workerRefs = useRef<Record<string, HTMLDivElement | null>>({});
+// contenedor medido (contenido real para calcular altura)
+const measureRefs = useRef<Record<string, HTMLDivElement | null>>({});
+const [measuredHeights, setMeasuredHeights] = useState<Record<string, number>>({});
+
+// Medición de alturas (cuando cambian datos o tamaño)
+useEffect(() => {
+  const h: Record<string, number> = {};
+  workers.forEach(w => {
+    const el = measureRefs.current[w.id];
+    if (el) h[w.id] = el.scrollHeight;
+  });
+  setMeasuredHeights(h);
+}, [workers, weeks, slices, overrides, descs, base]);
+
+useEffect(() => {
+  const onResize = () => {
+    const h: Record<string, number> = {};
+    workers.forEach(w => {
+      const el = measureRefs.current[w.id];
+      if (el) h[w.id] = el.scrollHeight;
+    });
+    setMeasuredHeights(h);
+  };
+  window.addEventListener('resize', onResize);
+  return () => window.removeEventListener('resize', onResize);
+}, [workers]);
+// ⬇️ 3.3-C (estados de sesión/carga en la nube)
   const [userId, setUserId] = useState<string | null>(null);
   const [loadingCloud, setLoadingCloud] = useState(false);
   // Estado de guardado en la nube
@@ -378,57 +421,6 @@ function AppInner() {
   const [printMode, setPrintMode] = useState<PrintMode>("none");
   const [printWorker, setPrintWorker] = useState<string>("W1");
   const [printDate, setPrintDate] = useState<string>(fmt(new Date()));
-
-// === Partes de trabajo ===
-const [showPartes, setShowPartes] = useState(false);
-
-// 1) Fecha primero
-const [parteFecha, setParteFecha] = useState<string>(fmt(new Date()));
-
-// 2) Luego trabajador
-const [parteWorkerId, setParteWorkerId] = useState<string>("W1");
-
-// 3) Búsqueda/selección de producto (de los bloques del calendario)
-const [parteQuery, setParteQuery] = useState<string>("");
-const [parteProducto, setParteProducto] = useState<string>("");
-
-// 4) Horas reales
-const [parteHoras, setParteHoras] = useState<number>(0);
-
-// Productos planificados para el trabajador seleccionado EN ESE DÍA (únicos)
-const productosDelTrabajador = useMemo(() => {
-  const set = new Set<string>();
-  slices
-    .filter(s =>
-      s.trabajadorId === parteWorkerId &&
-      s.fecha === parteFecha
-    )
-    .forEach(s => set.add(s.producto.trim()));
-  return [...set].sort((a,b)=>a.localeCompare(b));
-}, [slices, parteWorkerId, parteFecha]);
-
-// Sugerencias por texto
-const sugerenciasProductos = useMemo(() => {
-  const q = parteQuery.trim().toLowerCase();
-  if (!q) return productosDelTrabajador;
-  return productosDelTrabajador.filter(p => p.toLowerCase().includes(q));
-}, [productosDelTrabajador, parteQuery]);
-
-// Elegir producto desde buscador/lista
-function elegirProducto(p: string) {
-  setParteProducto(p);
-  setParteQuery(p);
-  // Horas planificadas para ese trabajador, ese día y ese producto
-  const totalPlan = slices
-    .filter(s =>
-      s.trabajadorId === parteWorkerId &&
-      s.fecha === parteFecha &&
-      s.producto.trim() === p.trim()
-    )
-    .reduce((a, s) => a + s.horas, 0);
-  // Sugerimos como valor inicial las horas planificadas ese día
-  setParteHoras(Math.round(totalPlan * 2) / 2);
-}
 
   // 🔽🔽🔽 Pega aquí todo este bloque completo 🔽🔽🔽
 
@@ -1074,15 +1066,7 @@ function deleteWorker(id: string) {
 
     {/* ——— separador visual ——— */}
     <div style={{ width: 1, height: 22, background: "rgba(255,255,255,.25)", margin: "0 6px" }} />
-    
-    <button
-  style={btnPrimary}
-  className="no-print"
-  onClick={() => setShowPartes(v => !v)}
-  title="Abrir partes de trabajo"
->
-  📋 Partes de trabajo
-</button>
+
     {/* === UI de autenticación === */}
     {userId ? (
       // Conectado
@@ -1123,135 +1107,23 @@ function deleteWorker(id: string) {
       <div style={mainLayout}>
         {/* COLUMNA PRINCIPAL */}
         <div style={{ minWidth: 0 }}>
-         
-{showPartes && (
-  <div style={{ ...panel, borderColor: "#c7d2fe", background: "#eef2ff" }} className="no-print">
-    <div style={panelTitle}>Partes de trabajo</div>
-    <div style={{ display: "grid", gap: 10 }}>
-      {/* === 1) FECHA === */}
-      <label style={label}>Fecha</label>
-      <input
-        style={disabledIf(input, locked)}
-        disabled={locked}
-        type="date"
-        value={parteFecha}
-        onChange={(e) => {
-          setParteFecha(e.target.value);
-          // Reiniciamos selección al cambiar el día
-          setParteProducto("");
-          setParteQuery("");
-          setParteHoras(0);
-        }}
-      />
-
-      {/* === 2) TRABAJADOR === */}
-      <label style={label}>Trabajador</label>
-      <select
-        style={disabledIf(input, locked)}
-        disabled={locked}
-        value={parteWorkerId}
-        onChange={(e) => {
-          setParteWorkerId(e.target.value);
-          setParteProducto("");
-          setParteQuery("");
-          setParteHoras(0);
-        }}
-      >
-        {workers.map(w => <option key={`pw-${w.id}`} value={w.id}>{w.nombre}</option>)}
-      </select>
-
-      {/* === 3) BUSCADOR DE PRODUCTO (de ese día y trabajador) === */}
-      <label style={label}>Descripción / Producto (de ese día)</label>
-      <input
-        style={disabledIf(input, locked)}
-        disabled={locked}
-        placeholder="Escribe para buscar…"
-        value={parteQuery}
-        onChange={(e) => { setParteQuery(e.target.value); setParteProducto(""); }}
-        list="parte-productos"
-      />
-      <datalist id="parte-productos">
-        {sugerenciasProductos.map(p => <option key={`sug-${p}`} value={p} />)}
-      </datalist>
-
-      {!!sugerenciasProductos.length && (
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-          {sugerenciasProductos.slice(0, 10).map(p => (
-            <button
-              key={`chip-${p}`}
-              style={disabledIf({ ...btnTiny, borderColor: "#a5b4fc", background: "#fff" }, locked)}
-              disabled={locked}
-              onClick={() => elegirProducto(p)}
-              title="Usar esta descripción"
-            >
-              {p}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* === 4) HORAS REALES === */}
-      {parteQuery.trim() && (
-        <div style={{ marginTop: 6, display: "grid", gap: 8 }}>
-          <div style={{ fontWeight: 700, color: "#1f2937" }}>
-            Seleccionado: {parteProducto || parteQuery}
-          </div>
-
-          {descs[parteProducto || parteQuery] ? (
-            <div style={{ fontSize: 12, background: "#fff", border: "1px solid #e5e7eb", borderRadius: 8, padding: 8 }}>
-              {descs[parteProducto || parteQuery]}
+          {/* BARRA IMPRESIÓN */}
+          <div style={bar} className="no-print">
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button style={btnLabeled} onClick={() => triggerPrint("monthly")}>🖨️ Imprimir mensual</button>
+              <select style={input} value={printWorker} onChange={(e) => setPrintWorker(e.target.value)}>
+                {workers.map((w) => <option key={`op-${w.id}`} value={w.id}>{w.nombre}</option>)}
+              </select>
+              <input style={input} type="date" value={printDate} onChange={(e) => setPrintDate(e.target.value)} />
+              <button style={btnLabeled} onClick={() => triggerPrint("daily")}>🖨️ Imprimir diario</button>
+              <button style={btnPrimary} onClick={() => triggerPrint("dailyAll")}>🖨️ Imprimir diario (todos)</button>
             </div>
-          ) : (
-            <div style={{ fontSize: 12, color: "#6b7280" }}>
-              No hay descripción guardada para este producto en el panel de la derecha.
-            </div>
-          )}
-
-          <label style={label}>Horas reales trabajadas</label>
-          <input
-            style={disabledIf(input, locked)}
-            disabled={locked}
-            type="number"
-            step={0.5}
-            min={0}
-            value={parteHoras}
-            onChange={(e) => setParteHoras(Number(e.target.value))}
-          />
-
-          <div style={{ display: "flex", gap: 8 }}>
-            <button
-              style={disabledIf(btnPrimary, locked)}
-              disabled={locked}
-              onClick={() => {
-                alert(
-                  `Parte registrado (temporal):\n` +
-                  `- Fecha: ${parteFecha}\n` +
-                  `- Trabajador: ${workers.find(w=>w.id===parteWorkerId)?.nombre || parteWorkerId}\n` +
-                  `- Producto: ${parteProducto || parteQuery}\n` +
-                  `- Horas reales: ${parteHoras}h`
-                );
-              }}
-            >
-              💾 Registrar (temporal)
-            </button>
-            <button
-              style={btnLabeled}
-              onClick={() => { setParteProducto(""); setParteQuery(""); setParteHoras(0); }}
-            >
-              Limpiar
-            </button>
           </div>
-        </div>
-      )}
-    </div>
-  </div>
-)}
-
 
           {/* FORM + TRABAJADORES */}
           <div style={panelRow} className="no-print">
             <div style={panel}>
-              <div style={panelTitle}>Nuevo bloque</div>
+              <div style={panelTitle}>Nuevo bloque {focusedWorkerId && (<button className="no-print" style={{...btnLabeled, marginLeft: 8}} onClick={()=>setFocusedWorkerId(null)}>Ver todos</button>)}</div>
               <div style={panelInner}>
                 <div style={grid2}>
                   <label style={label}>Producto</label>
@@ -1270,7 +1142,8 @@ function deleteWorker(id: string) {
                     }}
                   />
                   <label style={label}>Trabajador</label>
-                  <select style={disabledIf(input, locked)} disabled={locked} value={form.trabajadorId} onChange={(e) => setForm({ ...form, trabajadorId: e.target.value })}>
+                  <select style={disabledIf(input, locked)} disabled={locked} value={form.trabajadorId} onChange={handleChangeTrabajador}>
+
                     {workers.map((w) => <option key={`wopt-${w.id}`} value={w.id}>{w.nombre}</option>)}
                   </select>
                   <label style={label}>Fecha inicio</label>
@@ -1365,8 +1238,23 @@ function deleteWorker(id: string) {
 
           {/* CALENDARIO */}
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }} className={printMode === "monthly" ? "" : "no-print"}>
-            {workers.map((w) => (
-              <div key={`worker-${w.id}`}>
+            {workers.map((w) => {
+  const expanded = !focusedWorkerId || focusedWorkerId === w.id;
+  const mh = expanded ? (measuredHeights[w.id] ?? 9999) : 0;
+  return (
+              <div
+                key={`worker-${w.id}`}
+                ref={(el) => { workerRefs.current[w.id] = el; }}
+                style={{
+                  transition: "max-height 320ms ease, opacity 240ms ease, margin 200ms ease",
+                  overflow: "hidden",
+                  maxHeight: mh,
+                  marginBottom: expanded ? 8 : 0,
+                  opacity: expanded ? 1 : 0.15
+                }}
+              >
+                <div ref={(el) => { measureRefs.current[w.id] = el; }}>
+
                 <div style={{ fontSize: 25, fontWeight: 700, margin: "8px 0 4px", color: "#111827" }}>👤 {w.nombre}</div>
 
                 {weeks.map((week) => (
@@ -1487,6 +1375,9 @@ function deleteWorker(id: string) {
               </div>
             ))}
           </div>
+        </div>
+      </div>
+    );
 
           {/* Parte diario — individual (solo impresión) */}
           {printMode === "daily" && (
