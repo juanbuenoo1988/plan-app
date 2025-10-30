@@ -101,25 +101,6 @@ type CloudState = {
   horasReales: number;
   observaciones: string;
 };
-// === Parte de trabajo (para guardar en nube/BD/JSON) ===
-  tenant_id: string;
-  fecha: string;                 // YYYY-MM-DD
-  trabajador_id: string;
-  trabajador_nombre: string;
-  producto: string;              // nombre del bloque/“producto”
-  horas_reales: number;          // horas reales trabajadas
-  observaciones: string;
-  created_at: string;            // ISO
-  storage_path?: string;         // ruta de storage donde se guardó el JSON
-};        // p.ej. "OT-250033"
-  horas_reales: number;    // p.ej. 6.5
-  observaciones?: string;  // opcional
-};
-  trabajador_nombre: string;
-  items: ParteItem[];
-  total_horas: number;
-};
-
 /* ===================== Util ===================== */
 const fmt = (d: Date | null | undefined) => {
   if (!d || !(d instanceof Date) || isNaN(d.getTime())) return "";
@@ -417,11 +398,6 @@ const orderedWorkers = useMemo(() => {
   const [printDate, setPrintDate] = useState<string>(fmt(new Date()));
 
   
-
-
-
-
-
 
   // 🔽🔽🔽 Pega aquí todo este bloque completo 🔽🔽🔽
 
@@ -727,7 +703,6 @@ const orderedWorkers = useMemo(() => {
   }, 50);
   return () => clearTimeout(t);
 }, [form.trabajadorId]);
-
 
   function triggerPrint(mode: PrintMode) {
     setPrintMode(mode);
