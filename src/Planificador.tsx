@@ -19,7 +19,6 @@ import { es } from "date-fns/locale";
 const PASSWORD = "taller2025"; // ← cámbiala por la que quieras
 const STORAGE_KEY = "planificador:v1";
 
-
 // Todos verán/editarán el mismo plan (tenant único)
 const TENANT_ID = "00000000-0000-0000-0000-000000000001";
 /* ===================== Error Boundary ===================== */
@@ -95,6 +94,43 @@ type CloudState = {
   base?: string;                     // mes base (guardado como texto ISO)
   locked?: boolean;                  // si el planificador está bloqueado
 };
+// === Tipos para Partes de trabajo ===
+type ParteTrabajo = {
+  id?: string;
+  fecha: string;          // YYYY-MM-DD
+  trabajadorId: string;
+  producto: string;       // clave/descripcion seleccionada
+  horasReales: number;
+  observaciones: string;
+};
+// === Parte de trabajo (para guardar en nube/BD/JSON) ===
+type WorkPartPayload = {
+  user_id: string;
+  tenant_id: string;
+  fecha: string;                 // YYYY-MM-DD
+  trabajador_id: string;
+  trabajador_nombre: string;
+  producto: string;              // nombre del bloque/“producto”
+  horas_reales: number;          // horas reales trabajadas
+  observaciones: string;
+  created_at: string;            // ISO
+  storage_path?: string;         // ruta de storage donde se guardó el JSON
+};
+
+type ParteItem = {
+  producto: string;        // p.ej. "OT-250033"
+  horas_reales: number;    // p.ej. 6.5
+  observaciones?: string;  // opcional
+};
+
+type PartesPorTrabajador = Record<string, ParteItem[]>;
+
+type ParteResumenTrabajador = {
+  trabajador_id: string;
+  trabajador_nombre: string;
+  items: ParteItem[];
+  total_horas: number;
+};
 
 /* ===================== Util ===================== */
 const fmt = (d: Date | null | undefined) => {
@@ -113,7 +149,6 @@ function monthYear(d: Date | null | undefined): string {
 const weekDaysHeader = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
 const PX_PER_HOUR = 20;
 const URGENT_COLOR = "#f59e0b";
-
 
 function monthGrid(date: Date) {
   const start = startOfWeek(startOfMonth(date), { weekStartsOn: 1 });
@@ -331,6 +366,8 @@ export default function Planificador() {
 function AppInner() {
   const [base, setBase] = useState(new Date());
   const { weeks } = useMemo(() => monthGrid(base), [base]);
+
+  
   const [locked, setLocked] = useState(true); // bloqueado por defecto
   const canEdit = !locked;
 
@@ -359,6 +396,18 @@ function AppInner() {
     trabajadorId: "W1",
     fechaInicio: fmt(new Date()),
   });
+
+const orderedWorkers = useMemo(() => {
+  const arr = [...workers];
+  if (!form?.trabajadorId) return arr;
+  arr.sort((a, b) => {
+    if (a.id === form.trabajadorId) return -1;
+    if (b.id === form.trabajadorId) return 1;
+    return 0;
+  });
+  return arr;
+}, [workers, form.trabajadorId]); 
+
   // ⬇️ 3.3-C (estados de sesión/carga en la nube)
   const [userId, setUserId] = useState<string | null>(null);
   const [loadingCloud, setLoadingCloud] = useState(false);
@@ -379,56 +428,145 @@ function AppInner() {
   const [printWorker, setPrintWorker] = useState<string>("W1");
   const [printDate, setPrintDate] = useState<string>(fmt(new Date()));
 
-// === Partes de trabajo ===
-const [showPartes, setShowPartes] = useState(false);
+  function buscarYSeleccionarBloqueParte() {
+  const q = (parteQuery || "").trim().toLowerCase();
+  if (!q) {
+    alert("Escribe algo en 'Buscar bloque'.");
+    return;
+  }
 
-// 1) Fecha primero
-const [parteFecha, setParteFecha] = useState<string>(fmt(new Date()));
+  // 1) Coincidencia exacta primero
+  const exact = productosFiltrados.find(p => p.toLowerCase() === q);
+  if (exact) {
+    setParteProducto(exact);
+    return;
+  }
 
-// 2) Luego trabajador
-const [parteWorkerId, setParteWorkerId] = useState<string>("W1");
+  // 2) Primera coincidencia parcial
+  const parcial = productosFiltrados.find(p => p.toLowerCase().includes(q));
+  if (parcial) {
+    setParteProducto(parcial);
+    return;
+  }
 
-// 3) Búsqueda/selección de producto (de los bloques del calendario)
-const [parteQuery, setParteQuery] = useState<string>("");
-const [parteProducto, setParteProducto] = useState<string>("");
-
-// 4) Horas reales
-const [parteHoras, setParteHoras] = useState<number>(0);
-
-// Productos planificados para el trabajador seleccionado EN ESE DÍA (únicos)
-const productosDelTrabajador = useMemo(() => {
-  const set = new Set<string>();
-  slices
-    .filter(s =>
-      s.trabajadorId === parteWorkerId &&
-      s.fecha === parteFecha
-    )
-    .forEach(s => set.add(s.producto.trim()));
-  return [...set].sort((a,b)=>a.localeCompare(b));
-}, [slices, parteWorkerId, parteFecha]);
-
-// Sugerencias por texto
-const sugerenciasProductos = useMemo(() => {
-  const q = parteQuery.trim().toLowerCase();
-  if (!q) return productosDelTrabajador;
-  return productosDelTrabajador.filter(p => p.toLowerCase().includes(q));
-}, [productosDelTrabajador, parteQuery]);
-
-// Elegir producto desde buscador/lista
-function elegirProducto(p: string) {
-  setParteProducto(p);
-  setParteQuery(p);
-  // Horas planificadas para ese trabajador, ese día y ese producto
-  const totalPlan = slices
-    .filter(s =>
-      s.trabajadorId === parteWorkerId &&
-      s.fecha === parteFecha &&
-      s.producto.trim() === p.trim()
-    )
-    .reduce((a, s) => a + s.horas, 0);
-  // Sugerimos como valor inicial las horas planificadas ese día
-  setParteHoras(Math.round(totalPlan * 2) / 2);
+  alert("No se encontraron bloques que coincidan.");
 }
+
+function generarVentanaPDFParte(fecha: string, trabajadorNombre: string, items: ParteItem[]) {
+  const total = items.reduce((a, it) => a + (Number(it.horas_reales)||0), 0);
+
+  const html = `<!doctype html>
+<html><head><meta charset="utf-8" />
+<title>Parte ${fecha} - ${trabajadorNombre}</title>
+<style>
+body{font-family: Arial, sans-serif; padding:24px; color:#111827}
+h1{margin:0 0 6px 0; font-size:20px}
+.sub{color:#6b7280; margin-bottom:16px}
+table{width:100%; border-collapse:collapse}
+th,td{border-bottom:1px solid #e5e7eb; padding:8px; text-align:left}
+th{background:#f9fafb}
+.right{text-align:right}
+.tot{font-weight:700}
+.obs{white-space:pre-wrap; color:#374151}
+@page { size: auto; margin: 15mm; }
+</style></head>
+<body>
+<h1>Parte de trabajo</h1>
+<div class="sub">Fecha: <b>${fecha}</b> &nbsp;|&nbsp; Trabajador: <b>${trabajadorNombre}</b></div>
+<table>
+<thead><tr><th>Descripción / bloque</th><th class="right">Horas</th><th>Observaciones</th></tr></thead>
+<tbody>
+${items.map(it => `
+<tr>
+  <td>${it.producto}</td>
+  <td class="right">${it.horas_reales}</td>
+  <td class="obs">${it.observaciones || ""}</td>
+</tr>`).join("")}
+</tbody>
+<tfoot>
+<tr><td class="tot">TOTAL</td><td class="right tot">${total}</td><td></td></tr>
+</tfoot>
+</table>
+<script>
+  // Abre diálogo de impresión al cargar (elige "Guardar como PDF")
+  window.onload = function(){ window.print(); };
+</script>
+</body></html>`;
+
+  const wwin = window.open("", "_blank");
+  if (!wwin) {
+    alert("Permite la ventana emergente para descargar/imprimir el PDF.");
+    return;
+  }
+  wwin.document.open();
+  wwin.document.write(html);
+  wwin.document.close();
+  wwin.focus();
+}
+
+function generarVentanaPDFParteTaller(fecha: string, resumen: ParteResumenTrabajador[]) {
+  const totalTaller = resumen.reduce((a, r) => a + (Number(r.total_horas) || 0), 0);
+
+  const seccionesHTML = resumen.map(r => {
+    const filas = r.items.map(it => `
+      <tr>
+        <td>${it.producto}</td>
+        <td class="right">${it.horas_reales}</td>
+        <td class="obs">${it.observaciones || ""}</td>
+      </tr>
+    `).join("");
+
+    return `
+      <h2 style="margin: 24px 0 6px 0; font-size:16px">👤 ${r.trabajador_nombre}</h2>
+      <table>
+        <thead><tr><th>Descripción / bloque</th><th class="right">Horas</th><th>Observaciones</th></tr></thead>
+        <tbody>${filas || `<tr><td colspan="3" style="color:#6b7280">— Sin líneas —</td></tr>`}</tbody>
+        <tfoot><tr><td class="tot">Subtotal ${r.trabajador_nombre}</td><td class="right tot">${r.total_horas}</td><td></td></tr></tfoot>
+      </table>
+    `;
+  }).join("");
+
+  const html = `<!doctype html>
+<html><head><meta charset="utf-8" />
+<title>Parte Taller ${fecha}</title>
+<style>
+body{font-family: Arial, sans-serif; padding:24px; color:#111827}
+h1{margin:0 0 6px 0; font-size:20px}
+.sub{color:#6b7280; margin-bottom:16px}
+table{width:100%; border-collapse:collapse; margin-top:8px}
+th,td{border-bottom:1px solid #e5e7eb; padding:8px; text-align:left}
+th{background:#f9fafb}
+.right{text-align:right}
+.tot{font-weight:700}
+.obs{white-space:pre-wrap; color:#374151}
+@page { size: auto; margin: 15mm; }
+</style></head>
+<body>
+<h1>Parte de trabajo — Taller completo</h1>
+<div class="sub">Fecha: <b>${fecha}</b></div>
+
+${seccionesHTML}
+
+<hr style="margin:24px 0" />
+<h2 style="margin:0 0 6px 0">TOTAL HORAS TALLER: ${totalTaller}</h2>
+
+<script>
+  // Abre el diálogo de impresión automáticamente (elige "Guardar como PDF")
+  window.onload = function(){ window.print(); };
+</script>
+</body></html>`;
+
+  const wwin = window.open("", "_blank");
+  if (!wwin) {
+    alert("Permite la ventana emergente para descargar/imprimir el PDF.");
+    return;
+  }
+  wwin.document.open();
+  wwin.document.write(html);
+  wwin.document.close();
+  wwin.focus();
+}
+
 
   // 🔽🔽🔽 Pega aquí todo este bloque completo 🔽🔽🔽
 
@@ -466,13 +604,13 @@ function elegirProducto(p: string) {
       if (!existingW || existingW.length === 0) {
         // Inserta un set inicial de trabajadores (puedes ajustar nombres/IDs)
         const initialWorkers = [
-          { user_id: uid, id: "W1", nombre: "ANGEL MORGADO",  extra_default: 0, sabado_default: false },
-          { user_id: uid, id: "W2", nombre: "ANTONIO MONTILLA", extra_default: 0, sabado_default: false },
-          { user_id: uid, id: "W3", nombre: "DANIEL MORGADO",  extra_default: 0, sabado_default: false },
-          { user_id: uid, id: "W4", nombre: "FIDEL RODRIGO",    extra_default: 0, sabado_default: false },
-          { user_id: uid, id: "W5", nombre: "LUCAS PRIETO",     extra_default: 0, sabado_default: false },
-          { user_id: uid, id: "W6", nombre: "LUIS AGUADO",      extra_default: 0, sabado_default: false },
-          { user_id: uid, id: "W7", nombre: "VICTOR HERNANDEZ", extra_default: 0, sabado_default: false },
+          { user_id: uid, tenant_id: TENANT_ID, id: "W1", nombre: "ANGEL MORGADO",  extra_default: 0, sabado_default: false },
+          { user_id: uid, tenant_id: TENANT_ID, id: "W2", nombre: "ANTONIO MONTILLA", extra_default: 0, sabado_default: false },
+          { user_id: uid, tenant_id: TENANT_ID, id: "W3", nombre: "DANIEL MORGADO",  extra_default: 0, sabado_default: false },
+          { user_id: uid, tenant_id: TENANT_ID, id: "W4", nombre: "FIDEL RODRIGO",    extra_default: 0, sabado_default: false },
+          { user_id: uid, tenant_id: TENANT_ID, id: "W5", nombre: "LUCAS PRIETO",     extra_default: 0, sabado_default: false },
+          { user_id: uid, tenant_id: TENANT_ID, id: "W6", nombre: "LUIS AGUADO",      extra_default: 0, sabado_default: false },
+          { user_id: uid, tenant_id: TENANT_ID, id: "W7", nombre: "VICTOR HERNANDEZ", extra_default: 0, sabado_default: false },
         ];
 
         const { error: insErr } = await supabase.from("workers").insert(initialWorkers);
@@ -572,19 +710,21 @@ function elegirProducto(p: string) {
     setSavingCloud(true);
     try {
       // 1) Trabajadores
-      const wRows = workers.map(w => ({ user_id: uid,
-  id: w.id,
-  nombre: w.nombre,
-  extra_default: w.extraDefault,
-  sabado_default: w.sabadoDefault,
-tenant_id: TENANT_ID, }));
+      const wRows = workers.map(w => ({
+        user_id: uid,
+        id: w.id,
+        nombre: w.nombre,
+        extra_default: w.extraDefault,
+        sabado_default: w.sabadoDefault,
+        tenant_id: TENANT_ID,
+      }));
 
-if (wRows.length) {
-  const { error } = await supabase.from("workers").upsert(wRows, { onConflict: "tenant_id,id" });
-  if (error) throw error;
-}
+      if (wRows.length) {
+        const { error } = await supabase.from("workers").upsert(wRows, { onConflict: "tenant_id,id" });
+        if (error) throw error;
+      }
 
-      // 2) Slices (borramos todos del usuario y reinsertamos el snapshot actual)
+      // 2) Slices (snapshot)
       const sRows = slices.map(s => ({
         id: s.id,
         task_id: s.taskId,
@@ -594,27 +734,34 @@ if (wRows.length) {
         trabajador_id: s.trabajadorId,
         color: s.color,
         user_id: uid,
+        tenant_id: TENANT_ID,
       }));
+
       await supabase.from("task_slices").delete().eq("tenant_id", TENANT_ID);
       if (sRows.length) {
         const { error } = await supabase.from("task_slices").insert(sRows);
         if (error) throw error;
       }
 
-      // 3) Overrides (lo mismo: borramos y subimos snapshot plano)
-      const oRows = flattenOverrides(overrides).map(r => ({ ...r, user_id: uid }));
+      // 3) Overrides
+      const oRows = flattenOverrides(overrides).map(r => ({
+        ...r,
+        user_id: uid,
+        tenant_id: TENANT_ID,
+      }));
       await supabase.from("day_overrides").delete().eq("tenant_id", TENANT_ID);
       if (oRows.length) {
         const { error } = await supabase.from("day_overrides").insert(oRows);
         if (error) throw error;
       }
 
-      // 4) Descripciones (borramos y subimos snapshot actual)
+      // 4) Descripciones
       const dRows = Object.entries(descs).map(([nombre, texto]) => ({
         nombre,
         texto,
-        user_id: uid,  tenant_id: TENANT_ID,  // ← importante
-}));
+        user_id: uid,
+        tenant_id: TENANT_ID,
+      }));
 
       await supabase.from("product_descs").delete().eq("tenant_id", TENANT_ID);
       if (dRows.length) {
@@ -629,12 +776,11 @@ if (wRows.length) {
     }
   }
 
-  // ⬇️ 3.3-C (efecto que detecta sesión y carga Supabase)
+  // Detecta sesión y carga
   useEffect(() => {
     let mounted = true;
 
     async function init() {
-      // 1) ¿Hay sesión ya abierta?
       const { data } = await supabase.auth.getSession();
       const uid = data.session?.user?.id ?? null;
       const mail = data.session?.user?.email ?? null;
@@ -644,17 +790,16 @@ if (wRows.length) {
       setUserId(uid);
       setUserEmail(mail);
 
-      // 2) Si hay usuario, carga todo desde Supabase
       if (uid) {
         try {
           setLoadingCloud(true);
           await seedIfEmpty(uid);
-          await loadAll(uid);   // ← esta es tu función del paso 3.3-B
+          await loadAll(uid);
         } finally {
           if (mounted) setLoadingCloud(false);
         }
       } else {
-        // === NUEVO: si NO hay sesión, intenta cargar del almacenamiento local
+        // carga local si no hay sesión
         const snap = safeLocal<any>(STORAGE_KEY, null as any);
         if (snap) {
           setWorkers(snap.workers ?? []);
@@ -667,7 +812,6 @@ if (wRows.length) {
 
     init();
 
-    // 3) Suscripción a cambios de sesión (login / logout)
     const { data: sub } = supabase.auth.onAuthStateChange(async (_event, session) => {
       if (!mounted) return;
       const uid = session?.user?.id ?? null;
@@ -679,7 +823,7 @@ if (wRows.length) {
         try {
           setLoadingCloud(true);
           await seedIfEmpty(uid);
-          await loadAll(uid); // ← evitar duplicado de llamadas
+          await loadAll(uid);
         } finally {
           setLoadingCloud(false);
         }
@@ -690,45 +834,45 @@ if (wRows.length) {
       mounted = false;
       sub?.subscription?.unsubscribe();
     };
-  }, []); // ← sin dependencias: solo al montar
+  }, []);
 
-  // AUTOSAVE: guarda en Supabase cuando cambian datos (con debounce)
+  // Autosave
   useEffect(() => {
-    if (!userId) return;          // sin sesión, no guardes
-    if (loadingCloud) return;     // no guardes mientras cargas desde la nube
+    if (!userId) return;
+    if (loadingCloud) return;
 
-    // Foto del estado para evitar guardados innecesarios
-    const snapshot = JSON.stringify({
-      workers,
-      slices,
-      overrides,
-      descs,
-    });
-
+    const snapshot = JSON.stringify({ workers, slices, overrides, descs });
     if (snapshot === lastSavedRef.current) return;
 
-    // Debounce ~800ms
     if (saveTimer.current) window.clearTimeout(saveTimer.current);
     saveTimer.current = window.setTimeout(async () => {
       try {
         await saveAll(userId);
         lastSavedRef.current = snapshot;
       } catch {
-        // el error ya se guarda en setSaveError dentro de saveAll
+        /* error ya gestionado */
       }
     }, 800);
 
-    return () => {
-      if (saveTimer.current) window.clearTimeout(saveTimer.current);
-    };
+    return () => { if (saveTimer.current) window.clearTimeout(saveTimer.current); };
   }, [workers, slices, overrides, descs, userId, loadingCloud]);
 
-  // === NUEVO: guardado local automático cuando NO hay sesión ===
+  // Guardado local sin sesión
   useEffect(() => {
-    if (userId) return; // si hay sesión, no guardes en local
+    if (userId) return;
     const snapshot = JSON.stringify({ workers, slices, overrides, descs });
     try { localStorage.setItem(STORAGE_KEY, snapshot); } catch {}
   }, [workers, slices, overrides, descs, userId]);
+
+  useEffect(() => {
+  const t = setTimeout(() => {
+    try {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    } catch {}
+  }, 50);
+  return () => clearTimeout(t);
+}, [form.trabajadorId]);
+
 
   function triggerPrint(mode: PrintMode) {
     setPrintMode(mode);
@@ -736,7 +880,7 @@ if (wRows.length) {
     setTimeout(() => setPrintMode("none"), 600);
   }
 
-  // Autenticación simple (bloqueo)
+  // Bloqueo simple
   function tryUnlock() {
     const p = prompt("Introduce la contraseña para editar:");
     if (p === PASSWORD) setLocked(false);
@@ -746,8 +890,7 @@ if (wRows.length) {
     setLocked(true);
   }
 
-  // 🔽🔽🔽 AÑADIR AQUÍ el bloque de login/logout 🔽🔽🔽
-
+  // Login/Logout
   async function sendMagicLink() {
     setAuthMsg(null);
     const email = loginEmail.trim();
@@ -757,7 +900,7 @@ if (wRows.length) {
       const { error } = await supabase.auth.signInWithOtp({
         email,
         options: {
-          emailRedirectTo: window.location.origin, // vuelve a la misma app
+          emailRedirectTo: window.location.origin,
         },
       });
       if (error) throw error;
@@ -768,11 +911,8 @@ if (wRows.length) {
       setSendingLink(false);
     }
   }
-
   async function logout() {
     await supabase.auth.signOut();
-    // Limpia opcionalmente estados locales:
-    // setWorkers([]); setSlices([]); setOverrides({}); setDescs({});
   }
 
   // Crear bloque
@@ -809,26 +949,16 @@ if (wRows.length) {
     if (!canEdit) return;
     setWorkers((prev) => prev.map((w) => (w.id === id ? { ...w, ...patch } : w)));
   }
-// ——— Eliminar trabajador + limpiar sus datos ———
-function deleteWorker(id: string) {
-  if (!canEdit) return;
-  const w = workers.find(x => x.id === id);
-  const name = w?.nombre || id;
-  if (!confirm(`¿Eliminar a "${name}" y todas sus asignaciones? Esta acción no se puede deshacer.`)) return;
+  function deleteWorker(id: string) {
+    if (!canEdit) return;
+    const w = workers.find(x => x.id === id);
+    const name = w?.nombre || id;
+    if (!confirm(`¿Eliminar a "${name}" y todas sus asignaciones? Esta acción no se puede deshacer.`)) return;
 
-  // 1) Quita el trabajador de la lista
-  setWorkers(prev => prev.filter(x => x.id !== id));
-
-  // 2) Elimina todos sus bloques/horas
-  setSlices(prev => prev.filter(s => s.trabajadorId !== id));
-
-  // 3) Borra overrides (extras/sábados) del trabajador
-  setOverrides(prev => {
-    const copy = { ...prev };
-    delete copy[id];
-    return copy;
-  });
-}
+    setWorkers(prev => prev.filter(x => x.id !== id));
+    setSlices(prev => prev.filter(s => s.trabajadorId !== id));
+    setOverrides(prev => { const copy = { ...prev }; delete copy[id]; return copy; });
+  }
 
   // Drag & Drop
   const dragIdRef = useRef<string | null>(null);
@@ -852,7 +982,7 @@ function deleteWorker(id: string) {
     e.preventDefault();
   }
 
-  // Doble clic en celda → extras/sábado (reprograma desde ese día)
+  // Doble clic en celda → extras/sábado
   function editOverrideForDay(worker: Worker, date: Date) {
     if (!canEdit) return;
     const f = fmt(date);
@@ -880,7 +1010,7 @@ function deleteWorker(id: string) {
     setOverrides(nextOverrides);
 
     setSlices((prev) => {
-      const newPlan = compactFrom(worker, f, nextOverrides, prev); // ← sin wrapper duplicado
+      const newPlan = compactFrom(worker, f, nextOverrides, prev);
       const others = prev.filter((s) => s.trabajadorId !== worker.id);
       return [...others, ...newPlan];
     });
@@ -902,7 +1032,6 @@ function deleteWorker(id: string) {
       return [...others, ...newPlan];
     });
   }
-
   function removeTask(taskId: string, workerId: string) {
     if (!canEdit) return;
     if (!confirm("¿Eliminar todo el bloque (producto) para este trabajador?")) return;
@@ -917,6 +1046,7 @@ function deleteWorker(id: string) {
       const startF = toRemove.reduce((m, s) => (s.fecha < m ? s.fecha : m), toRemove[0].fecha);
       const newPlan = compactFrom(w, startF, overrides, filtered);
       const others = filtered.filter((s) => s.trabajadorId !== w.id);
+
       return [...others, ...newPlan];
     });
   }
@@ -986,6 +1116,70 @@ function deleteWorker(id: string) {
   const [ebMatches, setEbMatches] = useState<FoundBlock[]>([]);
   const [ebSelected, setEbSelected] = useState<string>("");
   const [ebHoras, setEbHoras] = useState<number>(0);
+    // ====== Partes de trabajo (UI y datos) ======
+  const [showPartes, setShowPartes] = useState<boolean>(false);
+  const [parteFecha, setParteFecha] = useState<string>(fmt(new Date()));
+  const [parteTrabajador, setParteTrabajador] = useState<string>("W1");
+  const [parteQuery, setParteQuery] = useState<string>("");
+  const [parteProducto, setParteProducto] = useState<string>("");
+  const [parteHoras, setParteHoras] = useState<number>(0);
+  const [parteObs, setParteObs] = useState<string>("");
+  const [partePorTrabajador, setPartePorTrabajador] = useState<PartesPorTrabajador>({});
+  const hayLineasEnAlguno = useMemo(() => {
+  return Object.values(partePorTrabajador).some(arr => (arr?.length ?? 0) > 0);
+}, [partePorTrabajador]);
+// Total por trabajador
+  const totalesPorTrabajador = useMemo(() => {
+  const map: Record<string, number> = {};
+  for (const [wid, items] of Object.entries(partePorTrabajador)) {
+    map[wid] = items.reduce((a, it) => a + (Number(it.horas_reales) || 0), 0);
+  }
+  return map;
+}, [partePorTrabajador]);
+
+// Total general del taller (suma de todos)
+const totalTaller = useMemo(
+  () => Object.values(totalesPorTrabajador).reduce((a, n) => a + n, 0),
+  [totalesPorTrabajador]
+);
+
+  const [savingParte, setSavingParte] = useState<boolean>(false);
+  const [parteMsg, setParteMsg] = useState<string | null>(null);
+
+  // Si el trabajador actual no está en el objeto, lo creamos (para que aparezca su bloque vacío)
+useEffect(() => {
+  setPartePorTrabajador(prev => {
+    if (prev[parteTrabajador]) return prev;
+    return { ...prev, [parteTrabajador]: [] };
+  });
+}, [parteTrabajador]);
+
+
+
+  // Productos/bloques disponibles (del calendario) para ese trabajador y día
+  const productosDisponibles = useMemo(() => {
+    const set = new Set<string>();
+    const f = parteFecha;
+    const w = parteTrabajador;
+    slices.forEach(s => {
+      if (s.trabajadorId === w && (!f || s.fecha === f)) set.add(s.producto);
+    });
+    return Array.from(set).sort((a,b)=>a.localeCompare(b));
+  }, [slices, parteFecha, parteTrabajador]);
+
+  // Filtro buscador
+  const productosFiltrados = useMemo(() => {
+  const set = new Set<string>();
+  // toma TODOS los slices (sin filtrar por trabajador)
+  slices.forEach(s => {
+    const name = (s.producto || "").trim();
+    if (name) set.add(name);
+  });
+  const all = [...set].sort((a, b) => a.localeCompare(b, "es"));
+  const q = (parteQuery || "").trim().toLowerCase();
+  return q ? all.filter(p => p.toLowerCase().includes(q)) : all;
+}, [slices, parteQuery]);
+
 
   function buscarBloques() {
     const w = workers.find((x) => x.id === ebWorker);
@@ -1008,7 +1202,9 @@ function deleteWorker(id: string) {
       setEbSelected("");
       setEbHoras(0);
     }
+    // Al cambiar el trabajador del formulario, sube suavemente al inicio
   }
+
 
   function aplicarEdicion() {
     if (!canEdit) return;
@@ -1034,6 +1230,204 @@ function deleteWorker(id: string) {
       return [...restantes, ...plan];
     });
   }
+function agregarLineaParte() {
+  if (!parteProducto) { alert("Elige la descripción/bloque."); return; }
+  if (!isFinite(parteHoras) || Number(parteHoras) <= 0) { alert("Horas reales inválidas."); return; }
+
+  const item: ParteItem = {
+    producto: parteProducto,
+    horas_reales: Math.round(Number(parteHoras) * 2) / 2,
+    observaciones: parteObs.trim() || undefined,
+  };
+
+  setPartePorTrabajador(prev => {
+    const arr = prev[parteTrabajador] ?? [];
+    return { ...prev, [parteTrabajador]: [...arr, item] };
+  });
+
+  // limpia campos para meter otra línea
+  setParteProducto("");
+  setParteHoras(0);
+  setParteObs("");
+}
+
+function eliminarLineaParteDe(wid: string, idx: number) {
+  setPartePorTrabajador(prev => {
+    const arr = prev[wid] ?? [];
+    return { ...prev, [wid]: arr.filter((_, i) => i !== idx) };
+  });
+}
+
+    // Guardar parte de trabajo: sube un JSON a Storage y registra fila en BD
+
+   async function guardarParteTrabajo() {
+  if (!userId) { alert("Inicia sesión para guardar en la nube."); return; }
+  const f = parteFecha;
+  if (!f) { alert("Elige una fecha."); return; }
+
+  // 1) Construye un objeto “por trabajador” con lo acumulado en la UI
+  //    + (opcional) la línea rápida actual si no hay ninguna línea acumulada.
+  // Nota: structuredClone está en navegadores modernos; si te da error,
+  // puedes sustituir por JSON.parse(JSON.stringify(partePorTrabajador))
+  const porTrab: PartesPorTrabajador =
+    typeof structuredClone === "function"
+      ? structuredClone(partePorTrabajador)
+      : JSON.parse(JSON.stringify(partePorTrabajador || {}));
+
+  const lineaRapidaValida = parteProducto && isFinite(parteHoras) && Number(parteHoras) > 0;
+  const hayLineasAcumuladas = Object.values(porTrab).some(arr => (arr?.length ?? 0) > 0);
+
+  if (!hayLineasAcumuladas && lineaRapidaValida) {
+    // si no hay nada acumulado, mete la línea rápida en el trabajador seleccionado
+    porTrab[parteTrabajador] = porTrab[parteTrabajador] ?? [];
+    porTrab[parteTrabajador].push({
+      producto: parteProducto,
+      horas_reales: Math.round(Number(parteHoras) * 2) / 2,
+      observaciones: (parteObs || "").trim() || undefined,
+    });
+  }
+
+  // 2) Construye el RESUMEN por trabajador (nombre, items, subtotal)
+  const resumen: ParteResumenTrabajador[] = Object.entries(porTrab)
+    .map(([wid, items]) => {
+      const w = workers.find(x => x.id === wid);
+      const nombre = w?.nombre || wid;
+      const total = items.reduce((a, it) => a + (Number(it.horas_reales) || 0), 0);
+      return {
+        trabajador_id: wid,
+        trabajador_nombre: nombre,
+        items,
+        total_horas: total,
+      };
+    })
+    .filter(r => r.items.length > 0); // quitamos secciones vacías
+
+  if (resumen.length === 0) {
+    alert("No hay líneas para guardar.");
+    return;
+  }
+
+  const payload = {
+    user_id: userId,
+    tenant_id: TENANT_ID,
+    fecha: f,                             // YYYY-MM-DD
+    created_at: new Date().toISOString(), // ISO
+    resumen,                              // secciones por trabajador
+    total_taller: resumen.reduce((a, r) => a + r.total_horas, 0),
+  };
+
+  setSavingParte(true);
+  setParteMsg(null);
+  try {
+    // 3) Sube un ÚNICO JSON del taller al Storage
+    //    - bucket: "partes-taller-inoxidable"
+    //    - carpeta: "partes taller inoxidable"
+    const safeName = `${payload.fecha} - PARTE TALLER.json`;
+    const storagePath = `partes taller inoxidable/${safeName}`;
+
+    const { error: upErr } = await supabase.storage
+      .from("partes-taller-inoxidable")
+      .upload(
+        storagePath,
+        new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }),
+        { upsert: true }
+      );
+
+    if (upErr) {
+      console.error("Storage upload error:", upErr);
+      throw upErr;
+    }
+
+    // 4) Inserta una fila por línea en la tabla "work_parts"
+    //    (sirve para consultas/exports rápidos)
+    const rows: any[] = [];
+    for (const r of resumen) {
+      for (const it of r.items) {
+        rows.push({
+          user_id: payload.user_id,
+          tenant_id: payload.tenant_id,
+          fecha: payload.fecha,
+          trabajador_id: r.trabajador_id,
+          trabajador_nombre: r.trabajador_nombre,
+          producto: it.producto,
+          horas_reales: it.horas_reales,
+          observaciones: it.observaciones ?? null,
+          storage_path: storagePath, // dónde está el JSON del taller
+        });
+      }
+    }
+
+    if (rows.length > 0) {
+      const { error: insErr } = await supabase.from("work_parts").insert(rows);
+      if (insErr) {
+        console.error("work_parts insert error:", insErr);
+        throw insErr;
+      }
+    }
+
+    // 5) Éxito → mensaje y limpieza de estado
+    setParteMsg("✅ Parte del taller guardado correctamente.");
+
+    // Limpia todo lo acumulado para empezar de cero si quieres
+    setPartePorTrabajador({});
+    setParteProducto("");
+    setParteHoras(0);
+    setParteObs("");
+
+    // 6) (Opcional pero recomendado) Abrir ventana de impresión del parte del taller:
+    //    Si AÚN NO tienes la función generarVentanaPDFParteTaller del paso 7,
+    //    comenta estas 4 líneas.
+    setTimeout(() => {
+      generarVentanaPDFParteTaller(payload.fecha, resumen);
+    }, 50);
+
+  } catch (e: any) {
+    setParteMsg(`⚠️ Error: ${e?.message ?? String(e)}`);
+  } finally {
+    setSavingParte(false);
+  }
+}
+
+function printParteTaller() {
+  // 1) Clona lo acumulado por trabajador
+  const porTrab: PartesPorTrabajador =
+    typeof structuredClone === "function"
+      ? structuredClone(partePorTrabajador)
+      : JSON.parse(JSON.stringify(partePorTrabajador || {}));
+
+  // 2) Si no hay nada acumulado y la línea rápida es válida, métela en el trabajador seleccionado
+  const lineaRapidaValida = parteProducto && isFinite(parteHoras) && Number(parteHoras) > 0;
+  const hayLineasAcumuladas = Object.values(porTrab).some(arr => (arr?.length ?? 0) > 0);
+
+  if (!hayLineasAcumuladas && lineaRapidaValida) {
+    porTrab[parteTrabajador] = porTrab[parteTrabajador] ?? [];
+    porTrab[parteTrabajador].push({
+      producto: parteProducto,
+      horas_reales: Math.round(Number(parteHoras) * 2) / 2,
+      observaciones: (parteObs || "").trim() || undefined,
+    });
+  }
+
+  // 3) Construye el resumen por trabajador (con subtotales)
+  const resumen: ParteResumenTrabajador[] = Object.entries(porTrab)
+    .map(([wid, items]) => {
+      const w = workers.find(x => x.id === wid);
+      const nombre = w?.nombre || wid;
+      const total = items.reduce((a, it) => a + (Number(it.horas_reales) || 0), 0);
+      return { trabajador_id: wid, trabajador_nombre: nombre, items, total_horas: total };
+    })
+    .filter(r => r.items.length > 0);
+
+  if (resumen.length === 0) {
+    alert("No hay líneas para imprimir.");
+    return;
+  }
+
+  // 4) Llama al generador de PDF del taller
+  generarVentanaPDFParteTaller(parteFecha, resumen);
+}
+   
+
 
   /* ===================== Render ===================== */
   return (
@@ -1074,15 +1468,18 @@ function deleteWorker(id: string) {
 
     {/* ——— separador visual ——— */}
     <div style={{ width: 1, height: 22, background: "rgba(255,255,255,.25)", margin: "0 6px" }} />
-    
+
+        {/* Botón para abrir/cerrar la pestaña de Partes */}
     <button
-  style={btnPrimary}
-  className="no-print"
-  onClick={() => setShowPartes(v => !v)}
-  title="Abrir partes de trabajo"
->
-  📋 Partes de trabajo
-</button>
+      className="no-print"
+      style={btnPrimary}
+      onClick={() => setShowPartes(v => !v)}
+      title="Crear un parte de trabajo"
+    >
+      📋 Partes de trabajo
+    </button>
+
+
     {/* === UI de autenticación === */}
     {userId ? (
       // Conectado
@@ -1123,131 +1520,241 @@ function deleteWorker(id: string) {
       <div style={mainLayout}>
         {/* COLUMNA PRINCIPAL */}
         <div style={{ minWidth: 0 }}>
-         
-{showPartes && (
-  <div style={{ ...panel, borderColor: "#c7d2fe", background: "#eef2ff" }} className="no-print">
-    <div style={panelTitle}>Partes de trabajo</div>
-    <div style={{ display: "grid", gap: 10 }}>
-      {/* === 1) FECHA === */}
-      <label style={label}>Fecha</label>
-      <input
-        style={disabledIf(input, locked)}
-        disabled={locked}
-        type="date"
-        value={parteFecha}
-        onChange={(e) => {
-          setParteFecha(e.target.value);
-          // Reiniciamos selección al cambiar el día
-          setParteProducto("");
-          setParteQuery("");
-          setParteHoras(0);
-        }}
-      />
-
-      {/* === 2) TRABAJADOR === */}
-      <label style={label}>Trabajador</label>
-      <select
-        style={disabledIf(input, locked)}
-        disabled={locked}
-        value={parteWorkerId}
-        onChange={(e) => {
-          setParteWorkerId(e.target.value);
-          setParteProducto("");
-          setParteQuery("");
-          setParteHoras(0);
-        }}
-      >
-        {workers.map(w => <option key={`pw-${w.id}`} value={w.id}>{w.nombre}</option>)}
-      </select>
-
-      {/* === 3) BUSCADOR DE PRODUCTO (de ese día y trabajador) === */}
-      <label style={label}>Descripción / Producto (de ese día)</label>
-      <input
-        style={disabledIf(input, locked)}
-        disabled={locked}
-        placeholder="Escribe para buscar…"
-        value={parteQuery}
-        onChange={(e) => { setParteQuery(e.target.value); setParteProducto(""); }}
-        list="parte-productos"
-      />
-      <datalist id="parte-productos">
-        {sugerenciasProductos.map(p => <option key={`sug-${p}`} value={p} />)}
-      </datalist>
-
-      {!!sugerenciasProductos.length && (
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-          {sugerenciasProductos.slice(0, 10).map(p => (
-            <button
-              key={`chip-${p}`}
-              style={disabledIf({ ...btnTiny, borderColor: "#a5b4fc", background: "#fff" }, locked)}
-              disabled={locked}
-              onClick={() => elegirProducto(p)}
-              title="Usar esta descripción"
-            >
-              {p}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* === 4) HORAS REALES === */}
-      {parteQuery.trim() && (
-        <div style={{ marginTop: 6, display: "grid", gap: 8 }}>
-          <div style={{ fontWeight: 700, color: "#1f2937" }}>
-            Seleccionado: {parteProducto || parteQuery}
+          {/* BARRA IMPRESIÓN */}
+          <div style={bar} className="no-print">
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button style={btnLabeled} onClick={() => triggerPrint("monthly")}>🖨️ Imprimir mensual</button>
+              <select style={input} value={printWorker} onChange={(e) => setPrintWorker(e.target.value)}>
+                {workers.map((w) => <option key={`op-${w.id}`} value={w.id}>{w.nombre}</option>)}
+              </select>
+              <input style={input} type="date" value={printDate} onChange={(e) => setPrintDate(e.target.value)} />
+              <button style={btnLabeled} onClick={() => triggerPrint("daily")}>🖨️ Imprimir diario</button>
+              <button style={btnPrimary} onClick={() => triggerPrint("dailyAll")}>🖨️ Imprimir diario (todos)</button>
+            </div>
           </div>
 
-          {descs[parteProducto || parteQuery] ? (
-            <div style={{ fontSize: 12, background: "#fff", border: "1px solid #e5e7eb", borderRadius: 8, padding: 8 }}>
-              {descs[parteProducto || parteQuery]}
-            </div>
-          ) : (
-            <div style={{ fontSize: 12, color: "#6b7280" }}>
-              No hay descripción guardada para este producto en el panel de la derecha.
-            </div>
-          )}
 
-          <label style={label}>Horas reales trabajadas</label>
-          <input
-            style={disabledIf(input, locked)}
-            disabled={locked}
-            type="number"
-            step={0.5}
-            min={0}
-            value={parteHoras}
-            onChange={(e) => setParteHoras(Number(e.target.value))}
-          />
+                    {/* ====== Pestaña: Partes de trabajo ====== */}
+          {showPartes && (
+            <div
+    style={{ ...panel, marginBottom: 12, width: "50%", minWidth: 520, margin: "0 auto" }}
+    className="no-print"
+  >
+              <div style={panelTitle}>Partes de trabajo</div>
+              <div style={{ display: "grid", gap: 10 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "140px 1fr", gap: 8, alignItems: "center" }}>
+                  <label style={label}>Día</label>
+                  <input style={input} type="date" value={parteFecha} onChange={e=>setParteFecha(e.target.value)} />
 
-          <div style={{ display: "flex", gap: 8 }}>
-            <button
-              style={disabledIf(btnPrimary, locked)}
-              disabled={locked}
-              onClick={() => {
-                alert(
-                  `Parte registrado (temporal):\n` +
-                  `- Fecha: ${parteFecha}\n` +
-                  `- Trabajador: ${workers.find(w=>w.id===parteWorkerId)?.nombre || parteWorkerId}\n` +
-                  `- Producto: ${parteProducto || parteQuery}\n` +
-                  `- Horas reales: ${parteHoras}h`
-                );
-              }}
-            >
-              💾 Registrar (temporal)
-            </button>
-            <button
-              style={btnLabeled}
-              onClick={() => { setParteProducto(""); setParteQuery(""); setParteHoras(0); }}
-            >
-              Limpiar
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
+                  <label style={label}>Trabajador</label>
+                  <select style={input} value={parteTrabajador} onChange={e=>setParteTrabajador(e.target.value)}>
+                    {workers.map(w => <option key={`p-w-${w.id}`} value={w.id}>{w.nombre}</option>)}
+                  </select>
+
+
+<label style={label}>Buscar bloque</label>
+<div style={{ display: "flex", gap: 8 }}>
+  <input
+    style={input}
+    placeholder="Escribe para filtrar por nombre del bloque/producto"
+    value={parteQuery}
+    onChange={e=>setParteQuery(e.target.value)}
+  />
+  <button
+    type="button"
+    style={btnLabeled}
+    onClick={buscarYSeleccionarBloqueParte}
+    title="Selecciona la primera coincidencia"
+  >
+    🔎 Buscar bloques
+  </button>
+</div>
+
+
+
+
+                  <label style={label}>Descripción/bloque</label>
+                  <select
+                    style={input}
+                    value={parteProducto}
+                    onChange={e=>setParteProducto(e.target.value)}
+                  >
+                    <option value="">— elige —</option>
+                    {productosFiltrados.map(p => (
+                      <option key={`p-opt-${p}`} value={p}>{p}</option>
+                    ))}
+                  </select>
+
+                  <label style={label}>Horas reales</label>
+                  <input
+                    style={input}
+                    type="number"
+                    min={0}
+                    step={0.5}
+                    value={parteHoras}
+                    onChange={e=>setParteHoras(Number(e.target.value))}
+                  />
+
+                  <label style={label}>Observaciones</label>
+                  <textarea
+                    style={textarea}
+                    rows={4}
+                    placeholder="Incidencias, materiales, notas…"
+                    value={parteObs}
+                    onChange={e=>setParteObs(e.target.value)}
+                      
+/>
+{/* === BLOQUE NUEVO: Añadir línea y listado === */}
+<div style={{
+    gridColumn: "1 / -1",               // usa todo el ancho del formulario
+    display: "grid",
+    gridTemplateColumns: "240px 1fr",   // 240px para la columna de botones, resto para la lista
+    gap: 16,
+    alignItems: "start",
+    marginTop: 12,
+  }}>
+
+  <button style={btnAction} type="button" onClick={agregarLineaParte}>
+    ➕ Añadir línea
+
+  </button>
+  <div style={{ fontSize: 12, color: "#6b7280" }}>
+    Añade varias descripciones con sus horas y luego guarda todo.
   </div>
-)}
+</div>
+
+{/* === FIN BLOQUE NUEVO === */}
+
+<div style={{
+    gridColumn: "1 / -1",
+    display: "flex",
+    flexDirection: "column", // 🔹 uno debajo del otro
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    position: "sticky",      // 🔹 se mantienen visibles
+    bottom: 10,              // 🔹 pegados al fondo si haces scroll
+    background: "#f9fafb",   // fondo claro para distinguirlos
+    padding: 12,
+    borderRadius: 8,
+    zIndex: 10,
+  }}>
+
+  {/* Guardar TODO el parte: se desactiva si no hay líneas */}
+  <button
+  style={btnActionPrimary}
+  onClick={guardarParteTrabajo}
+  disabled={savingParte || (!hayLineasEnAlguno && (!parteProducto || parteHoras <= 0))}
+  title={hayLineasEnAlguno ? "Guardar parte del taller" : "Añade una línea o rellena la línea rápida"}
+>
+  {savingParte ? "Guardando…" : "💾 Guardar parte (todo)"}
+</button>
+
+<button
+  style={btnAction}
+  className="no-print"
+  onClick={printParteTaller}  
+  disabled={!hayLineasEnAlguno && (!parteProducto || parteHoras <= 0)}
+  title="Imprime el parte del taller (todas las secciones)"
+>
+  🖨️ Imprimir parte del taller
+</button>
 
 
+  {/* Mensajes y ayudas (debajo, centrados) */}
+{parteMsg && (
+      <div style={{ fontSize: 13 }}>{parteMsg}</div>
+    )}
+    <div style={{ fontSize: 12, color: "#6b7280" }}>
+      Añade varias descripciones con sus horas y luego guarda todo.
+    </div>
+    <div style={{ fontSize: 12, color: "#6b7280" }}>
+      Se guardará en la carpeta <b>“partes taller inoxidable”</b> de tu almacenamiento.
+</div>
+
+  {/* === LISTADO AGRUPADO POR TRABAJADOR === */}
+<div style={{ marginTop: 10, border: "1px solid #e5e7eb", borderRadius: 8, padding: 10 }}>
+  <div style={{ fontWeight: 600, marginBottom: 8 }}>Líneas por trabajador</div>
+
+  {(() => {
+    // Aseguramos que aparece el trabajador seleccionado, aunque no tenga líneas
+    const trabajadoresConSeccion = new Set<string>(Object.keys(partePorTrabajador));
+    trabajadoresConSeccion.add(parteTrabajador);
+
+    // Lo pasamos a array y ordenamos por nombre visible
+    const lista = Array.from(trabajadoresConSeccion).sort((a, b) => {
+      const wa = workers.find(w => w.id === a)?.nombre || a;
+      const wb = workers.find(w => w.id === b)?.nombre || b;
+      return wa.localeCompare(wb, "es");
+    });
+
+    if (lista.length === 0) {
+      return <div style={{ color: "#6b7280", fontSize: 13 }}>Aún no hay líneas.</div>;
+    }
+
+    return (
+      <>
+        {lista.map(wid => {
+          const w = workers.find(x => x.id === wid);
+          const nombre = w?.nombre || wid;
+          const items = partePorTrabajador[wid] ?? [];
+          const total = totalesPorTrabajador[wid] ?? 0;
+
+          return (
+            <div key={`sec-${wid}`} style={{ marginBottom: 16 }}>
+              <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 6 }}>
+                👤 {nombre}
+              </div>
+
+              <div style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 100px 1fr 90px",
+                gap: 8, fontSize: 14, fontWeight: 600, color: "#374151"
+              }}>
+                <div>Descripción/bloque</div><div>Horas</div><div>Observaciones</div><div></div>
+              </div>
+
+              {items.length === 0 ? (
+                <div style={{ padding: "8px 0", color: "#6b7280", fontSize: 13 }}>— Sin líneas aún —</div>
+              ) : (
+                items.map((it, idx) => (
+                  <div key={`pi-${wid}-${idx}`} style={{
+                    display: "grid",
+                    gridTemplateColumns: "1fr 100px 1fr 90px",
+                    gap: 8, alignItems: "center",
+                    padding: "6px 0", borderTop: "1px solid #f3f4f6"
+                  }}>
+                    <div>{it.producto}</div>
+                    <div>{it.horas_reales}</div>
+                    <div style={{ whiteSpace: "pre-wrap" }}>{it.observaciones || "—"}</div>
+                    <button style={btnDanger} onClick={() => eliminarLineaParteDe(wid, idx)}>Eliminar</button>
+                  </div>
+                ))
+              )}
+
+              <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 8, fontWeight: 700 }}>
+                Subtotal {nombre}: {total}
+              </div>
+            </div>
+          );
+        })}
+
+        <div style={{
+          marginTop: 12, paddingTop: 8, borderTop: "2px solid #e5e7eb",
+          display: "flex", justifyContent: "flex-end", fontWeight: 800
+        }}>
+          TOTAL HORAS TALLER: {totalTaller}
+        </div>
+      </>
+    );
+  })()}
+</div>
+
+</div>
+</div>
+</div>
+</div>
+          )}  
           {/* FORM + TRABAJADORES */}
           <div style={panelRow} className="no-print">
             <div style={panel}>
@@ -1365,7 +1872,7 @@ function deleteWorker(id: string) {
 
           {/* CALENDARIO */}
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }} className={printMode === "monthly" ? "" : "no-print"}>
-            {workers.map((w) => (
+            {orderedWorkers.map((w) => (
               <div key={`worker-${w.id}`}>
                 <div style={{ fontSize: 25, fontWeight: 700, margin: "8px 0 4px", color: "#111827" }}>👤 {w.nombre}</div>
 
@@ -1571,7 +2078,7 @@ function deleteWorker(id: string) {
               })()}
             </div>
           )}
-        </div>
+        </div> 
 
         {/* SIDEBAR */}
         <aside style={sidebar} className="no-print">
@@ -1842,7 +2349,34 @@ const btnBase: React.CSSProperties = {
   background: "#fff",
   color: "#111827",
 };
+
+const btnAction: React.CSSProperties = {
+  ...btnBase,
+  height: 38,
+  padding: "0 24px",
+  fontSize: 14,
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  borderRadius: 8,
+  fontWeight: 500,
+};
+
+const btnActionPrimary: React.CSSProperties = {
+  ...btnAction,
+  background: "#111827",
+  color: "#fff",
+  border: "1px solid #111827",
+};
+
 const btnLabeled: React.CSSProperties = { ...btnBase };
+const btnSecondary: React.CSSProperties = { ...btnBase };
+const btnDanger: React.CSSProperties = { 
+  ...btnBase, 
+  border: "1px solid #ef4444", 
+  color: "#ef4444", 
+  background: "#fff" 
+};
 const btnPrimary: React.CSSProperties = { ...btnBase, background: "#111827", color: "#fff", border: "1px solid #111827" };
 const btnTiny: React.CSSProperties = { padding: "4px 8px", borderRadius: 6, border: "1px solid #d1d5db", background: "#fff", cursor: "pointer", fontSize: 12 };
 const btnTinyDanger: React.CSSProperties = { ...btnTiny, border: "1px solid #ef4444", color: "#ef4444" };
