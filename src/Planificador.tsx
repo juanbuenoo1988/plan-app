@@ -95,12 +95,6 @@ type CloudState = {
   locked?: boolean;                  // si el planificador está bloqueado
 };
 
-  fecha: string;          // YYYY-MM-DD
-  trabajadorId: string;
-  producto: string;       // clave/descripcion seleccionada
-  horasReales: number;
-  observaciones: string;
-};
 /* ===================== Util ===================== */
 const fmt = (d: Date | null | undefined) => {
   if (!d || !(d instanceof Date) || isNaN(d.getTime())) return "";
