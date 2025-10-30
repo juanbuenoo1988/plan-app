@@ -19,6 +19,7 @@ import { es } from "date-fns/locale";
 const PASSWORD = "taller2025"; // ← cámbiala por la que quieras
 const STORAGE_KEY = "planificador:v1";
 
+
 // Todos verán/editarán el mismo plan (tenant único)
 const TENANT_ID = "00000000-0000-0000-0000-000000000001";
 /* ===================== Error Boundary ===================== */
@@ -112,6 +113,7 @@ function monthYear(d: Date | null | undefined): string {
 const weekDaysHeader = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
 const PX_PER_HOUR = 20;
 const URGENT_COLOR = "#f59e0b";
+
 
 function monthGrid(date: Date) {
   const start = startOfWeek(startOfMonth(date), { weekStartsOn: 1 });
@@ -329,8 +331,6 @@ export default function Planificador() {
 function AppInner() {
   const [base, setBase] = useState(new Date());
   const { weeks } = useMemo(() => monthGrid(base), [base]);
-
-  
   const [locked, setLocked] = useState(true); // bloqueado por defecto
   const canEdit = !locked;
 
@@ -359,18 +359,6 @@ function AppInner() {
     trabajadorId: "W1",
     fechaInicio: fmt(new Date()),
   });
-
-const orderedWorkers = useMemo(() => {
-  const arr = [...workers];
-  if (!form?.trabajadorId) return arr;
-  arr.sort((a, b) => {
-    if (a.id === form.trabajadorId) return -1;
-    if (b.id === form.trabajadorId) return 1;
-    return 0;
-  });
-  return arr;
-}, [workers, form.trabajadorId]); 
-
   // ⬇️ 3.3-C (estados de sesión/carga en la nube)
   const [userId, setUserId] = useState<string | null>(null);
   const [loadingCloud, setLoadingCloud] = useState(false);
@@ -391,7 +379,56 @@ const orderedWorkers = useMemo(() => {
   const [printWorker, setPrintWorker] = useState<string>("W1");
   const [printDate, setPrintDate] = useState<string>(fmt(new Date()));
 
-  
+// === Partes de trabajo ===
+const [showPartes, setShowPartes] = useState(false);
+
+// 1) Fecha primero
+const [parteFecha, setParteFecha] = useState<string>(fmt(new Date()));
+
+// 2) Luego trabajador
+const [parteWorkerId, setParteWorkerId] = useState<string>("W1");
+
+// 3) Búsqueda/selección de producto (de los bloques del calendario)
+const [parteQuery, setParteQuery] = useState<string>("");
+const [parteProducto, setParteProducto] = useState<string>("");
+
+// 4) Horas reales
+const [parteHoras, setParteHoras] = useState<number>(0);
+
+// Productos planificados para el trabajador seleccionado EN ESE DÍA (únicos)
+const productosDelTrabajador = useMemo(() => {
+  const set = new Set<string>();
+  slices
+    .filter(s =>
+      s.trabajadorId === parteWorkerId &&
+      s.fecha === parteFecha
+    )
+    .forEach(s => set.add(s.producto.trim()));
+  return [...set].sort((a,b)=>a.localeCompare(b));
+}, [slices, parteWorkerId, parteFecha]);
+
+// Sugerencias por texto
+const sugerenciasProductos = useMemo(() => {
+  const q = parteQuery.trim().toLowerCase();
+  if (!q) return productosDelTrabajador;
+  return productosDelTrabajador.filter(p => p.toLowerCase().includes(q));
+}, [productosDelTrabajador, parteQuery]);
+
+// Elegir producto desde buscador/lista
+function elegirProducto(p: string) {
+  setParteProducto(p);
+  setParteQuery(p);
+  // Horas planificadas para ese trabajador, ese día y ese producto
+  const totalPlan = slices
+    .filter(s =>
+      s.trabajadorId === parteWorkerId &&
+      s.fecha === parteFecha &&
+      s.producto.trim() === p.trim()
+    )
+    .reduce((a, s) => a + s.horas, 0);
+  // Sugerimos como valor inicial las horas planificadas ese día
+  setParteHoras(Math.round(totalPlan * 2) / 2);
+}
 
   // 🔽🔽🔽 Pega aquí todo este bloque completo 🔽🔽🔽
 
@@ -429,13 +466,13 @@ const orderedWorkers = useMemo(() => {
       if (!existingW || existingW.length === 0) {
         // Inserta un set inicial de trabajadores (puedes ajustar nombres/IDs)
         const initialWorkers = [
-          { user_id: uid, tenant_id: TENANT_ID, id: "W1", nombre: "ANGEL MORGADO",  extra_default: 0, sabado_default: false },
-          { user_id: uid, tenant_id: TENANT_ID, id: "W2", nombre: "ANTONIO MONTILLA", extra_default: 0, sabado_default: false },
-          { user_id: uid, tenant_id: TENANT_ID, id: "W3", nombre: "DANIEL MORGADO",  extra_default: 0, sabado_default: false },
-          { user_id: uid, tenant_id: TENANT_ID, id: "W4", nombre: "FIDEL RODRIGO",    extra_default: 0, sabado_default: false },
-          { user_id: uid, tenant_id: TENANT_ID, id: "W5", nombre: "LUCAS PRIETO",     extra_default: 0, sabado_default: false },
-          { user_id: uid, tenant_id: TENANT_ID, id: "W6", nombre: "LUIS AGUADO",      extra_default: 0, sabado_default: false },
-          { user_id: uid, tenant_id: TENANT_ID, id: "W7", nombre: "VICTOR HERNANDEZ", extra_default: 0, sabado_default: false },
+          { user_id: uid, id: "W1", nombre: "ANGEL MORGADO",  extra_default: 0, sabado_default: false },
+          { user_id: uid, id: "W2", nombre: "ANTONIO MONTILLA", extra_default: 0, sabado_default: false },
+          { user_id: uid, id: "W3", nombre: "DANIEL MORGADO",  extra_default: 0, sabado_default: false },
+          { user_id: uid, id: "W4", nombre: "FIDEL RODRIGO",    extra_default: 0, sabado_default: false },
+          { user_id: uid, id: "W5", nombre: "LUCAS PRIETO",     extra_default: 0, sabado_default: false },
+          { user_id: uid, id: "W6", nombre: "LUIS AGUADO",      extra_default: 0, sabado_default: false },
+          { user_id: uid, id: "W7", nombre: "VICTOR HERNANDEZ", extra_default: 0, sabado_default: false },
         ];
 
         const { error: insErr } = await supabase.from("workers").insert(initialWorkers);
@@ -535,21 +572,19 @@ const orderedWorkers = useMemo(() => {
     setSavingCloud(true);
     try {
       // 1) Trabajadores
-      const wRows = workers.map(w => ({
-        user_id: uid,
-        id: w.id,
-        nombre: w.nombre,
-        extra_default: w.extraDefault,
-        sabado_default: w.sabadoDefault,
-        tenant_id: TENANT_ID,
-      }));
+      const wRows = workers.map(w => ({ user_id: uid,
+  id: w.id,
+  nombre: w.nombre,
+  extra_default: w.extraDefault,
+  sabado_default: w.sabadoDefault,
+tenant_id: TENANT_ID, }));
 
-      if (wRows.length) {
-        const { error } = await supabase.from("workers").upsert(wRows, { onConflict: "tenant_id,id" });
-        if (error) throw error;
-      }
+if (wRows.length) {
+  const { error } = await supabase.from("workers").upsert(wRows, { onConflict: "tenant_id,id" });
+  if (error) throw error;
+}
 
-      // 2) Slices (snapshot)
+      // 2) Slices (borramos todos del usuario y reinsertamos el snapshot actual)
       const sRows = slices.map(s => ({
         id: s.id,
         task_id: s.taskId,
@@ -559,34 +594,27 @@ const orderedWorkers = useMemo(() => {
         trabajador_id: s.trabajadorId,
         color: s.color,
         user_id: uid,
-        tenant_id: TENANT_ID,
       }));
-
       await supabase.from("task_slices").delete().eq("tenant_id", TENANT_ID);
       if (sRows.length) {
         const { error } = await supabase.from("task_slices").insert(sRows);
         if (error) throw error;
       }
 
-      // 3) Overrides
-      const oRows = flattenOverrides(overrides).map(r => ({
-        ...r,
-        user_id: uid,
-        tenant_id: TENANT_ID,
-      }));
+      // 3) Overrides (lo mismo: borramos y subimos snapshot plano)
+      const oRows = flattenOverrides(overrides).map(r => ({ ...r, user_id: uid }));
       await supabase.from("day_overrides").delete().eq("tenant_id", TENANT_ID);
       if (oRows.length) {
         const { error } = await supabase.from("day_overrides").insert(oRows);
         if (error) throw error;
       }
 
-      // 4) Descripciones
+      // 4) Descripciones (borramos y subimos snapshot actual)
       const dRows = Object.entries(descs).map(([nombre, texto]) => ({
         nombre,
         texto,
-        user_id: uid,
-        tenant_id: TENANT_ID,
-      }));
+        user_id: uid,  tenant_id: TENANT_ID,  // ← importante
+}));
 
       await supabase.from("product_descs").delete().eq("tenant_id", TENANT_ID);
       if (dRows.length) {
@@ -601,11 +629,12 @@ const orderedWorkers = useMemo(() => {
     }
   }
 
-  // Detecta sesión y carga
+  // ⬇️ 3.3-C (efecto que detecta sesión y carga Supabase)
   useEffect(() => {
     let mounted = true;
 
     async function init() {
+      // 1) ¿Hay sesión ya abierta?
       const { data } = await supabase.auth.getSession();
       const uid = data.session?.user?.id ?? null;
       const mail = data.session?.user?.email ?? null;
@@ -615,16 +644,17 @@ const orderedWorkers = useMemo(() => {
       setUserId(uid);
       setUserEmail(mail);
 
+      // 2) Si hay usuario, carga todo desde Supabase
       if (uid) {
         try {
           setLoadingCloud(true);
           await seedIfEmpty(uid);
-          await loadAll(uid);
+          await loadAll(uid);   // ← esta es tu función del paso 3.3-B
         } finally {
           if (mounted) setLoadingCloud(false);
         }
       } else {
-        // carga local si no hay sesión
+        // === NUEVO: si NO hay sesión, intenta cargar del almacenamiento local
         const snap = safeLocal<any>(STORAGE_KEY, null as any);
         if (snap) {
           setWorkers(snap.workers ?? []);
@@ -637,6 +667,7 @@ const orderedWorkers = useMemo(() => {
 
     init();
 
+    // 3) Suscripción a cambios de sesión (login / logout)
     const { data: sub } = supabase.auth.onAuthStateChange(async (_event, session) => {
       if (!mounted) return;
       const uid = session?.user?.id ?? null;
@@ -648,7 +679,7 @@ const orderedWorkers = useMemo(() => {
         try {
           setLoadingCloud(true);
           await seedIfEmpty(uid);
-          await loadAll(uid);
+          await loadAll(uid); // ← evitar duplicado de llamadas
         } finally {
           setLoadingCloud(false);
         }
@@ -659,44 +690,45 @@ const orderedWorkers = useMemo(() => {
       mounted = false;
       sub?.subscription?.unsubscribe();
     };
-  }, []);
+  }, []); // ← sin dependencias: solo al montar
 
-  // Autosave
+  // AUTOSAVE: guarda en Supabase cuando cambian datos (con debounce)
   useEffect(() => {
-    if (!userId) return;
-    if (loadingCloud) return;
+    if (!userId) return;          // sin sesión, no guardes
+    if (loadingCloud) return;     // no guardes mientras cargas desde la nube
 
-    const snapshot = JSON.stringify({ workers, slices, overrides, descs });
+    // Foto del estado para evitar guardados innecesarios
+    const snapshot = JSON.stringify({
+      workers,
+      slices,
+      overrides,
+      descs,
+    });
+
     if (snapshot === lastSavedRef.current) return;
 
+    // Debounce ~800ms
     if (saveTimer.current) window.clearTimeout(saveTimer.current);
     saveTimer.current = window.setTimeout(async () => {
       try {
         await saveAll(userId);
         lastSavedRef.current = snapshot;
       } catch {
-        /* error ya gestionado */
+        // el error ya se guarda en setSaveError dentro de saveAll
       }
     }, 800);
 
-    return () => { if (saveTimer.current) window.clearTimeout(saveTimer.current); };
+    return () => {
+      if (saveTimer.current) window.clearTimeout(saveTimer.current);
+    };
   }, [workers, slices, overrides, descs, userId, loadingCloud]);
 
-  // Guardado local sin sesión
+  // === NUEVO: guardado local automático cuando NO hay sesión ===
   useEffect(() => {
-    if (userId) return;
+    if (userId) return; // si hay sesión, no guardes en local
     const snapshot = JSON.stringify({ workers, slices, overrides, descs });
     try { localStorage.setItem(STORAGE_KEY, snapshot); } catch {}
   }, [workers, slices, overrides, descs, userId]);
-
-  useEffect(() => {
-  const t = setTimeout(() => {
-    try {
-      window.scrollTo({ top: 0, behavior: "smooth" });
-    } catch {}
-  }, 50);
-  return () => clearTimeout(t);
-}, [form.trabajadorId]);
 
   function triggerPrint(mode: PrintMode) {
     setPrintMode(mode);
@@ -704,7 +736,7 @@ const orderedWorkers = useMemo(() => {
     setTimeout(() => setPrintMode("none"), 600);
   }
 
-  // Bloqueo simple
+  // Autenticación simple (bloqueo)
   function tryUnlock() {
     const p = prompt("Introduce la contraseña para editar:");
     if (p === PASSWORD) setLocked(false);
@@ -714,7 +746,8 @@ const orderedWorkers = useMemo(() => {
     setLocked(true);
   }
 
-  // Login/Logout
+  // 🔽🔽🔽 AÑADIR AQUÍ el bloque de login/logout 🔽🔽🔽
+
   async function sendMagicLink() {
     setAuthMsg(null);
     const email = loginEmail.trim();
@@ -724,7 +757,7 @@ const orderedWorkers = useMemo(() => {
       const { error } = await supabase.auth.signInWithOtp({
         email,
         options: {
-          emailRedirectTo: window.location.origin,
+          emailRedirectTo: window.location.origin, // vuelve a la misma app
         },
       });
       if (error) throw error;
@@ -735,8 +768,11 @@ const orderedWorkers = useMemo(() => {
       setSendingLink(false);
     }
   }
+
   async function logout() {
     await supabase.auth.signOut();
+    // Limpia opcionalmente estados locales:
+    // setWorkers([]); setSlices([]); setOverrides({}); setDescs({});
   }
 
   // Crear bloque
@@ -773,16 +809,26 @@ const orderedWorkers = useMemo(() => {
     if (!canEdit) return;
     setWorkers((prev) => prev.map((w) => (w.id === id ? { ...w, ...patch } : w)));
   }
-  function deleteWorker(id: string) {
-    if (!canEdit) return;
-    const w = workers.find(x => x.id === id);
-    const name = w?.nombre || id;
-    if (!confirm(`¿Eliminar a "${name}" y todas sus asignaciones? Esta acción no se puede deshacer.`)) return;
+// ——— Eliminar trabajador + limpiar sus datos ———
+function deleteWorker(id: string) {
+  if (!canEdit) return;
+  const w = workers.find(x => x.id === id);
+  const name = w?.nombre || id;
+  if (!confirm(`¿Eliminar a "${name}" y todas sus asignaciones? Esta acción no se puede deshacer.`)) return;
 
-    setWorkers(prev => prev.filter(x => x.id !== id));
-    setSlices(prev => prev.filter(s => s.trabajadorId !== id));
-    setOverrides(prev => { const copy = { ...prev }; delete copy[id]; return copy; });
-  }
+  // 1) Quita el trabajador de la lista
+  setWorkers(prev => prev.filter(x => x.id !== id));
+
+  // 2) Elimina todos sus bloques/horas
+  setSlices(prev => prev.filter(s => s.trabajadorId !== id));
+
+  // 3) Borra overrides (extras/sábados) del trabajador
+  setOverrides(prev => {
+    const copy = { ...prev };
+    delete copy[id];
+    return copy;
+  });
+}
 
   // Drag & Drop
   const dragIdRef = useRef<string | null>(null);
@@ -806,7 +852,7 @@ const orderedWorkers = useMemo(() => {
     e.preventDefault();
   }
 
-  // Doble clic en celda → extras/sábado
+  // Doble clic en celda → extras/sábado (reprograma desde ese día)
   function editOverrideForDay(worker: Worker, date: Date) {
     if (!canEdit) return;
     const f = fmt(date);
@@ -834,7 +880,7 @@ const orderedWorkers = useMemo(() => {
     setOverrides(nextOverrides);
 
     setSlices((prev) => {
-      const newPlan = compactFrom(worker, f, nextOverrides, prev);
+      const newPlan = compactFrom(worker, f, nextOverrides, prev); // ← sin wrapper duplicado
       const others = prev.filter((s) => s.trabajadorId !== worker.id);
       return [...others, ...newPlan];
     });
@@ -856,6 +902,7 @@ const orderedWorkers = useMemo(() => {
       return [...others, ...newPlan];
     });
   }
+
   function removeTask(taskId: string, workerId: string) {
     if (!canEdit) return;
     if (!confirm("¿Eliminar todo el bloque (producto) para este trabajador?")) return;
@@ -870,7 +917,6 @@ const orderedWorkers = useMemo(() => {
       const startF = toRemove.reduce((m, s) => (s.fecha < m ? s.fecha : m), toRemove[0].fecha);
       const newPlan = compactFrom(w, startF, overrides, filtered);
       const others = filtered.filter((s) => s.trabajadorId !== w.id);
-
       return [...others, ...newPlan];
     });
   }
@@ -940,7 +986,852 @@ const orderedWorkers = useMemo(() => {
   const [ebMatches, setEbMatches] = useState<FoundBlock[]>([]);
   const [ebSelected, setEbSelected] = useState<string>("");
   const [ebHoras, setEbHoras] = useState<number>(0);
+
+  function buscarBloques() {
+    const w = workers.find((x) => x.id === ebWorker);
+    if (!w || !ebNombre.trim()) { setEbMatches([]); setEbSelected(""); setEbHoras(0); return; }
+
+    const delW = slices.filter(s => s.trabajadorId === w.id && s.producto.trim() === ebNombre.trim());
+    const byTask = new Map<string, FoundBlock>();
+    for (const s of delW) {
+      const fb = byTask.get(s.taskId) ?? { taskId: s.taskId, startF: s.fecha, totalHoras: 0 };
+      fb.startF = s.fecha < fb.startF ? s.fecha : fb.startF;
+      fb.totalHoras = Math.round((fb.totalHoras + s.horas) * 2) / 2;
+      byTask.set(s.taskId, fb);
+    }
+    const arr = [...byTask.values()].sort((a,b)=>a.startF.localeCompare(b.startF));
+    setEbMatches(arr);
+    if (arr.length) {
+      setEbSelected(arr[0].taskId);
+      setEbHoras(arr[0].totalHoras);
+    } else {
+      setEbSelected("");
+      setEbHoras(0);
+    }
+  }
+
+  function aplicarEdicion() {
+    if (!canEdit) return;
+    const w = workers.find((x)=>x.id===ebWorker);
+    if (!w || !ebSelected) return;
+    const match = ebMatches.find(m=>m.taskId===ebSelected);
+    if (!match) return;
+    const nuevoTotal = Math.max(0.5, Math.round(Number(ebHoras)*2)/2);
+
+    setSlices(prev=>{
+      const color = colorFromId(ebSelected);
+      const restantes = prev.filter(s => !(s.taskId===ebSelected && s.trabajadorId===w.id));
+      const start = new Date(match.startF);
+      const plan = planificarBloqueAuto(
+        ebNombre.trim(),
+        nuevoTotal,
+        w,
+        start,
+        base,
+        restantes,
+        overrides
+      ).map(s=>({...s, taskId: ebSelected, color}));
+      return [...restantes, ...plan];
+    });
+  }
+
+  /* ===================== Render ===================== */
+  return (
+    <div style={appShell}>
+      <style>{`
+  @media print {
+    .no-print { display: none !important; }
+    .print-only { display: block !important; }
+    body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .worker-block { page-break-inside: avoid; margin-bottom: 16px; }
+  }
+`}</style>
+
+      {/* CABECERA SUPERIOR */}
+      <header style={topHeader}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <h1 style={appTitle}>MONTAJES DELSAZ — PLANIFICACION TALLERES</h1>
+        </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+    <div style={{ fontWeight: 700, color: "#fff", marginRight: 8 }}>{monthYear(base)}</div>
+    <button style={btnLabeled} onClick={() => setBase(addMonths(base, -1))}>◀ Mes anterior</button>
+    <button style={btnLabeled} onClick={() => setBase(addMonths(base, 1))}>Siguiente mes ▶</button>
+
+    {locked ? (
+      <button style={btnUnlock} className="no-print" onClick={tryUnlock}>🔒 Desbloquear</button>
+    ) : (
+      <button style={btnLock} className="no-print" onClick={lock}>🔓 Bloquear</button>
+    )}
+
+    {/* ——— separador visual ——— */}
+    <div style={{ width: 1, height: 22, background: "rgba(255,255,255,.25)", margin: "0 6px" }} />
+
+    {/* === Estado de guardado / error (ya tienes savingCloud y saveError) === */}
+    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      {savingCloud && <span style={{ color: "#a7f3d0" }}>Guardando…</span>}
+      {saveError && <span style={{ color: "#fecaca" }} title={saveError}>⚠ Error al guardar</span>}
+    </div>
+
+    {/* ——— separador visual ——— */}
+    <div style={{ width: 1, height: 22, background: "rgba(255,255,255,.25)", margin: "0 6px" }} />
     
+    <button
+  style={btnPrimary}
+  className="no-print"
+  onClick={() => setShowPartes(v => !v)}
+  title="Abrir partes de trabajo"
+>
+  📋 Partes de trabajo
+</button>
+    {/* === UI de autenticación === */}
+    {userId ? (
+      // Conectado
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <span style={{ color: "#d1d5db", fontSize: 13 }}>
+          Conectado{userEmail ? `: ${userEmail}` : "" }
+        </span>
+        <button style={btnLabeled} className="no-print" onClick={logout}>Cerrar sesión</button>
+      </div>
+    ) : (
+      // No conectado → pedir email y enviar enlace mágico
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <input
+          className="no-print"
+          style={{ ...input, width: 220 }}
+          type="email"
+          placeholder="tu-correo@empresa.com"
+          value={loginEmail}
+          onChange={(e) => setLoginEmail(e.target.value)}
+        />
+        <button
+          className="no-print"
+          style={btnPrimary}
+          onClick={sendMagicLink}
+          disabled={sendingLink}
+          title="Te enviaré un correo con un enlace para entrar"
+        >
+          {sendingLink ? "Enviando…" : "Enviarme enlace"}
+        </button>
+        {authMsg && <span style={{ color: "#fff", fontSize: 12, opacity: 0.9 }}>{authMsg}</span>}
+      </div>
+    )}
+  </div>
+
+      </header>
+
+      {/* LAYOUT PRINCIPAL */}
+      <div style={mainLayout}>
+        {/* COLUMNA PRINCIPAL */}
+        <div style={{ minWidth: 0 }}>
+         
+{showPartes && (
+  <div style={{ ...panel, borderColor: "#c7d2fe", background: "#eef2ff" }} className="no-print">
+    <div style={panelTitle}>Partes de trabajo</div>
+    <div style={{ display: "grid", gap: 10 }}>
+      {/* === 1) FECHA === */}
+      <label style={label}>Fecha</label>
+      <input
+        style={disabledIf(input, locked)}
+        disabled={locked}
+        type="date"
+        value={parteFecha}
+        onChange={(e) => {
+          setParteFecha(e.target.value);
+          // Reiniciamos selección al cambiar el día
+          setParteProducto("");
+          setParteQuery("");
+          setParteHoras(0);
+        }}
+      />
+
+      {/* === 2) TRABAJADOR === */}
+      <label style={label}>Trabajador</label>
+      <select
+        style={disabledIf(input, locked)}
+        disabled={locked}
+        value={parteWorkerId}
+        onChange={(e) => {
+          setParteWorkerId(e.target.value);
+          setParteProducto("");
+          setParteQuery("");
+          setParteHoras(0);
+        }}
+      >
+        {workers.map(w => <option key={`pw-${w.id}`} value={w.id}>{w.nombre}</option>)}
+      </select>
+
+      {/* === 3) BUSCADOR DE PRODUCTO (de ese día y trabajador) === */}
+      <label style={label}>Descripción / Producto (de ese día)</label>
+      <input
+        style={disabledIf(input, locked)}
+        disabled={locked}
+        placeholder="Escribe para buscar…"
+        value={parteQuery}
+        onChange={(e) => { setParteQuery(e.target.value); setParteProducto(""); }}
+        list="parte-productos"
+      />
+      <datalist id="parte-productos">
+        {sugerenciasProductos.map(p => <option key={`sug-${p}`} value={p} />)}
+      </datalist>
+
+      {!!sugerenciasProductos.length && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {sugerenciasProductos.slice(0, 10).map(p => (
+            <button
+              key={`chip-${p}`}
+              style={disabledIf({ ...btnTiny, borderColor: "#a5b4fc", background: "#fff" }, locked)}
+              disabled={locked}
+              onClick={() => elegirProducto(p)}
+              title="Usar esta descripción"
+            >
+              {p}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* === 4) HORAS REALES === */}
+      {parteQuery.trim() && (
+        <div style={{ marginTop: 6, display: "grid", gap: 8 }}>
+          <div style={{ fontWeight: 700, color: "#1f2937" }}>
+            Seleccionado: {parteProducto || parteQuery}
+          </div>
+
+          {descs[parteProducto || parteQuery] ? (
+            <div style={{ fontSize: 12, background: "#fff", border: "1px solid #e5e7eb", borderRadius: 8, padding: 8 }}>
+              {descs[parteProducto || parteQuery]}
+            </div>
+          ) : (
+            <div style={{ fontSize: 12, color: "#6b7280" }}>
+              No hay descripción guardada para este producto en el panel de la derecha.
+            </div>
+          )}
+
+          <label style={label}>Horas reales trabajadas</label>
+          <input
+            style={disabledIf(input, locked)}
+            disabled={locked}
+            type="number"
+            step={0.5}
+            min={0}
+            value={parteHoras}
+            onChange={(e) => setParteHoras(Number(e.target.value))}
+          />
+
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              style={disabledIf(btnPrimary, locked)}
+              disabled={locked}
+              onClick={() => {
+                alert(
+                  `Parte registrado (temporal):\n` +
+                  `- Fecha: ${parteFecha}\n` +
+                  `- Trabajador: ${workers.find(w=>w.id===parteWorkerId)?.nombre || parteWorkerId}\n` +
+                  `- Producto: ${parteProducto || parteQuery}\n` +
+                  `- Horas reales: ${parteHoras}h`
+                );
+              }}
+            >
+              💾 Registrar (temporal)
+            </button>
+            <button
+              style={btnLabeled}
+              onClick={() => { setParteProducto(""); setParteQuery(""); setParteHoras(0); }}
+            >
+              Limpiar
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  </div>
+)}
+
+
+          {/* FORM + TRABAJADORES */}
+          <div style={panelRow} className="no-print">
+            <div style={panel}>
+              <div style={panelTitle}>Nuevo bloque</div>
+              <div style={panelInner}>
+                <div style={grid2}>
+                  <label style={label}>Producto</label>
+                  <input style={disabledIf(input, locked)} disabled={locked} value={form.producto} onChange={(e) => setForm({ ...form, producto: e.target.value })} />
+                  <label style={label}>Horas totales</label>
+                  <input
+                    style={disabledIf(input, locked)}
+                    disabled={locked}
+                    type="number"
+                    min={0.5}
+                    step={0.5}
+                    value={form.horasTotales}
+                    onChange={(e) => {
+                      const v = Number(e.target.value);
+                      setForm({ ...form, horasTotales: isFinite(v) ? v : 0 });
+                    }}
+                  />
+                  <label style={label}>Trabajador</label>
+                  <select style={disabledIf(input, locked)} disabled={locked} value={form.trabajadorId} onChange={(e) => setForm({ ...form, trabajadorId: e.target.value })}>
+                    {workers.map((w) => <option key={`wopt-${w.id}`} value={w.id}>{w.nombre}</option>)}
+                  </select>
+                  <label style={label}>Fecha inicio</label>
+                  <input
+                    style={disabledIf(input, locked)}
+                    disabled={locked}
+                    type="date"
+                    value={form.fechaInicio}
+                    onChange={(e) => setForm({ ...form, fechaInicio: e.target.value })}
+                  />
+                </div>
+                <div style={{ marginTop: 12, display: "flex", justifyContent: "center" }}>
+                  <button style={disabledIf(btnPrimary, locked)} disabled={locked} onClick={crearBloque}>➕ Planificar</button>
+                </div>
+              </div>
+            </div>
+
+            <div style={panel}>
+              <div style={panelTitle}>Trabajadores</div>
+              <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                <input style={disabledIf(input, locked)} disabled={locked} placeholder="Nombre del trabajador" value={nuevoTrabajador} onChange={(e) => setNuevoTrabajador(e.target.value)} />
+                <button style={disabledIf(btnLabeled, locked)} disabled={locked} onClick={addWorker}>➕ Añadir</button>
+              </div>
+              <table style={table}>
+                <thead>
+                  <tr>
+                    <th style={th}>Nombre</th>
+                    <th style={th}>Extra por defecto (L–V)</th>
+                    <th style={th}>Sábado por defecto</th>
+                    <th style={th}>Acciones</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {workers.map((w) => (
+    <tr key={`row-${w.id}`}>
+      <td style={td}>
+        <input
+          style={disabledIf(input, locked)}
+          disabled={locked}
+          value={w.nombre}
+          onChange={(e) => editWorker(w.id, { nombre: e.target.value })}
+        />
+      </td>
+      <td style={td}>
+        <input
+          style={disabledIf(input, locked)}
+          disabled={locked}
+          type="number"
+          min={0}
+          step={0.5}
+          value={w.extraDefault}
+          onChange={(e) => editWorker(w.id, { extraDefault: Number(e.target.value) })}
+        />
+      </td>
+      <td style={td}>
+        <input
+          disabled={locked}
+          type="checkbox"
+          checked={w.sabadoDefault}
+          onChange={(e) => editWorker(w.id, { sabadoDefault: e.target.checked })}
+        />
+      </td>
+
+      {/* NUEVO: columna de acciones */}
+      <td style={{ ...td, width: 1, whiteSpace: "nowrap" }}>
+        <button
+          style={disabledIf(btnTinyDanger, locked)}
+          disabled={locked}
+          onClick={() => deleteWorker(w.id)}
+          title="Eliminar trabajador y todas sus asignaciones"
+        >
+          🗑 Eliminar
+        </button>
+      </td>
+    </tr>
+  ))}
+                </tbody>
+              </table>
+              <div style={{ fontSize: 18, color: "#000000ff", marginTop: 6 }}>
+                {locked ? "Bloqueado: solo lectura." :
+                <>Doble clic en una <b>celda</b> para fijar <b>extras/sábado</b> de ese <b>día</b>. Botón <b>＋</b> inserta un bloque desde ese día.</>}
+              </div>
+            </div>
+          </div>
+
+          {/* CABECERA DÍAS (impresión mensual) */}
+          <div style={daysHeader} className={printMode === "monthly" ? "" : "no-print"}>
+            {weekDaysHeader.map((d, i) => (
+              <div key={`dow-${i}`} style={{ padding: "6px 8px", fontWeight: 600 }}>{d}</div>
+            ))}
+          </div>
+
+          {/* CALENDARIO */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }} className={printMode === "monthly" ? "" : "no-print"}>
+            {workers.map((w) => (
+              <div key={`worker-${w.id}`}>
+                <div style={{ fontSize: 25, fontWeight: 700, margin: "8px 0 4px", color: "#111827" }}>👤 {w.nombre}</div>
+
+                {weeks.map((week) => (
+                  <div key={`${w.id}-wk-${week[0].toISOString()}`} style={weekRow}>
+                    {week.map((d) => {
+                      const f = fmt(d);
+                      const delDia = f ? slices.filter((s) => s.trabajadorId === w.id && s.fecha === f) : [];
+                      const cap = capacidadDia(w, d, overrides);
+                      const used = usadasEnDia(slices, w.id, d);
+                      const over = used > cap + 1e-9; // "over" significa "se pasó"
+                      const ow = f ? overrides[w.id]?.[f] : undefined;
+
+                      return (
+                        <div
+                          style={{
+                            ...dayCell,
+                            ...(over
+                            ? {
+                                boxShadow: "inset 0 0 0 2px #dc2626", // borde rojo
+                                background: "#fff5f5",               // fondo rosado claro
+                               }
+                           : {}),
+                          }}
+                          title={`Doble clic: extras/sábado para ${w.nombre} el ${f || "día"}`}
+                          onDoubleClick={() => canEdit && editOverrideForDay(w, d)}
+                          onDragOver={onDragOver}
+                          onDrop={(e) => onDropDay(e, w.id, d)}
+                        >
+                          {/* Cabecera del día: número + avisos + botón ＋ */}
+<div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+  <div style={dayLabel}>
+    {/* Solo el número del día */}
+    {format(d, "d")}
+    {" "}
+    {/* Avisos en rojo: extras o sábado ON */}
+    {ow ? (
+      <span style={{ fontSize: 14, color: "#d81327", fontWeight: 700 }}>
+       {getDay(d) !== 6 && ow.extra && Number(ow.extra) > 0 ? ("+" + ow.extra + " h extra") : ""}
+       {getDay(d) === 6 && ow.sabado ? "Sábado ON" : ""}
+      </span>
+    ) : null}
+  </div>
+
+  {/* Botón + para insertar manual */}
+  {canEdit && (
+    <button
+      className="no-print"
+      onClick={() => addManualHere(w, d)}
+      style={smallPlusBtn}
+      title="Insertar manual aquí"
+    >
+      ＋
+    </button>
+  )}
+</div>
+
+                          <div style={horizontalLane}>
+                            {delDia.map((s) => {
+                              const desc = descs[s.producto];
+                              const isUrgent =
+                               s.color === URGENT_COLOR ||
+                               /^⚠️/.test(s.producto) ||
+                              /urgenc/i.test(s.producto);
+                              return (
+                                <div
+                                  key={s.id}
+                                  draggable={canEdit}
+                                  onDragStart={(e) => onDragStart(e, s.id)}
+                                  title={`${s.producto} — ${s.horas}h${desc ? "\n" + desc : ""}`}
+                                  style={{
+                                    ...blockStyle,
+                                    background: s.color,
+                                    width: Math.max(18, s.horas * PX_PER_HOUR),
+                                    position: "relative",
+                                  }}
+                                >
+                                  {canEdit && (
+                                    <>
+                                      <button onClick={(e) => { e.stopPropagation(); removeSlice(s.id); }} title="Eliminar tramo" style={deleteBtn}>✖</button>
+                                      <button onClick={(e) => { e.stopPropagation(); removeTask(s.taskId, s.trabajadorId); }} title="Eliminar bloque completo" style={deleteBtnAlt}>🗑</button>
+                                    </>
+                                  )}
+
+                                  <div style={blockTop}>
+                                    <span style={productFull}>
+                                      {isUrgent && (
+                                        <svg
+                                          xmlns="http://www.w3.org/2000/svg"
+                                          width="14"
+                                          height="14"
+                                          viewBox="0 0 24 24"
+                                          fill="#fff"
+                                          stroke="#000"
+                                          strokeWidth="2"
+                                          style={{ marginRight: 6 }}
+                                        >
+                                          <path d="M10.29 3.86L1.82 18a1 1 0 00.86 1.5h18.64a1 1 0 00.86-1.5L13.71 3.86a1 1 0 00-1.72 0z" />
+                                          <line x1="12" y1="9" x2="12" y2="13" />
+                                          <line x1="12" y1="17" x2="12" y2="17" />
+                                        </svg>
+                                      )}
+                                      {s.producto}
+                                    </span>
+                                    <span>{s.horas}h</span>
+                                  </div>
+                                  {desc ? <div style={miniHint}>ⓘ</div> : null}
+                                </div>
+                              );
+                            })}
+                          </div>
+
+                          <DayCapacityBadge capacidad={cap} usado={used} />
+                        </div>
+                      );
+                    })}
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+
+          {/* Parte diario — individual (solo impresión) */}
+          {printMode === "daily" && (
+            <div className="print-only">
+              {(() => {
+                const w = workers.find((x) => x.id === printWorker);
+                if (!w) return null;
+                const d = new Date(printDate);
+                const valid = !isNaN(d.getTime?.() ?? NaN);
+                const f = valid ? fmt(d) : "";
+                const daySlices = valid ? slices.filter((s) => s.trabajadorId === w.id && s.fecha === f) : [];
+                const cap = valid ? capacidadDia(w, d, overrides) : 0;
+                const used = valid ? usadasEnDia(slices, w.id, d) : 0;
+                return (
+                  <div className="worker-block" style={{ marginTop: 8 }}>
+                    <h2 style={{ margin: 0 }}>
+                      Parte diario — {w.nombre} — {valid ? format(d, "EEEE d 'de' LLLL yyyy", { locale: es }) : "fecha inválida"}
+                    </h2>
+                    <p>Capacidad: {cap}h · Asignado: {used}h · Libre: {(cap - used).toFixed(1)}h</p>
+                    <table style={{ width: "100%", borderCollapse: "collapse", marginTop: 12 }}>
+                      <thead>
+                        <tr><th style={pth}>Producto</th><th style={pth}>Horas</th><th style={pth}>Descripción</th></tr>
+                      </thead>
+                      <tbody>
+                        {daySlices.length ? daySlices.map((s) => (
+                          <tr key={`pd-${s.id}`}>
+                            <td style={ptd}>{s.producto}</td>
+                            <td style={ptd}>&nbsp;{s.horas}</td>
+                            <td style={ptd}>{descs[s.producto] || ""}</td>
+                          </tr>
+                        )) : <tr><td style={ptd} colSpan={3}>Sin asignaciones.</td></tr>}
+                      </tbody>
+                    </table>
+                  </div>
+                );
+              })()}
+            </div>
+          )}
+
+          {/* Parte diario — todos (solo impresión) */}
+          {printMode === "dailyAll" && (
+            <div className="print-only" style={{ marginTop: 8 }}>
+              {(() => {
+                const d = new Date(printDate);
+                const valid = !isNaN(d.getTime?.() ?? NaN);
+                const f = valid ? fmt(d) : "";
+                return (
+                  <>
+                    {workers.map((w) => {
+                      const daySlices = valid ? slices.filter((s) => s.trabajadorId === w.id && s.fecha === f) : [];
+                      const cap = valid ? capacidadDia(w, d, overrides) : 0;
+                      const used = valid ? usadasEnDia(slices, w.id, d) : 0;
+                      return (
+                        <div key={`pdall-${w.id}`} className="worker-block">
+                          <h2 style={{ margin: 0 }}>
+                            Parte diario — {w.nombre} — {valid ? format(d, "EEEE d 'de' LLLL yyyy", { locale: es }) : "fecha inválida"}
+                          </h2>
+                          <p>Capacidad: {cap}h · Asignado: {used}h · Libre: {(cap - used).toFixed(1)}h</p>
+                          <table style={{ width: "100%", borderCollapse: "collapse", marginTop: 12 }}>
+                            <thead>
+                              <tr><th style={pth}>Producto</th><th style={pth}>Horas</th><th style={pth}>Descripción</th></tr>
+                            </thead>
+                            <tbody>
+                              {daySlices.length ? daySlices.map((s) => (
+                                <tr key={`pdall-row-${s.id}`}>
+                                  <td style={ptd}>{s.producto}</td>
+                                  <td style={ptd}>&nbsp;{s.horas}</td>
+                                  <td style={ptd}>{descs[s.producto] || ""}</td>
+                                </tr>
+                              )) : <tr><td style={ptd} colSpan={3}>Sin asignaciones.</td></tr>}
+                            </tbody>
+                          </table>
+                          <div style={{ marginTop: 24, display: "flex", gap: 40 }}>
+                            <div>Firma trabajador: ____________________________</div>
+                            <div>Firma responsable: __________________________</div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </>
+                );
+              })()}
+            </div>
+          )}
+        </div>
+
+        {/* SIDEBAR */}
+        <aside style={sidebar} className="no-print">
+          <div style={panelTitle}>Descripciones de productos</div>
+
+          <div style={{ display: "grid", gap: 8 }}>
+            <input
+              style={disabledIf(input, locked)}
+              disabled={locked}
+              placeholder="Nombre de producto (coincidirá con el bloque)"
+              value={descNombre}
+              onChange={(e) => setDescNombre(e.target.value)}
+            />
+            <textarea
+              style={disabledIf(textarea, locked)}
+              disabled={locked}
+              placeholder="Descripción / instrucciones para el trabajador"
+              rows={6}
+              value={descTexto}
+              onChange={(e) => setDescTexto(e.target.value)}
+            />
+            <div style={{ display: "flex", gap: 8 }}>
+              <button style={disabledIf(btnPrimary, locked)} disabled={locked} onClick={saveDesc}>{editKey ? "💾 Guardar cambios" : "➕ Añadir"}</button>
+              {editKey && (
+                <button style={disabledIf(btnLabeled, locked)} disabled={locked} onClick={() => { setEditKey(null); setDescNombre(""); setDescTexto(""); }}>
+                  Cancelar
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div style={{ marginTop: 12, fontWeight: 700 }}>Listado</div>
+          <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 6 }}>
+            {Object.keys(descs).length === 0 && (
+              <div style={{ color: "#6b7280", fontSize: 13 }}>No hay descripciones todavía.</div>
+            )}
+            {Object.entries(descs).map(([prod, texto]) => (
+              <div key={`desc-${prod}`} style={descItem}>
+                <div style={{ fontWeight: 700 }}>{prod}</div>
+                <div style={{ fontSize: 12, color: "#374151", whiteSpace: "pre-wrap" }}>{texto}</div>
+                <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+                  <button style={disabledIf(btnTiny, locked)} disabled={locked} onClick={() => editDesc(prod)}>✏️ Editar</button>
+                  <button style={disabledIf(btnTinyDanger, locked)} disabled={locked} onClick={() => deleteDesc(prod)}>🗑 Eliminar</button>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* Editor de bloques por producto */}
+          <div style={{ ...panel, marginTop: 14 }}>
+            <div style={panelTitle}>Editar bloque por producto</div>
+            <div style={{ display: "grid", gap: 8 }}>
+              <label style={label}>Trabajador</label>
+              <select style={disabledIf(input, locked)} disabled={locked} value={ebWorker} onChange={e=>setEbWorker(e.target.value)}>
+                {workers.map(w=><option key={`ebw-${w.id}`} value={w.id}>{w.nombre}</option>)}
+              </select>
+
+              <label style={label}>Producto</label>
+              <input style={disabledIf(input, locked)} disabled={locked} placeholder="Nombre exacto del producto" value={ebNombre} onChange={e=>setEbNombre(e.target.value)} />
+
+              <div style={{ display:"flex", gap:8 }}>
+                <button style={disabledIf(btnLabeled, locked)} disabled={locked} onClick={buscarBloques}>🔎 Buscar</button>
+              </div>
+
+              {ebMatches.length>0 ? (
+                <>
+                  <label style={label}>Bloque encontrado</label>
+                  <select style={disabledIf(input, locked)} disabled={locked} value={ebSelected} onChange={e=>{
+                    const id=e.target.value; setEbSelected(id);
+                    const m = ebMatches.find(x=>x.taskId===id);
+                    if (m) setEbHoras(m.totalHoras);
+                  }}>
+                    {ebMatches.map(m=>(
+                      <option key={`ebmatch-${m.taskId}`} value={m.taskId}>
+                        {m.startF} · {m.totalHoras}h · {ebNombre}
+                      </option>
+                    ))}
+                  </select>
+
+                  <label style={label}>Horas totales (nuevo)</label>
+                  <input style={disabledIf(input, locked)} disabled={locked} type="number" step={0.5} min={0.5} value={ebHoras} onChange={e=>setEbHoras(Number(e.target.value))} />
+
+                  <button style={disabledIf(btnPrimary, locked)} disabled={locked} onClick={aplicarEdicion}>💾 Actualizar bloque</button>
+                </>
+              ) : (
+                <div style={{ fontSize:12, color:"#6b7280" }}>Introduce trabajador y producto, pulsa <b>Buscar</b>.</div>
+              )}
+            </div>
+          </div>
+
+          <div style={{ fontSize: 12, color: "#6b7280", marginTop: 12 }}>
+            Consejo: el <b>nombre del producto</b> debe coincidir exactamente para localizar el bloque.
+          </div>
+        </aside>
+      </div>
+    </div>
+  );
+}
+
+/* ===================== Helpers de estilo ===================== */
+function disabledIf<T extends React.CSSProperties>(style: T, disabled: boolean): T {
+  return (disabled
+    ? { ...style, opacity: 0.6, cursor: "not-allowed" }
+    : style) as T;
+}
+
+/* ===================== Badge ===================== */
+function DayCapacityBadge({ capacidad, usado }: { capacidad: number; usado: number }) {
+  const libre = Math.round((capacidad - usado) * 10) / 10;
+  const exceso = Math.round((usado - capacidad) * 10) / 10; // si > 0, hay sobrecarga
+
+  const base: React.CSSProperties = { marginTop: 6, fontSize: 11, color: "#374151" };
+
+  return (
+    <div style={base}>
+      Cap: {capacidad.toFixed(1)}h · Usado: {usado.toFixed(1)}h · Libre:{" "}
+      <span style={{ fontWeight: 700 }}>{Math.max(0, libre).toFixed(1)}h</span>
+
+      {exceso > 0 && (
+        <div
+          style={{
+            marginTop: 4,
+            fontSize: 12,
+            fontWeight: 700,
+            color: "#b91c1c",        // rojo
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 6,
+          }}
+          title="Este día tiene más horas asignadas que su capacidad"
+        >
+          ⚠️ Sobreasignado: +{exceso.toFixed(1)}h
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ===================== Estilos ===================== */
+const appShell: React.CSSProperties = {
+  fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
+  background: "#e6f7fb",
+  minHeight: "100vh",
+};
+
+const topHeader: React.CSSProperties = {
+  position: "sticky",
+  top: 0,
+  zIndex: 50,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  padding: "12px 16px",
+  background: "#1f2937",
+  borderBottom: "1px solid rgba(255,255,255,.15)",
+};
+
+const appTitle: React.CSSProperties = {
+  fontSize: 18,
+  fontWeight: 800,
+  letterSpacing: 0.4,
+  margin: 0,
+  textTransform: "uppercase",
+  color: "#ffffff",
+};
+
+const mainLayout: React.CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "1fr 360px",
+  gap: 12,
+  padding: 16,
+  alignItems: "start",
+};
+
+const bar: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  marginBottom: 12,
+};
+
+const panelRow: React.CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "1fr 1fr",
+  gap: 12,
+  marginBottom: 12,
+};
+
+const panel: React.CSSProperties = {
+  border: "1px solid #e5e7eb",
+  borderRadius: 10,
+  padding: 12,
+  background: "#fff",
+};
+
+const panelInner: React.CSSProperties = {
+  width: "100%",
+  maxWidth: "640px",
+  margin: "0 auto",
+  padding: "0 8px",
+  boxSizing: "border-box",
+};
+
+const panelTitle: React.CSSProperties = { fontWeight: 700, marginBottom: 8, color: "#111827" };
+const grid2: React.CSSProperties = { display: "grid", gap: 8, gridTemplateColumns: "180px 1fr", alignItems: "center" };
+const label: React.CSSProperties = { fontSize: 13, color: "#374151" };
+const input: React.CSSProperties = { padding: "8px 10px", border: "1px solid #e5e7eb", borderRadius: 8, outline: "none", width: "100%", boxSizing: "border-box" };
+const textarea: React.CSSProperties = { ...input, minHeight: 100, resize: "vertical" as const };
+
+const table: React.CSSProperties = { width: "100%", borderCollapse: "collapse", fontSize: 13, background: "#fff" };
+const th: React.CSSProperties = { textAlign: "left", borderBottom: "1px solid #e5e7eb", padding: "6px", background: "#f9fafb" };
+const td: React.CSSProperties = { borderBottom: "1px solid #f3f4f6", padding: "6px" };
+
+const daysHeader: React.CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(7, 1fr)",
+  gap: 2,
+  fontSize: 12,
+  margin: "8px 0 4px",
+  color: "#000000ff",
+};
+
+const weekRow: React.CSSProperties = { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 2, marginBottom: 2 };
+const dayCell: React.CSSProperties = {
+  border: "1px solid #e5e7eb",
+  minHeight: 130,
+  padding: 6,
+  display: "flex",
+  flexDirection: "column",
+  background: "#fafafa",
+  borderRadius: 8,
+};
+const dayLabel: React.CSSProperties = { fontSize: 11, color: "#6b7280" };
+
+const horizontalLane: React.CSSProperties = { display: "flex", gap: 6, overflowX: "auto", alignItems: "flex-start" };
+const blockStyle: React.CSSProperties = {
+  color: "#fff",
+  borderRadius: 8,
+  padding: "6px 8px",
+  fontSize: 12,
+  minHeight: 34,
+  display: "flex",
+  flexDirection: "column",
+  justifyContent: "center",
+  cursor: "grab",
+  boxShadow: "0 1px 2px rgba(0,0,0,.15)",
+};
+const blockTop: React.CSSProperties = { display: "flex", justifyContent: "space-between", gap: 8, alignItems: "flex-start" };
+
+const productFull: React.CSSProperties = {
+  fontWeight: 700,
+  whiteSpace: "normal",
+  overflow: "visible",
+  textOverflow: "clip",
+  wordBreak: "break-word",
+  lineHeight: 1.1,
+  marginRight: 8,
+  maxWidth: "100%",
+};
+
 // === Botones ===
 const btnBase: React.CSSProperties = {
   padding: "8px 12px",
@@ -951,34 +1842,7 @@ const btnBase: React.CSSProperties = {
   background: "#fff",
   color: "#111827",
 };
-
-const btnAction: React.CSSProperties = {
-  ...btnBase,
-  height: 38,
-  padding: "0 24px",
-  fontSize: 14,
-  display: "inline-flex",
-  alignItems: "center",
-  justifyContent: "center",
-  borderRadius: 8,
-  fontWeight: 500,
-};
-
-const btnActionPrimary: React.CSSProperties = {
-  ...btnAction,
-  background: "#111827",
-  color: "#fff",
-  border: "1px solid #111827",
-};
-
 const btnLabeled: React.CSSProperties = { ...btnBase };
-const btnSecondary: React.CSSProperties = { ...btnBase };
-const btnDanger: React.CSSProperties = { 
-  ...btnBase, 
-  border: "1px solid #ef4444", 
-  color: "#ef4444", 
-  background: "#fff" 
-};
 const btnPrimary: React.CSSProperties = { ...btnBase, background: "#111827", color: "#fff", border: "1px solid #111827" };
 const btnTiny: React.CSSProperties = { padding: "4px 8px", borderRadius: 6, border: "1px solid #d1d5db", background: "#fff", cursor: "pointer", fontSize: 12 };
 const btnTinyDanger: React.CSSProperties = { ...btnTiny, border: "1px solid #ef4444", color: "#ef4444" };
