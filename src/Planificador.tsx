@@ -745,6 +745,16 @@ if (wRows.length) {
     setSlices((prev) => [...prev, ...plan]);
   }
 
+  function moveWorkerToTop(id: string) {
+  setWorkers(prev => {
+    const i = prev.findIndex(w => w.id === id);
+    if (i <= 0) return prev; // ya está primero o no existe
+    const chosen = prev[i];
+    const rest = prev.filter((_, idx) => idx !== i);
+    return [chosen, ...rest];
+  });
+}
+
   // Trabajadores
   function addWorker() {
     if (!canEdit) return;
@@ -1088,9 +1098,21 @@ function deleteWorker(id: string) {
                     }}
                   />
                   <label style={label}>Trabajador</label>
-                  <select style={disabledIf(input, locked)} disabled={locked} value={form.trabajadorId} onChange={(e) => setForm({ ...form, trabajadorId: e.target.value })}>
-                    {workers.map((w) => <option key={`wopt-${w.id}`} value={w.id}>{w.nombre}</option>)}
-                  </select>
+                 
+                 <select
+  style={disabledIf(input, locked)}
+  disabled={locked}
+  value={form.trabajadorId}
+  onChange={(e) => {
+    const id = e.target.value;
+    setForm(prev => ({ ...prev, trabajadorId: id }));
+    moveWorkerToTop(id); // ⬅️ reordena para ponerlo el primero
+  }}
+>
+  {workers.map((w) => <option key={`wopt-${w.id}`} value={w.id}>{w.nombre}</option>)}
+</select>
+
+
                   <label style={label}>Fecha inicio</label>
                   <input
                     style={disabledIf(input, locked)}
