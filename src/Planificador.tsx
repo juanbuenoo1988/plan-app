@@ -1046,6 +1046,20 @@ function deleteWorker(id: string) {
   const [ebMatches, setEbMatches] = useState<FoundBlock[]>([]);
   const [ebSelected, setEbSelected] = useState<string>("");
   const [ebHoras, setEbHoras] = useState<number>(0);
+  // === Estado del Informe de horas ===
+  const [repOpen, setRepOpen] = useState(false);
+  const [repWorker, setRepWorker] = useState<string>("ALL"); // "ALL" o id del trabajador
+  const [repFrom, setRepFrom] = useState<string>(() => {
+    // primer día del mes actual
+    const d = new Date(base);
+    d.setDate(1);
+    return fmt(d);
+  });
+  const [repTo, setRepTo] = useState<string>(() => {
+    // último día del mes actual
+    const d = endOfMonth(base);
+    return fmt(d);
+  });
 
   function buscarBloques() {
     const w = workers.find((x) => x.id === ebWorker);
@@ -1395,6 +1409,155 @@ function downloadLastBackup() {
   a.remove();
   URL.revokeObjectURL(url);
 }
+  // === Helpers de Informe de horas ===
+  function datesBetweenISO(fromISO: string, toISO: string): string[] {
+    try {
+      const start = new Date(fromISO);
+      const end = new Date(toISO);
+      if (isNaN(start.getTime()) || isNaN(end.getTime()) || start > end) return [];
+      const out: string[] = [];
+      let cur = new Date(start);
+      while (cur <= end) {
+        out.push(fmt(cur));
+        cur = addDays(cur, 1);
+      }
+      return out;
+    } catch { return []; }
+  }
+
+  function getWorkerName(id: string): string {
+    return workers.find(w => w.id === id)?.nombre ?? id;
+  }
+
+  type ReportRow = {
+    fecha: string;
+    trabajadorId: string;
+    trabajador: string;
+    horasPlan: number;  // horas planificadas (slices) ese día
+    horasExtra: number; // horas extra (overrides.extra) ese día
+    totalDia: number;   // horasPlan (las extras ya están incluidas en el plan si las has sobreasignado)
+  };
+
+  const reportRows = useMemo<ReportRow[]>(() => {
+    if (!repFrom || !repTo) return [];
+    const days = datesBetweenISO(repFrom, repTo);
+    if (!days.length) return [];
+
+    const workerIds = repWorker === "ALL" ? workers.map(w => w.id) : [repWorker];
+
+    const rows: ReportRow[] = [];
+    for (const wId of workerIds) {
+      for (const f of days) {
+        const horasPlan = Math.round(
+          slices.filter(s => s.trabajadorId === wId && s.fecha === f)
+                .reduce((a, s) => a + s.horas, 0) * 2
+        ) / 2;
+
+        // horas extra declaradas para ese día (si existen)
+        const horasExtra = Math.round(((overrides[wId]?.[f]?.extra ?? 0)) * 2) / 2;
+
+        rows.push({
+          fecha: f,
+          trabajadorId: wId,
+          trabajador: getWorkerName(wId),
+          horasPlan,
+          horasExtra,
+          totalDia: horasPlan, // El plan ya incluye lo que hiciste; las extra las mostramos aparte.
+        });
+      }
+    }
+    return rows;
+  }, [workers, slices, overrides, repWorker, repFrom, repTo]);
+
+  const reportTotals = useMemo(() => {
+    // Totales por trabajador y totales generales
+    const byWorker = new Map<string, { trabajador: string; plan: number; extra: number }>();
+    for (const r of reportRows) {
+      const cur = byWorker.get(r.trabajadorId) ?? { trabajador: r.trabajador, plan: 0, extra: 0 };
+      cur.plan = Math.round((cur.plan + r.horasPlan) * 2) / 2;
+      cur.extra = Math.round((cur.extra + r.horasExtra) * 2) / 2;
+      byWorker.set(r.trabajadorId, cur);
+    }
+    const list = [...byWorker.entries()].map(([id, v]) => ({ trabajadorId: id, ...v }));
+    const totalPlan = Math.round(list.reduce((a, x) => a + x.plan, 0) * 2) / 2;
+    const totalExtra = Math.round(list.reduce((a, x) => a + x.extra, 0) * 2) / 2;
+    return { list, totalPlan, totalExtra };
+  }, [reportRows]);
+
+  function downloadReportCSV() {
+    if (reportRows.length === 0) {
+      alert("No hay datos en el rango elegido.");
+      return;
+    }
+    const header = ["Fecha", "Trabajador", "Horas planificadas", "Horas extra", "Total del día"];
+    const lines = [header.join(";")];
+    for (const r of reportRows) {
+      lines.push([r.fecha, r.trabajador, r.horasPlan, r.horasExtra, r.totalDia].join(";"));
+    }
+    // totales al final
+    lines.push("");
+    lines.push(["Totales por trabajador"].join(";"));
+    for (const t of reportTotals.list) {
+      lines.push([t.trabajador, t.plan, t.extra, (Math.round((t.plan + t.extra) * 2) / 2)].join(";"));
+    }
+    lines.push("");
+    lines.push(["TOTAL PLAN", reportTotals.totalPlan].join(";"));
+    lines.push(["TOTAL EXTRA", reportTotals.totalExtra].join(";"));
+    lines.push(["TOTAL GENERAL", Math.round((reportTotals.totalPlan + reportTotals.totalExtra) * 2) / 2].join(";"));
+
+    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    a.href = url;
+    a.download = `informe-horas-${repWorker === "ALL" ? "todos" : repWorker}-${repFrom}_a_${repTo}-${stamp}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+  // === Copias en Supabase ===
+  async function saveCloudBackup() {
+    if (!userId) { alert("Inicia sesión para guardar copia en la nube."); return; }
+    const snap = {
+      version: 1,
+      ts: Date.now(),
+      workers, slices, overrides, descs,
+    };
+    const { error } = await supabase.from("backups").insert({
+      user_id: userId,
+      tenant_id: TENANT_ID,
+      payload: snap,
+    } as any);
+    if (error) {
+      alert("No se pudo guardar la copia en la nube: " + error.message);
+    } else {
+      alert("Copia en la nube guardada.");
+    }
+  }
+
+  async function restoreLatestCloudBackup() {
+    if (!userId) { alert("Inicia sesión para restaurar copias de la nube."); return; }
+    const { data, error } = await supabase
+      .from("backups")
+      .select("*")
+      .eq("user_id", userId)
+      .eq("tenant_id", TENANT_ID)
+      .order("created_at", { ascending: false })
+      .limit(1);
+    if (error) { alert("Error leyendo copias: " + error.message); return; }
+    if (!data || !data.length) { alert("No hay copias en la nube."); return; }
+    const snap = data[0].payload;
+    if (!snap) { alert("Copia inválida."); return; }
+    if (confirm(`Restaurar la última copia en la nube (${new Date(snap.ts).toLocaleString()})?`)) {
+      // Reutilizamos la misma función de restaurar local
+      setWorkers(snap.workers ?? []);
+      setSlices(snap.slices ?? []);
+      setOverrides(snap.overrides ?? {});
+      setDescs(snap.descs ?? {});
+      alert("Copia restaurada desde la nube.");
+    }
+  }
 
   /* ===================== Render ===================== */
   return (
@@ -1975,9 +2138,101 @@ function downloadLastBackup() {
       ⬇️ Exportar última (.json)
     </button>
   </div>
+  {/* === BOTONES DE COPIA EN LA NUBE (SUPABASE) === */}
+{userId && (
+  <div
+    style={{
+      display: "flex",
+      gap: 8,
+      flexWrap: "wrap",
+      marginTop: 8,
+    }}
+  >
+    <button
+      style={disabledIf(btnLabeled, false)}
+      onClick={saveCloudBackup}
+    >
+      ☁️ Guardar en la nube
+    </button>
+
+    <button
+      style={disabledIf(btnLabeled, false)}
+      onClick={restoreLatestCloudBackup}
+    >
+      ☁️ Restaurar última de la nube
+    </button>
+  </div>
+)}
+
   <div style={{ fontSize: 12, color: "#6b7280", marginTop: 6 }}>
     Se guarda automáticamente al iniciar, cada 10 minutos y al ocultar la pestaña. Mantengo hasta {MAX_BACKUPS} copias.
   </div>
+</div>
+{/* === Informe de horas === */}
+<div style={{ ...panel, marginTop: 14 }}>
+  <div style={panelTitle}>Informe de horas</div>
+
+  <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+    <button
+      style={disabledIf(btnLabeled, false)}
+      onClick={() => setRepOpen(v => !v)}
+    >
+      {repOpen ? "Cerrar" : "Abrir"} panel
+    </button>
+  </div>
+
+  {repOpen && (
+    <div style={{ display: "grid", gap: 8 }}>
+      <label style={label}>Trabajador</label>
+      <select
+        style={input}
+        value={repWorker}
+        onChange={(e) => setRepWorker(e.target.value)}
+      >
+        <option value="ALL">Todos</option>
+        {workers.map(w => (
+          <option key={`rep-w-${w.id}`} value={w.id}>{w.nombre}</option>
+        ))}
+      </select>
+
+      <label style={label}>Desde</label>
+      <input
+        type="date"
+        style={input}
+        value={repFrom}
+        onChange={(e) => setRepFrom(e.target.value)}
+      />
+
+      <label style={label}>Hasta</label>
+      <input
+        type="date"
+        style={input}
+        value={repTo}
+        onChange={(e) => setRepTo(e.target.value)}
+      />
+
+      <div style={{ display: "flex", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
+        <button style={btnPrimary} onClick={downloadReportCSV}>⬇️ Exportar CSV</button>
+      </div>
+
+      {/* Resumen rápido */}
+      <div style={{ marginTop: 6, fontWeight: 700 }}>Totales</div>
+      <div style={{ fontSize: 13 }}>
+        Total plan: {reportTotals.totalPlan}h · Total extra: {reportTotals.totalExtra}h · Total general: {Math.round((reportTotals.totalPlan + reportTotals.totalExtra) * 2) / 2}h
+      </div>
+
+      {/* Lista por trabajador */}
+      {reportTotals.list.length > 0 && (
+        <div style={{ marginTop: 6 }}>
+          {reportTotals.list.map(t => (
+            <div key={`rep-sum-${t.trabajadorId}`} style={{ fontSize: 13 }}>
+              <b>{t.trabajador}</b>: {t.plan}h plan · {t.extra}h extra · {Math.round((t.plan + t.extra) * 2) / 2}h total
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )}
 </div>
 
         </aside>
