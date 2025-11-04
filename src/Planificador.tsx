@@ -1098,7 +1098,6 @@ function updateBlockHoursForDay(taskId: string, trabajadorId: string, diaISO: st
       .reduce((a, s) => a + s.horas, 0);
 
     // Horas restantes a partir del día siguiente:
-    // total - (previos + horasDeHoyNueva)
     const remaining = Math.max(0, Math.round((totalAntes - (sumPrevDays + safeHoras)) * 2) / 2);
 
     // 1) Quitamos todas las slices del bloque desde "hoy" inclusive
@@ -1119,16 +1118,63 @@ function updateBlockHoursForDay(taskId: string, trabajadorId: string, diaISO: st
         w,
         nextDay,
         base,
-        sinBloqueDesdeHoy, // muy importante: planificar contra el resto de slices ya existentes
+        sinBloqueDesdeHoy, // planificar contra el resto de slices
         overrides
       ).map(s => ({ ...s, taskId: today.taskId, color: colorFromId(today.taskId) }));
 
       nuevos = [fixedToday, ...replan];
     }
 
-    return [...sinBloqueDesdeHoy, ...nuevos];
+    // Resultado final de slices
+    const result = [...sinBloqueDesdeHoy, ...nuevos];
+
+    // === NUEVO: sobreasignar horas extras automáticamente si hace falta ===
+    // 1) Total de horas usadas HOY por este trabajador (con el cambio aplicado)
+    const totalHoy = Math.round(result
+      .filter(s => s.trabajadorId === w.id && s.fecha === diaISO)
+      .reduce((a, s) => a + s.horas, 0) * 2) / 2;
+
+    // 2) Capacidad base del día + extras anteriores (overrides)
+    const d = new Date(diaISO);
+    const weekday = d.getDay(); // 0=Domingo ... 6=Sábado
+
+    // Intenta obtener la capacidad base de tu estructura "base".
+    // Si tu "base" está por trabajador y por día de semana, respeta ese esquema.
+    // Fallback seguro: 8 horas si no hay dato.
+    const baseCapPorSemanaDelWorker =
+      (base && (base as any)[w.id] && (base as any)[w.id][weekday]) ??
+      (base && (base as any)[weekday]) ??
+      8;
+
+    // Extras acumuladas previamente (si las hay) para ese día
+    const extrasPrevias =
+      (overrides && (overrides as any)[w.id] && (overrides as any)[w.id][diaISO]) ?? 0;
+
+    const capacidadHoy = Math.round((baseCapPorSemanaDelWorker + extrasPrevias) * 2) / 2;
+
+    // 3) Exceso de horas (lo que hay que sobreasignar como horas extra)
+    const exceso = Math.max(0, Math.round((totalHoy - capacidadHoy) * 2) / 2);
+
+    if (exceso > 0) {
+      // Aumentamos las horas extra (override) de ese día en la cantidad justa
+      // para que el "Usado" no quede por encima de "Capacidad".
+      setOverrides((prevOv: any) => {
+        const byWorker = (prevOv && prevOv[w.id]) ? prevOv[w.id] : {};
+        const cur = byWorker[diaISO] ?? 0;
+        return {
+          ...prevOv,
+          [w.id]: {
+            ...byWorker,
+            [diaISO]: Math.round((cur + exceso) * 2) / 2,
+          },
+        };
+      });
+    }
+
+    return result;
   });
 }
+
 
 /**
  * Añade un bloque NUEVO (incidencia) para un trabajador empezando en un día concreto.
