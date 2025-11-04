@@ -391,6 +391,46 @@ function AppInner() {
     return rows;
   }
 
+function editBlockTotalFromSlice(slice: TaskSlice) {
+  if (!canEdit) return;
+  const w = workers.find(x => x.id === slice.trabajadorId);
+  if (!w) return;
+
+  // Todas las partes de ese bloque (taskId) para ese trabajador
+  const delBloque = slices
+    .filter(s => s.trabajadorId === w.id && s.taskId === slice.taskId);
+
+  if (delBloque.length === 0) return;
+
+  const startF = delBloque.reduce((m, s) => (s.fecha < m ? s.fecha : m), delBloque[0].fecha);
+  const totalActual = Math.round(delBloque.reduce((a, s) => a + s.horas, 0) * 2) / 2;
+
+  const nuevoStr = prompt(
+    `Horas totales para "${slice.producto}" (${w.nombre}) desde ${startF}:`,
+    String(totalActual)
+  );
+  if (nuevoStr === null) return;
+
+  const nuevoTotal = Math.max(0.5, Math.round(Number(nuevoStr) * 2) / 2);
+  if (!isFinite(nuevoTotal) || nuevoTotal <= 0) return;
+
+  setSlices(prev => {
+    // Quitamos el plan anterior de ese bloque+trabajador
+    const restantes = prev.filter(s => !(s.taskId === slice.taskId && s.trabajadorId === w.id));
+    // Replanificamos desde el primer día del bloque
+    const plan = planificarBloqueAuto(
+      slice.producto,
+      nuevoTotal,
+      w,
+      new Date(startF),
+      base,
+      restantes,
+      overrides
+    ).map(s => ({ ...s, taskId: slice.taskId, color: colorFromId(slice.taskId) }));
+    return [...restantes, ...plan];
+  });
+}
+
   // === NUEVO: helper seguro para leer del almacenamiento local ===
   function safeLocal<T>(k: string, fallback: T) {
     try { const s = localStorage.getItem(k); return s ? (JSON.parse(s) as T) : fallback; }
@@ -1275,6 +1315,7 @@ function deleteWorker(id: string) {
                                   key={s.id}
                                   draggable={canEdit}
                                   onDragStart={(e) => onDragStart(e, s.id)}
+                                  onDoubleClick={(e) => { e.stopPropagation(); if (canEdit) editBlockTotalFromSlice(s); }}
                                   title={`${s.producto} — ${s.horas}h${desc ? "\n" + desc : ""}`}
                                   style={{
                                     ...blockStyle,
