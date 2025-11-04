@@ -621,6 +621,7 @@ if (wRows.length) {
         trabajador_id: s.trabajadorId,
         color: s.color,
         user_id: uid,
+        tenant_id: TENANT_ID,
       }));
       await supabase.from("task_slices").delete().eq("tenant_id", TENANT_ID);
       if (sRows.length) {
@@ -629,7 +630,7 @@ if (wRows.length) {
       }
 
       // 3) Overrides (lo mismo: borramos y subimos snapshot plano)
-      const oRows = flattenOverrides(overrides).map(r => ({ ...r, user_id: uid }));
+      const oRows = flattenOverrides(overrides).map(r => ({ ...r, user_id: uid, tenant_id: TENANT_ID, }));
       await supabase.from("day_overrides").delete().eq("tenant_id", TENANT_ID);
       if (oRows.length) {
         const { error } = await supabase.from("day_overrides").insert(oRows);
