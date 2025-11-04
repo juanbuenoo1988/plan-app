@@ -352,6 +352,30 @@ function AppInner() {
   const [descNombre, setDescNombre] = useState("");
   const [descTexto, setDescTexto] = useState("");
   const [editKey, setEditKey] = useState<string | null>(null);
+  // === Estado para "Actualizar día trabajador"
+const [updOpen, setUpdOpen] = useState(false);
+const [updWorker, setUpdWorker] = useState<string>(workers[0]?.id ?? "");
+const [updDate, setUpdDate] = useState<string>(() => {
+  const d = new Date();
+  return dayKeyOf(d);
+});
+
+// Para añadir incidencias desde el panel
+const [updNewProd, setUpdNewProd] = useState("");
+const [updNewHoras, setUpdNewHoras] = useState<number>(1);
+
+// Derivados: bloques del día seleccionado
+const updMatches = useMemo(() => {
+  if (!updWorker || !updDate) return [];
+  return slices
+    .filter(s => s.trabajadorId === updWorker && s.fecha === updDate)
+    // Conviene agrupar por taskId si un mismo producto se parte en varias barras el mismo día.
+    .map(s => ({
+      taskId: s.taskId,
+      producto: s.producto,
+      horasHoy: s.horas
+    }));
+}, [slices, updWorker, updDate]);
 
   const [form, setForm] = useState<NewTaskForm>({
     producto: "",
@@ -1034,6 +1058,108 @@ function deleteWorker(id: string) {
     });
   }
 
+  // === Helpers "Actualizar día trabajador" ===
+function dayKeyOf(d: Date) {
+  // Asegura el formato YYYY-MM-DD como el que usa el calendario
+  // Si ya tienes una util para esto, usa la tuya.
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${dd}`;
+}
+
+/**
+ * Edita las horas REALES de un bloque en un día concreto y replanifica el resto.
+ * - Fija el tramo del día seleccionado a newHoras (mín 0.5 en pasos de 0.5)
+ * - Recalcula el resto del bloque a partir del día siguiente, empujando/ajustando como siempre.
+ */
+function updateBlockHoursForDay(taskId: string, trabajadorId: string, diaISO: string, newHoras: number) {
+  if (!canEdit) return;
+
+  const w = workers.find(x => x.id === trabajadorId);
+  if (!w) return;
+
+  const safeHoras = Math.max(0.5, Math.round(Number(newHoras) * 2) / 2);
+  if (!isFinite(safeHoras)) return;
+
+  setSlices(prev => {
+    // Todas las partes del bloque de ese trabajador
+    const parts = prev.filter(s => s.taskId === taskId && s.trabajadorId === trabajadorId);
+    if (parts.length === 0) return prev;
+
+    // Slice del día elegido
+    const today = parts.find(s => s.fecha === diaISO);
+    if (!today) return prev;
+
+    // Suma total actual y suma realizada hasta el día seleccionado (incluyéndolo)
+    const totalAntes = parts.reduce((a, s) => a + s.horas, 0);
+    const sumPrevDays = parts
+      .filter(s => s.fecha < diaISO)
+      .reduce((a, s) => a + s.horas, 0);
+
+    // Horas restantes a partir del día siguiente:
+    // total - (previos + horasDeHoyNueva)
+    const remaining = Math.max(0, Math.round((totalAntes - (sumPrevDays + safeHoras)) * 2) / 2);
+
+    // 1) Quitamos todas las slices del bloque desde "hoy" inclusive
+    const sinBloqueDesdeHoy = prev.filter(s => !(s.taskId === taskId && s.trabajadorId === trabajadorId && s.fecha >= diaISO));
+
+    // 2) Insertamos la slice fija de HOY con las horas reales
+    const fixedToday = { ...today, horas: safeHoras, fecha: diaISO };
+
+    // 3) Replanificar el resto desde el día siguiente
+    let nuevos: typeof prev = [fixedToday];
+    if (remaining > 0) {
+      const nextDay = new Date(diaISO);
+      nextDay.setDate(nextDay.getDate() + 1);
+
+      const replan = planificarBloqueAuto(
+        today.producto,
+        remaining,
+        w,
+        nextDay,
+        base,
+        sinBloqueDesdeHoy, // muy importante: planificar contra el resto de slices ya existentes
+        overrides
+      ).map(s => ({ ...s, taskId: today.taskId, color: colorFromId(today.taskId) }));
+
+      nuevos = [fixedToday, ...replan];
+    }
+
+    return [...sinBloqueDesdeHoy, ...nuevos];
+  });
+}
+
+/**
+ * Añade un bloque NUEVO (incidencia) para un trabajador empezando en un día concreto.
+ * Empuja y replanifica como el alta normal.
+ */
+function addNewBlockFromDay(trabajadorId: string, diaISO: string, producto: string, horas: number) {
+  if (!canEdit) return;
+
+  const w = workers.find(x => x.id === trabajadorId);
+  if (!w) return;
+
+  const safeHoras = Math.max(0.5, Math.round(Number(horas) * 2) / 2);
+  if (!isFinite(safeHoras) || safeHoras <= 0) return;
+
+  const newTaskId = `t${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  setSlices(prev => {
+    const plan = planificarBloqueAuto(
+      producto.trim(),
+      safeHoras,
+      w,
+      new Date(diaISO),
+      base,
+      prev,         // planificar contra lo que ya hay
+      overrides
+    ).map(s => ({ ...s, taskId: newTaskId, color: colorFromId(newTaskId) }));
+
+    return [...prev, ...plan];
+  });
+}
+
+
   /* ===================== Render ===================== */
   return (
     <div style={appShell}>
@@ -1373,6 +1499,130 @@ function deleteWorker(id: string) {
 
         {/* SIDEBAR */}
         <aside style={sidebar} className="no-print">
+          {/* === Panel: Actualizar día trabajador === */}
+<div style={{ ...panel, marginBottom: 14 }}>
+  <div style={panelTitle}>Actualizar día trabajador</div>
+
+  <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+    <button
+      style={disabledIf(btnLabeled, locked)}
+      disabled={locked}
+      onClick={() => setUpdOpen(v => !v)}
+    >
+      {updOpen ? "Cerrar" : "Abrir"} panel
+    </button>
+  </div>
+
+  {updOpen && (
+    <div style={{ display: "grid", gap: 8 }}>
+      <label style={label}>Trabajador</label>
+      <select
+        style={disabledIf(input, locked)}
+        disabled={locked}
+        value={updWorker}
+        onChange={(e) => setUpdWorker(e.target.value)}
+      >
+        {workers.map(w => (
+          <option key={`upd-w-${w.id}`} value={w.id}>{w.nombre}</option>
+        ))}
+      </select>
+
+      <label style={label}>Día</label>
+      <input
+        type="date"
+        style={disabledIf(input, locked)}
+        disabled={locked}
+        value={updDate}
+        onChange={(e) => setUpdDate(e.target.value)}
+      />
+
+      <div style={{ marginTop: 6, fontWeight: 700 }}>Bloques de ese día</div>
+
+      {updMatches.length === 0 ? (
+        <div style={{ fontSize: 12, color: "#6b7280" }}>
+          No hay bloques ese día para este trabajador.
+        </div>
+      ) : (
+        <div style={{ display: "grid", gap: 8 }}>
+          {updMatches.map((m, idx) => (
+            <div key={`upd-m-${m.taskId}-${idx}`} style={descItem}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div style={{ fontWeight: 700 }}>{m.producto}</div>
+                <div style={{ fontSize: 12, color: "#374151" }}>Hoy: {m.horasHoy}h</div>
+              </div>
+
+              <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+                <input
+                  type="number"
+                  step={0.5}
+                  min={0.5}
+                  placeholder="Horas reales hoy"
+                  style={disabledIf(input, locked)}
+                  disabled={locked}
+                  onKeyDown={(e) => {
+                    // Enter rápido
+                    if (e.key === "Enter") {
+                      const val = Number((e.target as HTMLInputElement).value);
+                      updateBlockHoursForDay(m.taskId, updWorker, updDate, val);
+                    }
+                  }}
+                />
+                <button
+                  style={disabledIf(btnPrimary, locked)}
+                  disabled={locked}
+                  onClick={(ev) => {
+                    // toma el input anterior
+                    const container = (ev.currentTarget.parentElement as HTMLElement);
+                    const input = container.querySelector("input") as HTMLInputElement | null;
+                    const val = input ? Number(input.value) : m.horasHoy;
+                    updateBlockHoursForDay(m.taskId, updWorker, updDate, val);
+                  }}
+                >
+                  💾 Guardar horas de hoy
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div style={{ marginTop: 6, fontWeight: 700 }}>Añadir incidencia (bloque nuevo)</div>
+      <input
+        style={disabledIf(input, locked)}
+        disabled={locked}
+        placeholder="Nombre del producto / incidencia"
+        value={updNewProd}
+        onChange={(e) => setUpdNewProd(e.target.value)}
+      />
+      <input
+        type="number"
+        step={0.5}
+        min={0.5}
+        style={disabledIf(input, locked)}
+        disabled={locked}
+        placeholder="Horas totales"
+        value={updNewHoras}
+        onChange={(e) => setUpdNewHoras(Number(e.target.value))}
+      />
+      <button
+        style={disabledIf(btnLabeled, locked)}
+        disabled={locked || !updNewProd.trim()}
+        onClick={() => {
+          addNewBlockFromDay(updWorker, updDate, updNewProd, updNewHoras);
+          setUpdNewProd("");
+          setUpdNewHoras(1);
+        }}
+      >
+        ➕ Añadir bloque desde este día
+      </button>
+
+      <div style={{ fontSize: 12, color: "#6b7280" }}>
+        Nota: al cambiar “horas de hoy” se fija ese día y el resto del bloque se replanifica desde el día siguiente.
+      </div>
+    </div>
+  )}
+</div>
+
           <div style={panelTitle}>Descripciones de productos</div>
 
           <div style={{ display: "grid", gap: 8 }}>
