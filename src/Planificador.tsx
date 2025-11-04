@@ -402,6 +402,20 @@ const updMatches = useMemo(() => {
   const [printMode, setPrintMode] = useState<PrintMode>("none");
   const [printWorker, setPrintWorker] = useState<string>("W1");
   const [printDate, setPrintDate] = useState<string>(fmt(new Date()));
+  
+  // === Copias de seguridad (localStorage)
+const BACKUP_INDEX_KEY = "planner:backup:index";
+const MAX_BACKUPS = 100; // número máximo de copias locales que se guardan
+
+type PlannerSnapshot = {
+  version: 1;
+  ts: number; // fecha y hora de la copia
+  workers: typeof workers;
+  slices: typeof slices;
+  overrides: typeof overrides;
+  descs: typeof descs;
+};
+
 
   // 🔽🔽🔽 Pega aquí todo este bloque completo 🔽🔽🔽
 
@@ -742,6 +756,29 @@ if (wRows.length) {
     const snapshot = JSON.stringify({ workers, slices, overrides, descs });
     try { localStorage.setItem(STORAGE_KEY, snapshot); } catch {}
   }, [workers, slices, overrides, descs, userId]);
+
+  // Copia automática inicial y cada 10 minutos
+useEffect(() => {
+  saveBackup("auto"); // copia al abrir
+
+  const id = setInterval(() => {
+    saveBackup("auto"); // copia cada 10 minutos
+  }, 10 * 60 * 1000);
+
+  // también guarda al ocultar pestaña
+  const onVis = () => {
+    if (document.visibilityState === "hidden") {
+      saveBackup("auto");
+    }
+  };
+  document.addEventListener("visibilitychange", onVis);
+
+  return () => {
+    clearInterval(id);
+    document.removeEventListener("visibilitychange", onVis);
+  };
+}, []);
+
 
   function triggerPrint(mode: PrintMode) {
     setPrintMode(mode);
@@ -1248,6 +1285,115 @@ function addNewBlockFromDay(trabajadorId: string, diaISO: string, producto: stri
 
     return result;
   });
+}
+
+// === Funciones de copias de seguridad ===
+function makeSnapshot(): PlannerSnapshot {
+  return {
+    version: 1,
+    ts: Date.now(),
+    workers,
+    slices,
+    overrides,
+    descs,
+  };
+}
+
+function readBackupIndex(): string[] {
+  try {
+    const raw = localStorage.getItem(BACKUP_INDEX_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeBackupIndex(ids: string[]) {
+  try {
+    localStorage.setItem(BACKUP_INDEX_KEY, JSON.stringify(ids));
+  } catch {}
+}
+
+function saveBackup(manualLabel?: string) {
+  try {
+    const snap = makeSnapshot();
+    const id = new Date(snap.ts).toISOString().replace(/[:.]/g, "-");
+    const key = `planner:backup:${id}${manualLabel ? ":" + manualLabel : ""}`;
+    localStorage.setItem(key, JSON.stringify(snap));
+
+    const index = readBackupIndex();
+    index.unshift(key);
+    const trimmed = index.slice(0, MAX_BACKUPS);
+    index.slice(MAX_BACKUPS).forEach(k => localStorage.removeItem(k));
+    writeBackupIndex(trimmed);
+
+    return key;
+  } catch (e) {
+    console.error("Error guardando copia:", e);
+    return null;
+  }
+}
+
+function getLastBackupKey(): string | null {
+  const index = readBackupIndex();
+  return index.length > 0 ? index[0] : null;
+}
+
+function readBackupByKey(key: string): PlannerSnapshot | null {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function restoreFromSnapshot(snap: PlannerSnapshot) {
+  setWorkers(snap.workers);
+  setSlices(snap.slices);
+  setOverrides(snap.overrides as any);
+  setDescs(snap.descs as any);
+}
+
+function restoreLastBackup() {
+  const key = getLastBackupKey();
+  if (!key) {
+    alert("No hay copias disponibles.");
+    return;
+  }
+  const snap = readBackupByKey(key);
+  if (!snap) {
+    alert("No se pudo leer la copia.");
+    return;
+  }
+  const fecha = new Date(snap.ts).toLocaleString();
+  if (confirm(`¿Restaurar la copia de ${fecha}?`)) {
+    restoreFromSnapshot(snap);
+    alert("Copia restaurada correctamente.");
+  }
+}
+
+function downloadLastBackup() {
+  const key = getLastBackupKey();
+  if (!key) {
+    alert("No hay copias disponibles.");
+    return;
+  }
+  const snap = readBackupByKey(key);
+  if (!snap) {
+    alert("No se pudo leer la copia.");
+    return;
+  }
+  const blob = new Blob([JSON.stringify(snap, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  const stamp = new Date(snap.ts).toISOString().replace(/[:.]/g, "-");
+  a.href = url;
+  a.download = `planificador-backup-${stamp}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
   /* ===================== Render ===================== */
@@ -1803,6 +1949,37 @@ function addNewBlockFromDay(trabajadorId: string, diaISO: string, producto: stri
           <div style={{ fontSize: 12, color: "#6b7280", marginTop: 12 }}>
             Consejo: el <b>nombre del producto</b> debe coincidir exactamente para localizar el bloque.
           </div>
+          {/* === Copias de seguridad === */}
+<div style={{ ...panel, marginTop: 14 }}>
+  <div style={panelTitle}>Copias de seguridad</div>
+  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+    <button
+      style={disabledIf(btnLabeled, false)}
+      onClick={() => {
+        const key = saveBackup("manual");
+        if (key) alert("Copia guardada correctamente.");
+      }}
+    >
+      💾 Guardar copia ahora
+    </button>
+    <button
+      style={disabledIf(btnLabeled, false)}
+      onClick={restoreLastBackup}
+    >
+      ⤴️ Restaurar última
+    </button>
+    <button
+      style={disabledIf(btnLabeled, false)}
+      onClick={downloadLastBackup}
+    >
+      ⬇️ Exportar última (.json)
+    </button>
+  </div>
+  <div style={{ fontSize: 12, color: "#6b7280", marginTop: 6 }}>
+    Se guarda automáticamente al iniciar, cada 10 minutos y al ocultar la pestaña. Mantengo hasta {MAX_BACKUPS} copias.
+  </div>
+</div>
+
         </aside>
       </div>
     </div>
