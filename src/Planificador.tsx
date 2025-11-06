@@ -1047,10 +1047,8 @@ function deleteWorker(id: string) {
   const [ebMatches, setEbMatches] = useState<FoundBlock[]>([]);
   const [ebSelected, setEbSelected] = useState<string>("");
   const [ebHoras, setEbHoras] = useState<number>(0);
-  // === Estado del Informe de horas ===
- ;
 
-  function buscarBloques() {
+   function buscarBloques() {
     const w = workers.find((x) => x.id === ebWorker);
     if (!w || !ebNombre.trim()) { setEbMatches([]); setEbSelected(""); setEbHoras(0); return; }
 
@@ -2051,70 +2049,6 @@ function downloadLastBackup() {
     Se guarda automáticamente al iniciar, cada 10 minutos y al ocultar la pestaña. Mantengo hasta {MAX_BACKUPS} copias.
   </div>
 </div>
-{/* === Informe de horas === */}
-
-
-  <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-    <button
-      style={disabledIf(btnLabeled, false)}
-      onClick={() => setRepOpen(v => !v)}
-    >
-      {repOpen ? "Cerrar" : "Abrir"} panel
-    </button>
-  </div>
-
-  {repOpen && (
-    <div style={{ display: "grid", gap: 8 }}>
-      <label style={label}>Trabajador</label>
-      <select
-        style={input}
-        value={repWorker}
-        onChange={(e) => setRepWorker(e.target.value)}
-      >
-        <option value="ALL">Todos</option>
-        {workers.map(w => (
-          <option key={`rep-w-${w.id}`} value={w.id}>{w.nombre}</option>
-        ))}
-      </select>
-
-      <label style={label}>Desde</label>
-      <input
-        type="date"
-        style={input}
-        value={repFrom}
-        onChange={(e) => setRepFrom(e.target.value)}
-      />
-
-      <label style={label}>Hasta</label>
-      <input
-        type="date"
-        style={input}
-        value={repTo}
-        onChange={(e) => setRepTo(e.target.value)}
-      />
-
-      <div style={{ display: "flex", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
-        <button style={btnPrimary} onClick={downloadReportCSV}>⬇️ Exportar CSV</button>
-      </div>
-
-      {/* Resumen rápido */}
-      <div style={{ marginTop: 6, fontWeight: 700 }}>Totales</div>
-      <div style={{ fontSize: 13 }}>
-        Total plan: {reportTotals.totalPlan}h · Total extra: {reportTotals.totalExtra}h · Total general: {Math.round((reportTotals.totalPlan + reportTotals.totalExtra) * 2) / 2}h
-      </div>
-
-      {/* Lista por trabajador */}
-      {reportTotals.list.length > 0 && (
-        <div style={{ marginTop: 6 }}>
-          {reportTotals.list.map(t => (
-            <div key={`rep-sum-${t.trabajadorId}`} style={{ fontSize: 13 }}>
-              <b>{t.trabajador}</b>: {t.plan}h plan · {t.extra}h extra · {Math.round((t.plan + t.extra) * 2) / 2}h total
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  )}
 
         </aside>
       </div>
