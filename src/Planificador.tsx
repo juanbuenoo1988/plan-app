@@ -1048,19 +1048,7 @@ function deleteWorker(id: string) {
   const [ebSelected, setEbSelected] = useState<string>("");
   const [ebHoras, setEbHoras] = useState<number>(0);
   // === Estado del Informe de horas ===
-  const [repOpen, setRepOpen] = useState(false);
-  const [repWorker, setRepWorker] = useState<string>("ALL"); // "ALL" o id del trabajador
-  const [repFrom, setRepFrom] = useState<string>(() => {
-    // primer día del mes actual
-    const d = new Date(base);
-    d.setDate(1);
-    return fmt(d);
-  });
-  const [repTo, setRepTo] = useState<string>(() => {
-    // último día del mes actual
-    const d = endOfMonth(base);
-    return fmt(d);
-  });
+ ;
 
   function buscarBloques() {
     const w = workers.find((x) => x.id === ebWorker);
@@ -1410,113 +1398,7 @@ function downloadLastBackup() {
   a.remove();
   URL.revokeObjectURL(url);
 }
-  // === Helpers de Informe de horas ===
-  function datesBetweenISO(fromISO: string, toISO: string): string[] {
-    try {
-      const start = new Date(fromISO);
-      const end = new Date(toISO);
-      if (isNaN(start.getTime()) || isNaN(end.getTime()) || start > end) return [];
-      const out: string[] = [];
-      let cur = new Date(start);
-      while (cur <= end) {
-        out.push(fmt(cur));
-        cur = addDays(cur, 1);
-      }
-      return out;
-    } catch { return []; }
-  }
 
-  function getWorkerName(id: string): string {
-    return workers.find(w => w.id === id)?.nombre ?? id;
-  }
-
-  type ReportRow = {
-    fecha: string;
-    trabajadorId: string;
-    trabajador: string;
-    horasPlan: number;  // horas planificadas (slices) ese día
-    horasExtra: number; // horas extra (overrides.extra) ese día
-    totalDia: number;   // horasPlan (las extras ya están incluidas en el plan si las has sobreasignado)
-  };
-
-  const reportRows = useMemo<ReportRow[]>(() => {
-    if (!repFrom || !repTo) return [];
-    const days = datesBetweenISO(repFrom, repTo);
-    if (!days.length) return [];
-
-    const workerIds = repWorker === "ALL" ? workers.map(w => w.id) : [repWorker];
-
-    const rows: ReportRow[] = [];
-    for (const wId of workerIds) {
-      for (const f of days) {
-        const horasPlan = Math.round(
-          slices.filter(s => s.trabajadorId === wId && s.fecha === f)
-                .reduce((a, s) => a + s.horas, 0) * 2
-        ) / 2;
-
-        // horas extra declaradas para ese día (si existen)
-        const horasExtra = Math.round(((overrides[wId]?.[f]?.extra ?? 0)) * 2) / 2;
-
-        rows.push({
-          fecha: f,
-          trabajadorId: wId,
-          trabajador: getWorkerName(wId),
-          horasPlan,
-          horasExtra,
-          totalDia: horasPlan, // El plan ya incluye lo que hiciste; las extra las mostramos aparte.
-        });
-      }
-    }
-    return rows;
-  }, [workers, slices, overrides, repWorker, repFrom, repTo]);
-
-  const reportTotals = useMemo(() => {
-    // Totales por trabajador y totales generales
-    const byWorker = new Map<string, { trabajador: string; plan: number; extra: number }>();
-    for (const r of reportRows) {
-      const cur = byWorker.get(r.trabajadorId) ?? { trabajador: r.trabajador, plan: 0, extra: 0 };
-      cur.plan = Math.round((cur.plan + r.horasPlan) * 2) / 2;
-      cur.extra = Math.round((cur.extra + r.horasExtra) * 2) / 2;
-      byWorker.set(r.trabajadorId, cur);
-    }
-    const list = [...byWorker.entries()].map(([id, v]) => ({ trabajadorId: id, ...v }));
-    const totalPlan = Math.round(list.reduce((a, x) => a + x.plan, 0) * 2) / 2;
-    const totalExtra = Math.round(list.reduce((a, x) => a + x.extra, 0) * 2) / 2;
-    return { list, totalPlan, totalExtra };
-  }, [reportRows]);
-
-  function downloadReportCSV() {
-    if (reportRows.length === 0) {
-      alert("No hay datos en el rango elegido.");
-      return;
-    }
-    const header = ["Fecha", "Trabajador", "Horas planificadas", "Horas extra", "Total del día"];
-    const lines = [header.join(";")];
-    for (const r of reportRows) {
-      lines.push([r.fecha, r.trabajador, r.horasPlan, r.horasExtra, r.totalDia].join(";"));
-    }
-    // totales al final
-    lines.push("");
-    lines.push(["Totales por trabajador"].join(";"));
-    for (const t of reportTotals.list) {
-      lines.push([t.trabajador, t.plan, t.extra, (Math.round((t.plan + t.extra) * 2) / 2)].join(";"));
-    }
-    lines.push("");
-    lines.push(["TOTAL PLAN", reportTotals.totalPlan].join(";"));
-    lines.push(["TOTAL EXTRA", reportTotals.totalExtra].join(";"));
-    lines.push(["TOTAL GENERAL", Math.round((reportTotals.totalPlan + reportTotals.totalExtra) * 2) / 2].join(";"));
-
-    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    a.href = url;
-    a.download = `informe-horas-${repWorker === "ALL" ? "todos" : repWorker}-${repFrom}_a_${repTo}-${stamp}.csv`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-  }
   // === Copias en Supabase ===
   async function saveCloudBackup() {
     if (!userId) { alert("Inicia sesión para guardar copia en la nube."); return; }
@@ -1764,10 +1646,12 @@ function downloadLastBackup() {
 
           {/* CABECERA DÍAS (impresión mensual) */}
           <div style={daysHeader} className={printMode === "monthly" ? "" : "no-print"}>
-            {weekDaysHeader.map((d, i) => (
-              <div key={`dow-${i}`} style={{ padding: "6px 8px", fontWeight: 600 }}>{d}</div>
-            ))}
-          </div>
+  <div style={{ padding: "6px 8px", fontWeight: 600 }}>Sem</div>
+  {weekDaysHeader.map((d, i) => (
+    <div key={`dow-${i}`} style={{ padding: "6px 8px", fontWeight: 600 }}>{d}</div>
+  ))}
+</div>
+
 
           {/* CALENDARIO */}
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }} className={printMode === "monthly" ? "" : "no-print"}>
@@ -1777,6 +1661,7 @@ function downloadLastBackup() {
 
                 {weeks.map((week) => (
                   <div key={`${w.id}-wk-${week[0].toISOString()}`} style={weekRow}>
+                    <div style={weekCol}>{format(week[0], "I")}</div>
                     {week.map((d) => {
                       const f = fmt(d);
                       const delDia = f ? slices.filter((s) => s.trabajadorId === w.id && s.fecha === f) : [];
@@ -1803,15 +1688,12 @@ function downloadLastBackup() {
                         >
                           {/* Cabecera del día: número + avisos + botón ＋ */}
 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-  <div style={dayLabel}>
-    {/* Solo el número del día */}
-    {format(d, "d")}
-    {" "}
-    {/* Avisos en rojo: extras o sábado ON */}
+  <div>
+    <span style={dayNumber}>{format(d, "d")}</span>{" "}
     {ow ? (
-      <span style={{ fontSize: 14, color: "#d81327", fontWeight: 700 }}>
-       {getDay(d) !== 6 && ow.extra && Number(ow.extra) > 0 ? ("+" + ow.extra + " h extra") : ""}
-       {getDay(d) === 6 && ow.sabado ? "Sábado ON" : ""}
+      <span style={dayWarn}>
+        {getDay(d) !== 6 && ow.extra && Number(ow.extra) > 0 ? ("+" + ow.extra + " h extra") : ""}
+        {getDay(d) === 6 && ow.sabado ? "Sábado ON" : ""}
       </span>
     ) : null}
   </div>
@@ -2170,8 +2052,7 @@ function downloadLastBackup() {
   </div>
 </div>
 {/* === Informe de horas === */}
-<div style={{ ...panel, marginTop: 14 }}>
-  <div style={panelTitle}>Informe de horas</div>
+
 
   <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
     <button
@@ -2234,7 +2115,6 @@ function downloadLastBackup() {
       )}
     </div>
   )}
-</div>
 
         </aside>
       </div>
@@ -2288,6 +2168,8 @@ const appShell: React.CSSProperties = {
   minHeight: "100vh",
 };
 
+
+
 const topHeader: React.CSSProperties = {
   position: "sticky",
   top: 0,
@@ -2324,6 +2206,21 @@ const bar: React.CSSProperties = {
   marginBottom: 12,
 };
 
+// === Estilos del número de día y avisos ===
+const dayNumber: React.CSSProperties = {
+  fontSize: 24,        // tamaño del número del día (puedes subir a 26 o 28)
+  fontWeight: 900,
+  color: "#111827",
+  lineHeight: 1,
+};
+
+const dayWarn: React.CSSProperties = {
+  fontSize: 12,
+  color: "#d81327",
+  fontWeight: 700,
+  marginLeft: 6,
+};
+
 const panelRow: React.CSSProperties = {
   display: "grid",
   gridTemplateColumns: "1fr 1fr",
@@ -2358,14 +2255,14 @@ const td: React.CSSProperties = { borderBottom: "1px solid #f3f4f6", padding: "6
 
 const daysHeader: React.CSSProperties = {
   display: "grid",
-  gridTemplateColumns: "repeat(7, 1fr)",
+  gridTemplateColumns: "56px repeat(7, 1fr)", // ⬅️ antes era "repeat(7, 1fr)"
   gap: 2,
   fontSize: 12,
   margin: "8px 0 4px",
   color: "#000000ff",
 };
 
-const weekRow: React.CSSProperties = { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 2, marginBottom: 2 };
+const weekRow: React.CSSProperties = { display: "grid", gridTemplateColumns: "56px repeat(7, 1fr)", gap: 2, marginBottom: 2 };
 const dayCell: React.CSSProperties = {
   border: "1px solid #e5e7eb",
   minHeight: 130,
@@ -2376,6 +2273,18 @@ const dayCell: React.CSSProperties = {
   borderRadius: 8,
 };
 const dayLabel: React.CSSProperties = { fontSize: 11, color: "#6b7280" };
+
+const weekCol: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  fontWeight: 800,
+  color: "#111827",
+  background: "#f9fafb",
+  border: "1px solid #e5e7eb",
+  borderRadius: 8,
+  minHeight: 130 // igual que dayCell.minHeight para que alinee
+};
 
 const horizontalLane: React.CSSProperties = { display: "flex", gap: 6, overflowX: "auto", alignItems: "flex-start" };
 const blockStyle: React.CSSProperties = {
