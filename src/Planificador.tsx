@@ -67,15 +67,15 @@ type Worker = {
 
 // === Tipos para sobrescrituras por día (por trabajador) ===
 type DayOverride = {
-  extra?: number;       // horas extra ese día
-  sabado?: boolean;     // sábado activado
-  domingo?: boolean;    // domingo activado
-  vacacion?: boolean;   // día marcado como vacaciones
+  extra?: number;
+  sabado?: boolean;
+  domingo?: boolean;
+  vacacion?: boolean;
 };
 
 type OverridesState = {
   [workerId: string]: {
-    [yyyy_mm_dd: string]: DayOverride;
+    [iso: string]: DayOverride;
   };
 };
 
@@ -1953,51 +1953,57 @@ function reflowFrom(workerId: string, startISO: string) {
                       const cap = capacidadDia(w, d, overrides);
                       const used = usadasEnDia(slices, w.id, d);
                       const over = used > cap + 1e-9; // "over" significa "se pasó"
-                      const ow = f ? overrides[w.id]?.[f] : undefined;
+                      const ow: DayOverride = (overrides[w.id]?.[iso]) ?? {};
                           const dow = getDay(d); // 0=domingo, 6=sábado
 
-  const handleDayHeaderDblClick = () => {
-    if (!canEdit) return;
+                           
+const handleDayHeaderDblClick = () => {
+  if (!canEdit) return;
 
-    if (dow === 6) {
-      // SÁBADO: 1 = activar, 0 = desactivar
-      const v = prompt("Sábado (1=activar, 0=desactivar)", ow?.sabado ? "1" : "0");
-      if (v === null) return;
-      const on = v.trim() === "1";
+  if (dow === 6) {
+    // === SÁBADO ===
+    const v = prompt("¿Trabaja el sábado " + iso + " ? (sí=1 / no=0)", (ow?.sabado ? "1" : "0"));
+    if (v === null) return;
+    const on = v.trim() === "1";
 
-      setOverrides((prev: OverridesState) => {
-        const byW = { ...(prev[w.id] || {}) };
-        const cur = { ...(byW[iso] || {}) };
-        if (on) cur.sabado = true; else delete cur.sabado;
+    setOverrides((prev: OverridesState) => {
+      const byW = { ...(prev[w.id] || {}) };
+      const cur = { ...(byW[iso] || {}) };
 
-        if (!cur.extra && !cur.sabado && !cur.domingo && !cur.vacacion) delete byW[iso];
-        else byW[iso] = cur;
+      // 👇 IMPORTANTE: sábado modifica 'sabado', no 'domingo'
+      if (on) cur.sabado = true; else delete cur.sabado;
 
-        return { ...prev, [w.id]: byW };
-      });
+      if (!cur.extra && !cur.sabado && !cur.domingo && !cur.vacacion) delete byW[iso];
+      else byW[iso] = cur;
 
-      reflowFrom(w.id, iso);
-    }
-    else if (dow === 0) {
-      // DOMINGO: 1 = activar, 0 = desactivar
-      const v = prompt("Domingo (1=activar, 0=desactivar)", ow?.domingo ? "1" : "0");
-      if (v === null) return;
-      const on = v.trim() === "1";
+      return { ...prev, [w.id]: byW };
+    });
 
-      setOverrides((prev: OverridesState) => {
-        const byW = { ...(prev[w.id] || {}) };
-        const cur = { ...(byW[iso] || {}) };
-        if (on) cur.domingo = true; else delete cur.domingo;
+    reflowFrom(w.id, iso);
+  }
+  else if (dow === 0) {
+    // === DOMINGO ===
+    const v = prompt("¿Trabaja el domingo " + iso + " ? (sí=1 / no=0)", (ow?.domingo ? "1" : "0"));
+    if (v === null) return;
+    const on = v.trim() === "1";
 
-        if (!cur.extra && !cur.sabado && !cur.domingo && !cur.vacacion) delete byW[iso];
-        else byW[iso] = cur;
+    setOverrides((prev: OverridesState) => {
+      const byW = { ...(prev[w.id] || {}) };
+      const cur = { ...(byW[iso] || {}) };
 
-        return { ...prev, [w.id]: byW };
-      });
+      // 👇 IMPORTANTE: domingo modifica 'domingo'
+      if (on) cur.domingo = true; else delete cur.domingo;
 
-      reflowFrom(w.id, iso);
-    }
-  };
+      if (!cur.extra && !cur.sabado && !cur.domingo && !cur.vacacion) delete byW[iso];
+      else byW[iso] = cur;
+
+      return { ...prev, [w.id]: byW };
+    });
+
+    reflowFrom(w.id, iso);
+  }
+};
+
 
                       const isVacation = !!((overrides[w.id] || {})[iso]?.vacacion);
 
@@ -2018,8 +2024,10 @@ function reflowFrom(workerId: string, startISO: string) {
                           onDrop={(e) => onDropDay(e, w.id, d)}
                         >
                           {/* Cabecera del día: número + avisos + botón ＋ */}
-<div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}
-onDoubleClick={handleDayHeaderDblClick}>
+<div
+  style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}
+  onDoubleClick={(e) => { e.stopPropagation(); handleDayHeaderDblClick(); }}
+>
     
   <div>
   <span style={dayNumber}>{format(d, "d")}</span>{" "}
