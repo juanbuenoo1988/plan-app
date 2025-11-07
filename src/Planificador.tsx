@@ -518,9 +518,19 @@ function editBlockTotalFromSlice(slice: TaskSlice) {
       restantes,
       overrides
     ).map(s => ({ ...s, taskId: slice.taskId, color: colorFromId(slice.taskId) }));
-    return [...restantes, ...plan];
+
+    const merged = [...restantes, ...plan];
+
+    // 👇 Programamos el reflujo global desde startF para rellenar huecos/partir donde toque
+    // (usamos setTimeout 0 para que React aplique primero este setState)
+    setTimeout(() => {
+      reflowFrom(w.id, startF);
+    }, 0);
+
+    return merged;
   });
 }
+
 
   // === NUEVO: helper seguro para leer del almacenamiento local ===
   function safeLocal<T>(k: string, fallback: T) {
@@ -1564,7 +1574,9 @@ function borrarVacacionUnDia(workerId: string, iso: string) {
 
 function aplicarExtrasRango() {
   if (!gmWorker || !gmFrom || !gmTo) return;
+
   const dias = eachDayISO(gmFrom, gmTo);
+
   setOverrides((prev: OverridesState) => {
     const byW = { ...(prev[gmWorker] || {}) };
     for (const iso of dias) {
@@ -1574,23 +1586,36 @@ function aplicarExtrasRango() {
     }
     return { ...prev, [gmWorker]: byW };
   });
+
+  // ⬇️ refluye los bloques desde el primer día del rango
+  const startISO = gmFrom <= gmTo ? gmFrom : gmTo;
+  reflowFrom(gmWorker, startISO);
 }
+
 
 function marcarVacacionesRango() {
   if (!gmWorker || !gmFrom || !gmTo) return;
+
   const dias = eachDayISO(gmFrom, gmTo);
+
   setOverrides((prev: OverridesState) => {
     const byW = { ...(prev[gmWorker] || {}) };
     for (const iso of dias) {
-      byW[iso] = { ...(byW[iso] || {}), vacacion: true, extra: 0 }; // fuerza extra 0
+      byW[iso] = { ...(byW[iso] || {}), vacacion: true, extra: 0 };
     }
     return { ...prev, [gmWorker]: byW };
   });
+
+  // ⬇️ refluye porque esos días ahora tienen capacidad 0
+  const startISO = gmFrom <= gmTo ? gmFrom : gmTo;
+  reflowFrom(gmWorker, startISO);
 }
 
 function borrarVacacionesRango() {
   if (!gmWorker || !gmFrom || !gmTo) return;
+
   const dias = eachDayISO(gmFrom, gmTo);
+
   setOverrides((prev: OverridesState) => {
     const byW = { ...(prev[gmWorker] || {}) };
     for (const iso of dias) {
@@ -1604,11 +1629,18 @@ function borrarVacacionesRango() {
     }
     return { ...prev, [gmWorker]: byW };
   });
+
+  // ⬇️ refluye porque esos días vuelven a tener capacidad
+  const startISO = gmFrom <= gmTo ? gmFrom : gmTo;
+  reflowFrom(gmWorker, startISO);
 }
+
 
 function activarDomingosRango() {
   if (!gmWorker || !gmFrom || !gmTo) return;
+
   const dias = eachDayISO(gmFrom, gmTo);
+
   setOverrides((prev: OverridesState) => {
     const byW = { ...(prev[gmWorker] || {}) };
     for (const iso of dias) {
@@ -1620,11 +1652,17 @@ function activarDomingosRango() {
     }
     return { ...prev, [gmWorker]: byW };
   });
+
+  // ⬇️ refluye porque los domingos pasan a tener capacidad
+  const startISO = gmFrom <= gmTo ? gmFrom : gmTo;
+  reflowFrom(gmWorker, startISO);
 }
 
 function desactivarDomingosRango() {
   if (!gmWorker || !gmFrom || !gmTo) return;
+
   const dias = eachDayISO(gmFrom, gmTo);
+
   setOverrides((prev: OverridesState) => {
     const byW = { ...(prev[gmWorker] || {}) };
     for (const iso of dias) {
@@ -1641,7 +1679,101 @@ function desactivarDomingosRango() {
     }
     return { ...prev, [gmWorker]: byW };
   });
+
+  // ⬇️ refluye porque esos domingos pierden capacidad
+  const startISO = gmFrom <= gmTo ? gmFrom : gmTo;
+  reflowFrom(gmWorker, startISO);
 }
+
+
+// ============ Re-empacado de tramos desde un día hacia delante ============
+function newId() {
+  // usa tu generador si tienes (por ejemplo nanoid/uuid). Esto vale en navegadores modernos:
+  return (crypto as any)?.randomUUID ? (crypto as any).randomUUID() : String(Math.random()).slice(2);
+}
+
+function isoPlusDays(iso: string, days: number): string {
+  const d = new Date(iso);
+  d.setDate(d.getDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * Refluye TODOS los tramos (slices) del trabajador a partir de startISO inclusive,
+ * rellenando huecos en cada día según capacidadDia(w, date, overrides).
+ * - Respeta vacaciones (capacidad 0) y sab/domingo ON/OFF ya que capacidadDia lo decide.
+ * - Puede partir un bloque en varios días (crea nuevos slices con mismo taskId).
+ */
+function reflowFrom(workerId: string, startISO: string) {
+  const w = workers.find(x => x.id === workerId);
+  if (!w) return;
+
+  // 1) Preparamos una cola con todos los slices del worker desde startISO
+  const before = slices.filter(s => s.trabajadorId === workerId && s.fecha < startISO);
+  const fromHere = slices
+    .filter(s => s.trabajadorId === workerId && s.fecha >= startISO)
+    // orden estable: primero por fecha, luego por orden de inserción (id) como fallback
+    .sort((a, b) => (a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)));
+
+  // Cola con { taskId, producto, color, horasRestantes }
+  const queue = fromHere.map(s => ({
+    taskId: s.taskId,
+    producto: s.producto,
+    color: s.color,
+    horas: s.horas, // se irá consumiendo
+  }));
+
+  // 2) Construimos los slices re-empacados a partir de startISO
+  const rebuilt: typeof slices = []; // solo lo que va desde startISO
+
+  // límite de seguridad para no entrar en bucles infinitos
+  let guard = 0;
+  let dayISO = startISO;
+
+  // Vamos avanzando días mientras queden horas en la cola
+  while (queue.length > 0 && guard < 365) {
+    guard++;
+
+    // Capacidad del día teniendo en cuenta overrides (extra, sabado, domingo, vacaciones)
+    const cap = capacidadDia(w, new Date(dayISO), overrides);
+    let capLeft = Math.max(0, cap);
+
+    // Si hay vacaciones o cap=0, no colocamos nada este día
+    if (capLeft > 0) {
+      // Consume de la cola mientras quede capacidad
+      while (queue.length > 0 && capLeft > 1e-9) {
+        const head = queue[0];
+        const take = Math.min(head.horas, capLeft);
+        if (take > 1e-9) {
+          rebuilt.push({
+            id: newId(),
+            taskId: head.taskId,
+            producto: head.producto,
+            fecha: dayISO,
+            horas: Math.round(take * 2) / 2,
+            trabajadorId: workerId,
+            color: head.color,
+          });
+          head.horas = Math.round((head.horas - take) * 2) / 2;
+          capLeft = Math.round((capLeft - take) * 2) / 2;
+        }
+        // si ya consumimos ese bloque, lo sacamos de la cola
+        if (head.horas <= 1e-9) queue.shift();
+        // si por redondeos queda un pelín negativo, corrige
+        if (capLeft < 1e-9) capLeft = 0;
+      }
+    }
+
+    // Avanzamos al siguiente día
+    dayISO = isoPlusDays(dayISO, 1);
+  }
+
+  // 3) Escribimos nuevo estado: lo de antes + lo re-empacado
+  const restOthers = slices.filter(s => s.trabajadorId !== workerId);
+  setSlices([...before, ...rebuilt, ...restOthers]);
+}
+
+
 
   /* ===================== Render ===================== */
 
