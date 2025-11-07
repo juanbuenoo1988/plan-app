@@ -61,8 +61,13 @@ class ErrorBoundary extends React.Component<
 type Worker = {
   id: string;
   nombre: string;
-  extraDefault: number;
-  sabadoDefault: boolean;
+  jornada: {
+    lu: number; // lunes
+    ma: number; // martes
+    mi: number; // miércoles
+    ju: number; // jueves
+    vi: number; // viernes
+  };
 };
 
 // === Tipos para sobrescrituras por día (por trabajador) ===
@@ -152,34 +157,37 @@ function colorFromId(id: string) {
 }
 
 // Capacidad real del día para un trabajador, teniendo en cuenta overrides
+const WEEKEND_BASE_HOURS = 6; // cuando se habilita sábado/domingo
+
 function capacidadDia(w: Worker, d: Date, ov: OverridesState): number {
   const iso = d.toISOString().slice(0, 10);
-  const dow = getDay(d);           // 0=domingo, 6=sábado
+  const dow = getDay(d); // 0=domingo, 1=lunes,...,6=sábado
   const byW = ov[w.id] || {};
   const o: DayOverride = byW[iso] || {};
 
-  // Si es VACACIONES → capacidad 0 y no se trabaja
+  // Vacaciones = 0
   if (o.vacacion) return 0;
 
-  // ¿Está el día habilitado?
-  // - Lunes a viernes: siempre activos
-  // - Sábado: sólo si o.sabado === true
-  // - Domingo: sólo si o.domingo === true
-  const esLaborable =
-  (dow >= 1 && dow <= 5)
-    ? true
-    : (dow === 6 ? !!o.sabado : !!o.domingo);
+  // ¿Es laborable?
+  let esLaborable = false;
+  if (dow >= 1 && dow <= 5) esLaborable = true;          // L–V siempre
+  else if (dow === 6) esLaborable = !!o.sabado;          // sábado si override
+  else if (dow === 0) esLaborable = !!o.domingo;         // domingo si override
+  if (!esLaborable) return 0;
 
-if (!esLaborable) return 0;
+  // Base según jornada del trabajador (L–V) o fin de semana
+  let base =
+    dow === 1 ? w.jornada.lu :
+    dow === 2 ? w.jornada.ma :
+    dow === 3 ? w.jornada.mi :
+    dow === 4 ? w.jornada.ju :
+    dow === 5 ? w.jornada.vi :
+    WEEKEND_BASE_HOURS;
 
-// Domingo = igual que sábado (6h)
-const base =
-  (dow === 6 || dow === 0) ? 6 : 8.5;
-     // lunes-viernes (domingo no llega aquí porque esLaborable ya corta)
+  // Extra del override (solo lo sumamos; ya no existe “extra por defecto”)
+  const extra = Number(o.extra ?? 0);
 
-const extra = Number(o.extra ?? 0);
-
-return Math.max(0, Math.round((base + extra) * 2) / 2);
+  return Math.max(0, Math.round((base + extra) * 2) / 2);
 }
 
 
@@ -366,13 +374,13 @@ function AppInner() {
   const canEdit = !locked;
 
   const [workers, setWorkers] = useState<Worker[]>([
-    { id: "W1", nombre: "ANGEL MORGADO", extraDefault: 0, sabadoDefault: false },
-    { id: "W2", nombre: "ANTONIO MONTILLA", extraDefault: 0, sabadoDefault: false },
-    { id: "W3", nombre: "DANIEL MORGADO", extraDefault: 0, sabadoDefault: false },
-    { id: "W4", nombre: "FIDEL RODRIGO", extraDefault: 0, sabadoDefault: false },
-    { id: "W5", nombre: "LUCAS PRIETO", extraDefault: 0, sabadoDefault: false },
-    { id: "W6", nombre: "LUIS AGUADO", extraDefault: 0, sabadoDefault: false },
-    { id: "W7", nombre: "VICTOR HERNANDEZ", extraDefault: 0, sabadoDefault: false },
+  { id: "W1", nombre: "ANGEL MORGADO",  jornada: { lu: 8.5, ma: 8.5, mi: 8.5, ju: 8.5, vi: 6 } },
+  { id: "W2", nombre: "ANTONIO MONTILLA", jornada: { lu: 8.5, ma: 8.5, mi: 8.5, ju: 8.5, vi: 6 } },
+  { id: "W3", nombre: "DANIEL MORGADO", jornada: { lu: 8.5, ma: 8.5, mi: 8.5, ju: 8.5, vi: 6 } },
+  { id: "W4", nombre: "FIDEL RODRIGO",   jornada: { lu: 8.5, ma: 8.5, mi: 8.5, ju: 8.5, vi: 6 } },
+  { id: "W5", nombre: "LUCAS PRIETO",    jornada: { lu: 8.5, ma: 8.5, mi: 8.5, ju: 8.5, vi: 6 } },
+  { id: "W6", nombre: "LUIS AGUADO",     jornada: { lu: 8.5, ma: 8.5, mi: 8.5, ju: 8.5, vi: 6 } },
+  { id: "W7", nombre: "VICTOR HERNANDEZ", jornada: { lu: 8.5, ma: 8.5, mi: 8.5, ju: 8.5, vi: 6 } },
   ]);
   const [nuevoTrabajador, setNuevoTrabajador] = useState("");
 
@@ -557,14 +565,14 @@ function editBlockTotalFromSlice(slice: TaskSlice) {
       if (!existingW || existingW.length === 0) {
         // Inserta un set inicial de trabajadores (puedes ajustar nombres/IDs)
         const initialWorkers = [
-          { user_id: uid, id: "W1", nombre: "ANGEL MORGADO",  extra_default: 0, sabado_default: false },
-          { user_id: uid, id: "W2", nombre: "ANTONIO MONTILLA", extra_default: 0, sabado_default: false },
-          { user_id: uid, id: "W3", nombre: "DANIEL MORGADO",  extra_default: 0, sabado_default: false },
-          { user_id: uid, id: "W4", nombre: "FIDEL RODRIGO",    extra_default: 0, sabado_default: false },
-          { user_id: uid, id: "W5", nombre: "LUCAS PRIETO",     extra_default: 0, sabado_default: false },
-          { user_id: uid, id: "W6", nombre: "LUIS AGUADO",      extra_default: 0, sabado_default: false },
-          { user_id: uid, id: "W7", nombre: "VICTOR HERNANDEZ", extra_default: 0, sabado_default: false },
-        ];
+  { user_id: uid, id: "W1", nombre: "ANGEL MORGADO",  lu_hours: 8.5, ma_hours: 8.5, mi_hours: 8.5, ju_hours: 8.5, vi_hours: 6, tenant_id: TENANT_ID },
+  { user_id: uid, id: "W2", nombre: "ANTONIO MONTILLA", lu_hours: 8.5, ma_hours: 8.5, mi_hours: 8.5, ju_hours: 8.5, vi_hours: 6, tenant_id: TENANT_ID },
+  { user_id: uid, id: "W3", nombre: "DANIEL MORGADO",  lu_hours: 8.5, ma_hours: 8.5, mi_hours: 8.5, ju_hours: 8.5, vi_hours: 6, tenant_id: TENANT_ID },
+  { user_id: uid, id: "W4", nombre: "FIDEL RODRIGO",   lu_hours: 8.5, ma_hours: 8.5, mi_hours: 8.5, ju_hours: 8.5, vi_hours: 6, tenant_id: TENANT_ID },
+  { user_id: uid, id: "W5", nombre: "LUCAS PRIETO",    lu_hours: 8.5, ma_hours: 8.5, mi_hours: 8.5, ju_hours: 8.5, vi_hours: 6, tenant_id: TENANT_ID },
+  { user_id: uid, id: "W6", nombre: "LUIS AGUADO",     lu_hours: 8.5, ma_hours: 8.5, mi_hours: 8.5, ju_hours: 8.5, vi_hours: 6, tenant_id: TENANT_ID },
+  { user_id: uid, id: "W7", nombre: "VICTOR HERNANDEZ",lu_hours: 8.5, ma_hours: 8.5, mi_hours: 8.5, ju_hours: 8.5, vi_hours: 6, tenant_id: TENANT_ID },
+];
 
         const { error: insErr } = await supabase.from("workers").insert(initialWorkers);
         if (insErr) {
@@ -588,17 +596,21 @@ function editBlockTotalFromSlice(slice: TaskSlice) {
         .eq("tenant_id", TENANT_ID)
         .order("nombre", { ascending: true });
 
-      if (wErr) console.error("workers error:", wErr);
       if (Array.isArray(wData) && wData.length > 0) {
-        setWorkers(
-          wData.map((r: any) => ({
-            id: r.id,
-            nombre: r.nombre,
-            extraDefault: Number(r.extra_default ?? 0),
-            sabadoDefault: !!r.sabado_default,
-          }))
-        );
-      }
+  setWorkers(
+    wData.map((r: any) => ({
+      id: r.id,
+      nombre: r.nombre,
+      jornada: {
+        lu: Number(r.lu_hours ?? 8.5),
+        ma: Number(r.ma_hours ?? 8.5),
+        mi: Number(r.mi_hours ?? 8.5),
+        ju: Number(r.ju_hours ?? 8.5),
+        vi: Number(r.vi_hours ?? 6),
+      },
+    }))
+  );
+}
 
       // 2) Bloques / Slices
       const { data: sData, error: sErr } = await supabase
@@ -669,13 +681,16 @@ setOverrides(obj);
 async function saveAll(uid: string) {
   // --- 0) Preparar filas con tenant_id y user_id ---
   const wRows = workers.map(w => ({
-    id: w.id,
-    nombre: w.nombre,
-    extra_default: w.extraDefault,
-    sabado_default: w.sabadoDefault,
-    user_id: uid,
-    tenant_id: TENANT_ID,
-  }));
+  id: w.id,
+  nombre: w.nombre,
+  lu_hours: w.jornada.lu,
+  ma_hours: w.jornada.ma,
+  mi_hours: w.jornada.mi,
+  ju_hours: w.jornada.ju,
+  vi_hours: w.jornada.vi,
+  user_id: uid,
+  tenant_id: TENANT_ID,
+}));
 
   const sRows = slices.map(s => ({
     id: s.id,
@@ -1011,13 +1026,16 @@ useEffect(() => {
 
   // Trabajadores
   function addWorker() {
-    if (!canEdit) return;
-    const name = nuevoTrabajador.trim();
-    if (!name) return;
-    const id = "W" + Math.random().toString(36).slice(2, 6);
-    setWorkers((prev) => [...prev, { id, nombre: name, extraDefault: 0, sabadoDefault: false }]);
-    setNuevoTrabajador("");
-  }
+  if (!canEdit) return;
+  const name = nuevoTrabajador.trim();
+  if (!name) return;
+  const id = "W" + Math.random().toString(36).slice(2, 6);
+  setWorkers((prev) => [
+    ...prev,
+    { id, nombre: name, jornada: { lu: 8.5, ma: 8.5, mi: 8.5, ju: 8.5, vi: 6 } }
+  ]);
+  setNuevoTrabajador("");
+}
   function editWorker(id: string, patch: Partial<Worker>) {
     if (!canEdit) return;
     setWorkers((prev) => prev.map((w) => (w.id === id ? { ...w, ...patch } : w)));
@@ -1071,11 +1089,11 @@ function editOverrideForDay(worker: Worker, date: Date) {
   if (!f) return;
 
   const ow = overrides[worker.id]?.[f] ?? {
-    extra: worker.extraDefault,
-    sabado: worker.sabadoDefault,
-    domingo: false,
-    vacacion: false,
-  };
+  extra: 0,
+  sabado: false,
+  domingo: false,
+  vacacion: false,
+};
 
   const dow = getDay(date); // 0=domingo, 6=sábado
 
@@ -2024,15 +2042,18 @@ function compactarBloques(workerId: string) {
               </div>
               <table style={table}>
                 <thead>
-                  <tr>
-                    <th style={th}>Nombre</th>
-                    <th style={th}>Extra por defecto (L–V)</th>
-                    <th style={th}>Sábado por defecto</th>
-                    <th style={th}>Acciones</th>
-                  </tr>
-                </thead>
+  <tr>
+    <th style={th}>Nombre</th>
+    <th style={th}>L</th>
+    <th style={th}>M</th>
+    <th style={th}>X</th>
+    <th style={th}>J</th>
+    <th style={th}>V</th>
+    <th style={th}>Acciones</th>
+  </tr>
+</thead>
                 <tbody>
-                  {workers.map((w) => (
+  {workers.map((w) => (
     <tr key={`row-${w.id}`}>
       <td style={td}>
         <input
@@ -2042,27 +2063,26 @@ function compactarBloques(workerId: string) {
           onChange={(e) => editWorker(w.id, { nombre: e.target.value })}
         />
       </td>
-      <td style={td}>
-        <input
-          style={disabledIf(input, locked)}
-          disabled={locked}
-          type="number"
-          min={0}
-          step={0.5}
-          value={w.extraDefault}
-          onChange={(e) => editWorker(w.id, { extraDefault: Number(e.target.value) })}
-        />
-      </td>
-      <td style={td}>
-        <input
-          disabled={locked}
-          type="checkbox"
-          checked={w.sabadoDefault}
-          onChange={(e) => editWorker(w.id, { sabadoDefault: e.target.checked })}
-        />
-      </td>
 
-      {/* NUEVO: columna de acciones */}
+      {(["lu","ma","mi","ju","vi"] as const).map((dia) => (
+        <td key={`${w.id}-${dia}`} style={td}>
+          <input
+            style={disabledIf(input, locked)}
+            disabled={locked}
+            type="number"
+            min={0}
+            step={0.5}
+            value={w.jornada[dia]}
+            onChange={(e) => {
+              const v = Math.max(0, Number(e.target.value));
+              setWorkers(prev => prev.map(x =>
+                x.id === w.id ? { ...x, jornada: { ...x.jornada, [dia]: v } } : x
+              ));
+            }}
+          />
+        </td>
+      ))}
+
       <td style={{ ...td, width: 1, whiteSpace: "nowrap" }}>
         <button
           style={disabledIf(btnTinyDanger, locked)}
@@ -2075,7 +2095,7 @@ function compactarBloques(workerId: string) {
       </td>
     </tr>
   ))}
-                </tbody>
+</tbody>
               </table>
               <div style={{ fontSize: 18, color: "#000000ff", marginTop: 6 }}>
                 {locked ? "Bloqueado: solo lectura." :
@@ -2686,7 +2706,7 @@ function DayCapacityBadge({ capacidad, usado }: { capacidad: number; usado: numb
 /* ===================== Estilos ===================== */
 const appShell: React.CSSProperties = {
   fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
-  background: "#292cbaff",
+  background: "#62bfe7ff",
   minHeight: "100vh",
 };
 
