@@ -1135,6 +1135,7 @@ function editOverrideForDay(worker: Worker, date: Date) {
     const others = prev.filter(s => s.trabajadorId !== worker.id);
     return [...others, ...newPlan];
   });
+  reflowFromWorkerWithOverrides(worker.id, f, nextOverrides);
 }
 
 
@@ -1636,7 +1637,9 @@ function aplicarExtrasRango() {
 
   const dias = eachDayISO(gmFrom, gmTo);
 
-  setOverrides((prev: OverridesState) => {
+  // Calcula el NUEVO estado primero
+  const nextOverrides: OverridesState = (() => {
+    const prev = overrides;
     const byW = { ...(prev[gmWorker] || {}) };
     for (const iso of dias) {
       const cur = byW[iso] || {};
@@ -1644,55 +1647,58 @@ function aplicarExtrasRango() {
       byW[iso] = { ...cur, extra: Math.round((before + gmExtra) * 2) / 2 };
     }
     return { ...prev, [gmWorker]: byW };
-  });
+  })();
 
-  // ⬇️ refluye los bloques desde el primer día del rango
+  // Aplica el estado…
+  setOverrides(nextOverrides);
+
+  // …y refluye con el ESTADO NUEVO
   const startISO = gmFrom <= gmTo ? gmFrom : gmTo;
-  reflowFromWorker(gmWorker, startISO);
+  reflowFromWorkerWithOverrides(gmWorker, startISO, nextOverrides);
 }
+
 
 
 function marcarVacacionesRango() {
   if (!gmWorker || !gmFrom || !gmTo) return;
-
   const dias = eachDayISO(gmFrom, gmTo);
 
-  setOverrides((prev: OverridesState) => {
+  const nextOverrides: OverridesState = (() => {
+    const prev = overrides;
     const byW = { ...(prev[gmWorker] || {}) };
     for (const iso of dias) {
       byW[iso] = { ...(byW[iso] || {}), vacacion: true, extra: 0 };
     }
     return { ...prev, [gmWorker]: byW };
-  });
+  })();
 
-  // ⬇️ refluye porque esos días ahora tienen capacidad 0
+  setOverrides(nextOverrides);
   const startISO = gmFrom <= gmTo ? gmFrom : gmTo;
-  reflowFromWorker(gmWorker, startISO);
+  reflowFromWorkerWithOverrides(gmWorker, startISO, nextOverrides);
 }
+
 
 function borrarVacacionesRango() {
   if (!gmWorker || !gmFrom || !gmTo) return;
-
   const dias = eachDayISO(gmFrom, gmTo);
 
-  setOverrides((prev: OverridesState) => {
+  const nextOverrides: OverridesState = (() => {
+    const prev = overrides;
     const byW = { ...(prev[gmWorker] || {}) };
     for (const iso of dias) {
       const cur = { ...(byW[iso] || {}) };
       delete cur.vacacion;
-      if (!cur.extra && !cur.sabado && !cur.domingo && !cur.vacacion) {
-        delete byW[iso];
-      } else {
-        byW[iso] = cur;
-      }
+      if (!cur.extra && !cur.sabado && !cur.domingo && !cur.vacacion) delete byW[iso];
+      else byW[iso] = cur;
     }
     return { ...prev, [gmWorker]: byW };
-  });
+  })();
 
-  // ⬇️ refluye porque esos días vuelven a tener capacidad
+  setOverrides(nextOverrides);
   const startISO = gmFrom <= gmTo ? gmFrom : gmTo;
-  reflowFromWorker(gmWorker, startISO);
+  reflowFromWorkerWithOverrides(gmWorker, startISO, nextOverrides);
 }
+
 
 // ============ Re-empacado de tramos desde un día hacia delante ============
 function newId() {
@@ -1781,6 +1787,59 @@ function reflowFromWorker(workerId: string, startISO: string) {
   setSlices([...before, ...rebuilt, ...restOthers]);
 }
 
+function reflowFromWorkerWithOverrides(workerId: string, startISO: string, ov: OverridesState) {
+  const w = workers.find(x => x.id === workerId);
+  if (!w) return;
+
+  const before = slices.filter(s => s.trabajadorId === workerId && s.fecha < startISO);
+  const fromHere = slices
+    .filter(s => s.trabajadorId === workerId && s.fecha >= startISO)
+    .sort((a, b) => (a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)));
+
+  const queue = fromHere.map(s => ({
+    taskId: s.taskId,
+    producto: s.producto,
+    color: s.color,
+    horas: s.horas,
+  }));
+
+  const rebuilt: typeof slices = [];
+  let guard = 0;
+  let dayISO = startISO;
+
+  while (queue.length > 0 && guard < 365) {
+    guard++;
+    const cap = capacidadDia(w, new Date(dayISO), ov); // ← usa ov (nuevo)
+    let capLeft = Math.max(0, cap);
+
+    if (capLeft > 0) {
+      while (queue.length > 0 && capLeft > 1e-9) {
+        const head = queue[0];
+        const take = Math.min(head.horas, capLeft);
+        if (take > 1e-9) {
+          rebuilt.push({
+            id: newId(),
+            taskId: head.taskId,
+            producto: head.producto,
+            fecha: dayISO,
+            horas: Math.round(take * 2) / 2,
+            trabajadorId: workerId,
+            color: head.color,
+          });
+          head.horas = Math.round((head.horas - take) * 2) / 2;
+          capLeft    = Math.round((capLeft    - take) * 2) / 2;
+        }
+        if (head.horas <= 1e-9) queue.shift();
+        if (capLeft < 1e-9) capLeft = 0;
+      }
+    }
+
+    dayISO = isoPlusDays(dayISO, 1);
+  }
+
+  const restOthers = slices.filter(s => s.trabajadorId !== workerId);
+  setSlices([...before, ...rebuilt, ...restOthers]);
+}
 
 
   /* ===================== Render ===================== */
@@ -2019,26 +2078,32 @@ function reflowFromWorker(workerId: string, startISO: string) {
 const handleDayHeaderDblClick = () => {
   if (!canEdit) return;
 
+  // Usaremos el estado actual para construir el siguiente
+  const prev = overrides;
+
   if (dow === 6) {
     // === SÁBADO ===
     const v = prompt("¿Trabaja el sábado " + iso + " ? (sí=1 / no=0)", (ow?.sabado ? "1" : "0"));
     if (v === null) return;
     const on = v.trim() === "1";
 
-    setOverrides((prev: OverridesState) => {
+    // 1) Construye el OV nuevo
+    const next: OverridesState = (() => {
       const byW = { ...(prev[w.id] || {}) };
       const cur = { ...(byW[iso] || {}) };
-
-      // 👇 IMPORTANTE: sábado modifica 'sabado', no 'domingo'
       if (on) cur.sabado = true; else delete cur.sabado;
 
-      if (!cur.extra && !cur.sabado && !cur.domingo && !cur.vacacion) delete byW[iso];
-      else byW[iso] = cur;
-
+      if (!cur.extra && !cur.sabado && !cur.domingo && !cur.vacacion) {
+        delete byW[iso];
+      } else {
+        byW[iso] = cur;
+      }
       return { ...prev, [w.id]: byW };
-    });
+    })();
 
-    reflowFromWorker(w.id, iso);
+    // 2) Aplica y refluye con el OV NUEVO
+    setOverrides(next);
+    reflowFromWorkerWithOverrides(w.id, iso, next);
   }
   else if (dow === 0) {
     // === DOMINGO ===
@@ -2046,22 +2111,24 @@ const handleDayHeaderDblClick = () => {
     if (v === null) return;
     const on = v.trim() === "1";
 
-    setOverrides((prev: OverridesState) => {
+    const next: OverridesState = (() => {
       const byW = { ...(prev[w.id] || {}) };
       const cur = { ...(byW[iso] || {}) };
-
-      // 👇 IMPORTANTE: domingo modifica 'domingo'
       if (on) cur.domingo = true; else delete cur.domingo;
 
-      if (!cur.extra && !cur.sabado && !cur.domingo && !cur.vacacion) delete byW[iso];
-      else byW[iso] = cur;
-
+      if (!cur.extra && !cur.sabado && !cur.domingo && !cur.vacacion) {
+        delete byW[iso];
+      } else {
+        byW[iso] = cur;
+      }
       return { ...prev, [w.id]: byW };
-    });
+    })();
 
-    reflowFrom(w.id, iso);
+    setOverrides(next);
+    reflowFromWorkerWithOverrides(w.id, iso, next);
   }
 };
+
 
 
                       const isVacation = !!((overrides[w.id] || {})[iso]?.vacacion);
