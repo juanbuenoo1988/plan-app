@@ -178,6 +178,7 @@ function capacidadDia(w: Worker, d: Date, ov: OverridesState): number {
             : 8.5;      // lunes-viernes (domingo no llega aquí porque esLaborable ya corta)
 
 const extra = Number(o.extra ?? 0);
+
 return Math.max(0, Math.round((base + extra) * 2) / 2);
 }
 
@@ -1138,9 +1139,8 @@ function deleteWorker(id: string) {
 
     const queue: QueueItem[] = [urgent, ...aggregateToQueue(tail)];
 
-    const newPlan = reflowFrom(worker, date, overrides, keepBefore, queue);
-    const others = slices.filter((s) => s.trabajadorId !== worker.id);
-    setSlices([...others, ...newPlan]);
+    const startISO = date.toISOString().slice(0, 10);   // ⬅️ ISO del día desde el que quieres reempacar
+reflowFrom(worker.id, startISO);    
   }
 
   // Descripciones CRUD
@@ -1635,57 +1635,6 @@ function borrarVacacionesRango() {
   reflowFrom(gmWorker, startISO);
 }
 
-
-function activarDomingosRango() {
-  if (!gmWorker || !gmFrom || !gmTo) return;
-
-  const dias = eachDayISO(gmFrom, gmTo);
-
-  setOverrides((prev: OverridesState) => {
-    const byW = { ...(prev[gmWorker] || {}) };
-    for (const iso of dias) {
-      const dow = new Date(iso).getDay();
-      if (dow === 0) {
-        const cur = byW[iso] || {};
-        byW[iso] = { ...cur, domingo: true };
-      }
-    }
-    return { ...prev, [gmWorker]: byW };
-  });
-
-  // ⬇️ refluye porque los domingos pasan a tener capacidad
-  const startISO = gmFrom <= gmTo ? gmFrom : gmTo;
-  reflowFrom(gmWorker, startISO);
-}
-
-function desactivarDomingosRango() {
-  if (!gmWorker || !gmFrom || !gmTo) return;
-
-  const dias = eachDayISO(gmFrom, gmTo);
-
-  setOverrides((prev: OverridesState) => {
-    const byW = { ...(prev[gmWorker] || {}) };
-    for (const iso of dias) {
-      const dow = new Date(iso).getDay();
-      if (dow === 0) {
-        const cur = { ...(byW[iso] || {}) };
-        delete cur.domingo;
-        if (!cur.extra && !cur.sabado && !cur.domingo && !cur.vacacion) {
-          delete byW[iso];
-        } else {
-          byW[iso] = cur;
-        }
-      }
-    }
-    return { ...prev, [gmWorker]: byW };
-  });
-
-  // ⬇️ refluye porque esos domingos pierden capacidad
-  const startISO = gmFrom <= gmTo ? gmFrom : gmTo;
-  reflowFrom(gmWorker, startISO);
-}
-
-
 // ============ Re-empacado de tramos desde un día hacia delante ============
 function newId() {
   // usa tu generador si tienes (por ejemplo nanoid/uuid). Esto vale en navegadores modernos:
@@ -2005,6 +1954,51 @@ function reflowFrom(workerId: string, startISO: string) {
                       const used = usadasEnDia(slices, w.id, d);
                       const over = used > cap + 1e-9; // "over" significa "se pasó"
                       const ow = f ? overrides[w.id]?.[f] : undefined;
+                          const dow = getDay(d); // 0=domingo, 6=sábado
+
+  const handleDayHeaderDblClick = () => {
+    if (!canEdit) return;
+
+    if (dow === 6) {
+      // SÁBADO: 1 = activar, 0 = desactivar
+      const v = prompt("Sábado (1=activar, 0=desactivar)", ow?.sabado ? "1" : "0");
+      if (v === null) return;
+      const on = v.trim() === "1";
+
+      setOverrides((prev: OverridesState) => {
+        const byW = { ...(prev[w.id] || {}) };
+        const cur = { ...(byW[iso] || {}) };
+        if (on) cur.sabado = true; else delete cur.sabado;
+
+        if (!cur.extra && !cur.sabado && !cur.domingo && !cur.vacacion) delete byW[iso];
+        else byW[iso] = cur;
+
+        return { ...prev, [w.id]: byW };
+      });
+
+      reflowFrom(w.id, iso);
+    }
+    else if (dow === 0) {
+      // DOMINGO: 1 = activar, 0 = desactivar
+      const v = prompt("Domingo (1=activar, 0=desactivar)", ow?.domingo ? "1" : "0");
+      if (v === null) return;
+      const on = v.trim() === "1";
+
+      setOverrides((prev: OverridesState) => {
+        const byW = { ...(prev[w.id] || {}) };
+        const cur = { ...(byW[iso] || {}) };
+        if (on) cur.domingo = true; else delete cur.domingo;
+
+        if (!cur.extra && !cur.sabado && !cur.domingo && !cur.vacacion) delete byW[iso];
+        else byW[iso] = cur;
+
+        return { ...prev, [w.id]: byW };
+      });
+
+      reflowFrom(w.id, iso);
+    }
+  };
+
                       const isVacation = !!((overrides[w.id] || {})[iso]?.vacacion);
 
                       return (
@@ -2024,9 +2018,12 @@ function reflowFrom(workerId: string, startISO: string) {
                           onDrop={(e) => onDropDay(e, w.id, d)}
                         >
                           {/* Cabecera del día: número + avisos + botón ＋ */}
-<div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+<div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}
+onDoubleClick={handleDayHeaderDblClick}>
+    
   <div>
   <span style={dayNumber}>{format(d, "d")}</span>{" "}
+   
   {/* Avisos */}
   {ow ? (
     <>
@@ -2457,10 +2454,7 @@ function reflowFrom(workerId: string, startISO: string) {
       <button style={btnLabeled} onClick={marcarVacacionesRango}>🏖️ Marcar vacaciones</button>
       <button style={btnTiny} onClick={borrarVacacionesRango}>🗑 Quitar vacaciones</button>
 
-      {/* DOMINGOS */}
-      <button style={btnLabeled} onClick={activarDomingosRango}>⛪ Activar domingos</button>
-      <button style={btnTiny} onClick={desactivarDomingosRango}>🚫 Desactivar domingos</button>
-    </div>
+        </div>
 
     <div style={{ fontSize: 12, color: "#6b7280" }}>
       Nota: las <b>vacaciones</b> generan un bloque fijo en los días seleccionados. No se pueden añadir bloques esos días, pero puedes <b>borrar</b> las vacaciones con el botón.
