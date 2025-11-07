@@ -525,7 +525,7 @@ function editBlockTotalFromSlice(slice: TaskSlice) {
     // 👇 Programamos el reflujo global desde startF para rellenar huecos/partir donde toque
     // (usamos setTimeout 0 para que React aplique primero este setState)
     setTimeout(() => {
-      reflowFrom(w.id, startF);
+      reflowFromWorker(w.id, startF);
     }, 0);
 
     return merged;
@@ -860,23 +860,40 @@ const { data: sub } = supabase.auth.onAuthStateChange(async (_event: AuthChangeE
   
   useEffect(() => {
   if (!userId) return;               // sin sesión, no guardes nube
-  if (loadingCloud) return;          // si carga nube, espera
-  if (!hydratedRef.current) return;  // ⬅️ CLAVE: no guardes hasta hidratar
+  if (loadingCloud) return;          // si está cargando, espera
+  if (!hydratedRef.current) return;  // no guardar hasta hidratar
 
   const snapshot = JSON.stringify({ workers, slices, overrides, descs });
   if (snapshot === lastSavedRef.current) return;
 
+  // Limpia cualquier temporizador anterior
   if (saveTimer.current) window.clearTimeout(saveTimer.current);
+
+  // Flag para evitar setState tras cleanup
+  let active = true;
+
   saveTimer.current = window.setTimeout(async () => {
+    if (!active) return;
+
+    setSavingCloud(true);
+    setSaveError(null);
+
     try {
-      await guardedSaveAll(userId);         // o guardedSaveAll(userId) si añadiste el candado
+      await guardedSaveAll(userId);
+      if (!active) return;
       lastSavedRef.current = snapshot;
-    } catch (e) {
+    } catch (e: any) {
+      if (!active) return;
       console.error("Autosave falló:", e);
+      setSaveError(e?.message ?? String(e));
+    } finally {
+      if (!active) return;
+      setSavingCloud(false);
     }
   }, 800);
 
   return () => {
+    active = false;
     if (saveTimer.current) {
       window.clearTimeout(saveTimer.current);
       saveTimer.current = null;
@@ -1182,7 +1199,7 @@ function editOverrideForDay(worker: Worker, date: Date) {
     const queue: QueueItem[] = [urgent, ...aggregateToQueue(tail)];
 
     const startISO = date.toISOString().slice(0, 10);   // ⬅️ ISO del día desde el que quieres reempacar
-reflowFrom(worker.id, startISO);    
+reflowFromWorker(worker.id, startISO);    
   }
 
   // Descripciones CRUD
@@ -1631,7 +1648,7 @@ function aplicarExtrasRango() {
 
   // ⬇️ refluye los bloques desde el primer día del rango
   const startISO = gmFrom <= gmTo ? gmFrom : gmTo;
-  reflowFrom(gmWorker, startISO);
+  reflowFromWorker(gmWorker, startISO);
 }
 
 
@@ -1650,7 +1667,7 @@ function marcarVacacionesRango() {
 
   // ⬇️ refluye porque esos días ahora tienen capacidad 0
   const startISO = gmFrom <= gmTo ? gmFrom : gmTo;
-  reflowFrom(gmWorker, startISO);
+  reflowFromWorker(gmWorker, startISO);
 }
 
 function borrarVacacionesRango() {
@@ -1674,7 +1691,7 @@ function borrarVacacionesRango() {
 
   // ⬇️ refluye porque esos días vuelven a tener capacidad
   const startISO = gmFrom <= gmTo ? gmFrom : gmTo;
-  reflowFrom(gmWorker, startISO);
+  reflowFromWorker(gmWorker, startISO);
 }
 
 // ============ Re-empacado de tramos desde un día hacia delante ============
@@ -1695,7 +1712,7 @@ function isoPlusDays(iso: string, days: number): string {
  * - Respeta vacaciones (capacidad 0) y sab/domingo ON/OFF ya que capacidadDia lo decide.
  * - Puede partir un bloque en varios días (crea nuevos slices con mismo taskId).
  */
-function reflowFrom(workerId: string, startISO: string) {
+function reflowFromWorker(workerId: string, startISO: string) {
   const w = workers.find(x => x.id === workerId);
   if (!w) return;
 
@@ -2021,7 +2038,7 @@ const handleDayHeaderDblClick = () => {
       return { ...prev, [w.id]: byW };
     });
 
-    reflowFrom(w.id, iso);
+    reflowFromWorker(w.id, iso);
   }
   else if (dow === 0) {
     // === DOMINGO ===
