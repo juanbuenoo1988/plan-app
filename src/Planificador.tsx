@@ -166,16 +166,16 @@ function capacidadDia(w: Worker, d: Date, ov: OverridesState): number {
   // - Sábado: sólo si o.sabado === true
   // - Domingo: sólo si o.domingo === true
   const esLaborable =
-    dow >= 1 && dow <= 5
-      ? true
-      : (dow === 6 ? !!o.sabado : !!o.domingo);
+  (dow >= 1 && dow <= 5)
+    ? true
+    : (dow === 6 ? !!o.sabado : !!o.domingo);
 
-  if (!esLaborable) return 0;
+if (!esLaborable) return 0;
 
-  // Capacidad base del trabajador para día laborable
-  const base =
-  dow === 6 ? 6         // sábado
-            : 8.5;      // lunes-viernes (domingo no llega aquí porque esLaborable ya corta)
+// Domingo = igual que sábado (6h)
+const base =
+  (dow === 6 || dow === 0) ? 6 : 8.5;
+     // lunes-viernes (domingo no llega aquí porque esLaborable ya corta)
 
 const extra = Number(o.extra ?? 0);
 
@@ -629,15 +629,18 @@ function editBlockTotalFromSlice(slice: TaskSlice) {
 
       if (oErr) console.error("day_overrides error:", oErr);
       if (oData) {
-        const obj: Record<string, Record<string, { extra: number; sabado: boolean }>> = {};
-        for (const r of oData as any[]) {
-          if (!obj[r.worker_id]) obj[r.worker_id] = {};
-          obj[r.worker_id][r.fecha] = {
-            extra: Number(r.extra ?? 0),
-            sabado: !!r.sabado,
-          };
-        }
-        setOverrides(obj);
+        const obj: Record<string, Record<string, { extra?: number; sabado?: boolean; domingo?: boolean; vacacion?: boolean }>> = {};
+for (const r of oData as any[]) {
+  if (!obj[r.worker_id]) obj[r.worker_id] = {};
+  obj[r.worker_id][r.fecha] = {
+    extra: Number(r.extra ?? 0),
+    sabado: !!r.sabado,
+    domingo: !!r.domingo,    // ⬅️ nuevo
+    vacacion: !!r.vacacion,  // ⬅️ nuevo
+  };
+}
+setOverrides(obj);
+
       }
 
       const { data: dData, error: dErr } = await supabase
@@ -1045,39 +1048,78 @@ function deleteWorker(id: string) {
     e.preventDefault();
   }
 
-  // Doble clic en celda → extras/sábado (reprograma desde ese día)
-  function editOverrideForDay(worker: Worker, date: Date) {
-    if (!canEdit) return;
-    const f = fmt(date);
-    if (!f) return;
-    const ow = overrides[worker.id]?.[f] ?? { extra: worker.extraDefault, sabado: worker.sabadoDefault };
+function editOverrideForDay(worker: Worker, date: Date) {
+  if (!canEdit) return;
+  const f = fmt(date);
+  if (!f) return;
 
-    const extraStr = prompt(`Horas extra para ${worker.nombre} el ${f} (solo L–V):`, String(ow.extra));
+  const ow = overrides[worker.id]?.[f] ?? {
+    extra: worker.extraDefault,
+    sabado: worker.sabadoDefault,
+    domingo: false,
+    vacacion: false,
+  };
+
+  const dow = getDay(date); // 0=domingo, 6=sábado
+
+  // 1) Extras (solo L–V)
+  let extra = Number(ow.extra ?? 0);
+  if (dow >= 1 && dow <= 5) {
+    const extraStr = prompt(`Horas extra para ${worker.nombre} el ${f} (solo L–V):`, String(extra));
     if (extraStr === null) return;
-    const extra = Number(extraStr);
-    if (!isFinite(extra) || extra < 0 || extra > 8) return;
+    const e = Number(extraStr);
+    if (!isFinite(e) || e < 0 || e > 8) return;
+    extra = e;
+  }
 
-    let sab = ow.sabado;
-    if (getDay(date) === 6) {
-      const resp = prompt(`¿Trabaja el sábado ${f}? (sí=1 / no=0):`, sab ? "1" : "0");
-      if (resp === null) return;
-      sab = resp.trim() === "1";
+  // 2) Sábado
+  let sab = !!ow.sabado;
+  if (dow === 6) {
+    const resp = prompt(`¿Trabaja el sábado ${f}? (sí=1 / no=0):`, sab ? "1" : "0");
+    if (resp === null) return;
+    sab = resp.trim() === "1";
+  }
+
+  // 3) Domingo
+  let dom = !!ow.domingo;
+  if (dow === 0) {
+    const resp = prompt(`¿Trabaja el domingo ${f}? (sí=1 / no=0):`, dom ? "1" : "0");
+    if (resp === null) return;
+    dom = resp.trim() === "1";
+  }
+
+  // 4) Persistir override del día
+  const nextOverrides: OverridesState = (() => {
+    const byWorker = { ...(overrides[worker.id] || {}) };
+    const cur = { ...(byWorker[f] || {}) };
+
+    // extras solo si L–V
+    if (dow >= 1 && dow <= 5) cur.extra = extra;
+    // sábado/domingo según corresponda
+    if (dow === 6) {
+      if (sab) cur.sabado = true; else delete cur.sabado;
+    }
+    if (dow === 0) {
+      if (dom) cur.domingo = true; else delete cur.domingo;
     }
 
-    const nextOverrides: OverridesState = (() => {
-      const byWorker = { ...(overrides[worker.id] || {}) };
-      byWorker[f] = { extra, sabado: sab };
-      return { ...overrides, [worker.id]: byWorker };
-    })();
+    // limpiar si queda vacío
+    if (!cur.extra && !cur.sabado && !cur.domingo && !cur.vacacion) delete byWorker[f];
+    else byWorker[f] = cur;
 
-    setOverrides(nextOverrides);
+    return { ...overrides, [worker.id]: byWorker };
+  })();
 
-    setSlices((prev) => {
-      const newPlan = compactFrom(worker, f, nextOverrides, prev); // ← sin wrapper duplicado
-      const others = prev.filter((s) => s.trabajadorId !== worker.id);
-      return [...others, ...newPlan];
-    });
-  }
+  setOverrides(nextOverrides);
+
+  // 5) Reempacar desde ese día con los overrides ya cambiados
+  setSlices(prev => {
+    const newPlan = compactFrom(worker, f, nextOverrides, prev);
+    const others = prev.filter(s => s.trabajadorId !== worker.id);
+    return [...others, ...newPlan];
+  });
+}
+
 
   // Borrar tramo / bloque
   function removeSlice(id: string) {
@@ -2018,7 +2060,8 @@ const handleDayHeaderDblClick = () => {
                                }
                            : {}),
                           }}
-                          title={`Doble clic: extras/sábado para ${w.nombre} el ${f || "día"}`}
+                          title={`Doble clic: extras / sábado / domingo para ${w.nombre} el ${f || "día"}`}
+
                           onDoubleClick={() => canEdit && editOverrideForDay(w, d)}
                           onDragOver={onDragOver}
                           onDrop={(e) => onDropDay(e, w.id, d)}
