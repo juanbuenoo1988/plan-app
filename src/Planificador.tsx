@@ -1136,6 +1136,7 @@ function editOverrideForDay(worker: Worker, date: Date) {
     return [...others, ...newPlan];
   });
   reflowFromWorkerWithOverrides(worker.id, f, nextOverrides);
+  compactarBloques(worker.id);
 }
 
 
@@ -1655,6 +1656,7 @@ function aplicarExtrasRango() {
   // …y refluye con el ESTADO NUEVO
   const startISO = gmFrom <= gmTo ? gmFrom : gmTo;
   reflowFromWorkerWithOverrides(gmWorker, startISO, nextOverrides);
+  compactarBloques(gmWorker);
 }
 
 
@@ -1675,6 +1677,7 @@ function marcarVacacionesRango() {
   setOverrides(nextOverrides);
   const startISO = gmFrom <= gmTo ? gmFrom : gmTo;
   reflowFromWorkerWithOverrides(gmWorker, startISO, nextOverrides);
+  compactarBloques(gmWorker);
 }
 
 
@@ -1697,6 +1700,7 @@ function borrarVacacionesRango() {
   setOverrides(nextOverrides);
   const startISO = gmFrom <= gmTo ? gmFrom : gmTo;
   reflowFromWorkerWithOverrides(gmWorker, startISO, nextOverrides);
+  compactarBloques(gmWorker);
 }
 
 
@@ -1839,6 +1843,40 @@ function reflowFromWorkerWithOverrides(workerId: string, startISO: string, ov: O
 
   const restOthers = slices.filter(s => s.trabajadorId !== workerId);
   setSlices([...before, ...rebuilt, ...restOthers]);
+}
+
+function compactarBloques(workerId: string) {
+  setSlices((prev) => {
+    const delTrabajador = prev
+      .filter((s) => s.trabajadorId === workerId)
+      .sort((a, b) => {
+        if (a.taskId < b.taskId) return -1;
+        if (a.taskId > b.taskId) return 1;
+        if (a.fecha < b.fecha) return -1;
+        if (a.fecha > b.fecha) return 1;
+        return 0;
+      });
+
+    const compactados: TaskSlice[] = [];
+    for (const s of delTrabajador) {
+      const last = compactados.at(-1);
+      if (
+        last &&
+        last.taskId === s.taskId &&
+        last.trabajadorId === s.trabajadorId &&
+        last.fecha === s.fecha
+      ) {
+        // Mismo día y bloque → combinar horas
+        last.horas = Math.round((last.horas + s.horas) * 2) / 2;
+      } else {
+        compactados.push({ ...s });
+      }
+    }
+
+    // Une de nuevo con los demás trabajadores
+    const otros = prev.filter((s) => s.trabajadorId !== workerId);
+    return [...otros, ...compactados];
+  });
 }
 
 
@@ -2104,6 +2142,7 @@ const handleDayHeaderDblClick = () => {
     // 2) Aplica y refluye con el OV NUEVO
     setOverrides(next);
     reflowFromWorkerWithOverrides(w.id, iso, next);
+    compactarBloques(w.id);
   }
   else if (dow === 0) {
     // === DOMINGO ===
@@ -2126,6 +2165,7 @@ const handleDayHeaderDblClick = () => {
 
     setOverrides(next);
     reflowFromWorkerWithOverrides(w.id, iso, next);
+    compactarBloques(w.id);
   }
 };
 
