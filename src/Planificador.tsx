@@ -65,7 +65,20 @@ type Worker = {
   sabadoDefault: boolean;
 };
 
-type DayOverride = { extra: number; sabado: boolean };
+// === Tipos para sobrescrituras por día (por trabajador) ===
+type DayOverride = {
+  extra?: number;       // horas extra ese día
+  sabado?: boolean;     // sábado activado
+  domingo?: boolean;    // domingo activado
+  vacacion?: boolean;   // día marcado como vacaciones
+};
+
+type OverridesState = {
+  [workerId: string]: {
+    [yyyy_mm_dd: string]: DayOverride;
+  };
+};
+
 
 type TaskSlice = {
   id: string;
@@ -84,7 +97,7 @@ type NewTaskForm = {
   fechaInicio: string; // YYYY-MM-DD
 };
 
-type OverridesState = Record<string, Record<string, DayOverride>>;
+
 type ProductDescriptions = Record<string, string>;
 
 // === Estado que guardaremos en Supabase (todo el planificador) ===
@@ -138,20 +151,36 @@ function colorFromId(id: string) {
   return `hsl(${hue} 70% 45%)`;
 }
 
-// Capacidad diaria (respeta overrides)
-function capacidadDia(worker: Worker, date: Date, overrides: OverridesState): number {
-  const wd = getDay(date); // 0=Dom, 6=Sáb
-  const f = fmt(date);
-  const ow = (f && overrides[worker.id]?.[f]) || undefined;
+// Capacidad real del día para un trabajador, teniendo en cuenta overrides
+function capacidadDia(w: Worker, d: Date, ov: OverridesState): number {
+  const iso = d.toISOString().slice(0, 10);
+  const dow = getDay(d);           // 0=domingo, 6=sábado
+  const byW = ov[w.id] || {};
+  const o: DayOverride = byW[iso] || {};
 
-  if (wd === 6) return (ow?.sabado ?? worker.sabadoDefault) ? 8 : 0; // sábado
-  if (wd === 0) return 0;                                           // domingo
+  // Si es VACACIONES → capacidad 0 y no se trabaja
+  if (o.vacacion) return 0;
 
-  const base = wd === 5 ? 6 : 8.5;                                  // V:6, L–J:8.5
-  const extra = ow?.extra ?? worker.extraDefault ?? 0;
-  const total = base + Math.max(0, Number(isFinite(extra) ? extra : 0));
-  return Math.max(0, Math.round(total * 2) / 2);
+  // ¿Está el día habilitado?
+  // - Lunes a viernes: siempre activos
+  // - Sábado: sólo si o.sabado === true
+  // - Domingo: sólo si o.domingo === true
+  const esLaborable =
+    dow >= 1 && dow <= 5
+      ? true
+      : (dow === 6 ? !!o.sabado : !!o.domingo);
+
+  if (!esLaborable) return 0;
+
+  // Capacidad base del trabajador para día laborable
+  const base =
+  dow === 6 ? 6         // sábado
+            : 8.5;      // lunes-viernes (domingo no llega aquí porque esLaborable ya corta)
+
+const extra = Number(o.extra ?? 0);
+return Math.max(0, Math.round((base + extra) * 2) / 2);
 }
+
 
 function usadasEnDia(slices: TaskSlice[], workerId: string, date: Date) {
   const f = fmt(date);
@@ -353,6 +382,12 @@ function AppInner() {
   const [descNombre, setDescNombre] = useState("");
   const [descTexto, setDescTexto] = useState("");
   const [editKey, setEditKey] = useState<string | null>(null);
+  // === Estado panel Gestión masiva ===
+const [gmWorker, setGmWorker] = useState<string>(() => workers[0]?.id || "");
+const [gmFrom, setGmFrom] = useState<string>(() => new Date().toISOString().slice(0,10));
+const [gmTo, setGmTo] = useState<string>(() => new Date().toISOString().slice(0,10));
+const [gmExtra, setGmExtra] = useState<number>(0);
+
   // === Estado para "Actualizar día trabajador"
 const [updOpen, setUpdOpen] = useState(false);
 const [updWorker, setUpdWorker] = useState<string>(workers[0]?.id ?? "");
@@ -424,10 +459,24 @@ type PlannerSnapshot = {
   // 🔽🔽🔽 Pega aquí todo este bloque completo 🔽🔽🔽
 
   function flattenOverrides(ov: OverridesState) {
-    const rows: Array<{ worker_id: string; fecha: string; extra: number; sabado: boolean }> = [];
+    type OverrideRow = {
+  worker_id: string;
+  fecha: string;
+  extra: number;
+  sabado: boolean;
+  domingo: boolean;   // ⬅️ nuevo
+  vacacion: boolean;  // ⬅️ nuevo
+};
+
+const rows: OverrideRow[] = [];
     Object.entries(ov).forEach(([workerId, byDate]) => {
       Object.entries(byDate).forEach(([fecha, v]) => {
-        rows.push({ worker_id: workerId, fecha, extra: v.extra, sabado: v.sabado });
+        rows.push({ worker_id: workerId,
+    fecha,
+    extra: Number(v.extra ?? 0),
+    sabado: !!v.sabado,
+    domingo: !!v.domingo, 
+    vacacion: !!v.vacacion, });
       });
     });
     return rows;
@@ -626,14 +675,16 @@ async function saveAll(uid: string) {
     tenant_id: TENANT_ID,
   }));
 
-  const oRows = flattenOverrides(overrides).map(r => ({
-    worker_id: r.worker_id,
-    fecha: r.fecha,
-    extra: r.extra ?? 0,
-    sabado: r.sabado ?? false,
-    user_id: uid,
-    tenant_id: TENANT_ID,
-  }));
+  const oRows = flattenOverrides(overrides).map((r) => ({
+  worker_id: r.worker_id,
+  fecha: r.fecha,
+  extra: r.extra ?? 0,
+  sabado: !!r.sabado,
+  domingo: !!r.domingo,     // NUEVO
+  vacacion: !!r.vacacion,   // NUEVO
+  user_id: uid,
+  tenant_id: TENANT_ID,
+}));
 
   const dRows = Object.entries(descs).map(([nombre, texto]) => ({
     nombre,
@@ -1110,6 +1161,18 @@ function deleteWorker(id: string) {
     }
   }
 
+// Lista todos los días (ISO: YYYY-MM-DD) entre dos fechas (incluidas)
+function eachDayISO(fromISO: string, toISO: string): string[] {
+  const from = new Date(fromISO);
+  const to = new Date(toISO);
+  const out: string[] = [];
+  for (let d = new Date(from); d <= to; d.setDate(d.getDate() + 1)) {
+    out.push(d.toISOString().slice(0, 10));
+  }
+  return out;
+}
+
+
   // Editor de bloques por producto
   type FoundBlock = { taskId: string; startF: string; totalHoras: number };
   const [ebWorker, setEbWorker] = useState<string>("W1");
@@ -1472,7 +1535,7 @@ function downloadLastBackup() {
       alert("Copia restaurada desde la nube.");
     }
   }
-
+  
   async function guardedSaveAll(uid: string) {
   const myTurn = ++saveEpoch.current;   // tomo un número de turno
   try {
@@ -1485,8 +1548,104 @@ function downloadLastBackup() {
     }
   }
 }
+function borrarVacacionUnDia(workerId: string, iso: string) {
+  setOverrides((prev: OverridesState) => {
+    const byW = { ...(prev[workerId] || {}) };
+    const cur = { ...(byW[iso] || {}) };
+    delete cur.vacacion;
+    if (!cur.extra && !cur.sabado && !cur.domingo && !cur.vacacion) {
+      delete byW[iso];
+    } else {
+      byW[iso] = cur;
+    }
+    return { ...prev, [workerId]: byW };
+  });
+}
+
+function aplicarExtrasRango() {
+  if (!gmWorker || !gmFrom || !gmTo) return;
+  const dias = eachDayISO(gmFrom, gmTo);
+  setOverrides((prev: OverridesState) => {
+    const byW = { ...(prev[gmWorker] || {}) };
+    for (const iso of dias) {
+      const cur = byW[iso] || {};
+      const before = Number(cur.extra ?? 0);
+      byW[iso] = { ...cur, extra: Math.round((before + gmExtra) * 2) / 2 };
+    }
+    return { ...prev, [gmWorker]: byW };
+  });
+}
+
+function marcarVacacionesRango() {
+  if (!gmWorker || !gmFrom || !gmTo) return;
+  const dias = eachDayISO(gmFrom, gmTo);
+  setOverrides((prev: OverridesState) => {
+    const byW = { ...(prev[gmWorker] || {}) };
+    for (const iso of dias) {
+      byW[iso] = { ...(byW[iso] || {}), vacacion: true, extra: 0 }; // fuerza extra 0
+    }
+    return { ...prev, [gmWorker]: byW };
+  });
+}
+
+function borrarVacacionesRango() {
+  if (!gmWorker || !gmFrom || !gmTo) return;
+  const dias = eachDayISO(gmFrom, gmTo);
+  setOverrides((prev: OverridesState) => {
+    const byW = { ...(prev[gmWorker] || {}) };
+    for (const iso of dias) {
+      const cur = { ...(byW[iso] || {}) };
+      delete cur.vacacion;
+      if (!cur.extra && !cur.sabado && !cur.domingo && !cur.vacacion) {
+        delete byW[iso];
+      } else {
+        byW[iso] = cur;
+      }
+    }
+    return { ...prev, [gmWorker]: byW };
+  });
+}
+
+function activarDomingosRango() {
+  if (!gmWorker || !gmFrom || !gmTo) return;
+  const dias = eachDayISO(gmFrom, gmTo);
+  setOverrides((prev: OverridesState) => {
+    const byW = { ...(prev[gmWorker] || {}) };
+    for (const iso of dias) {
+      const dow = new Date(iso).getDay();
+      if (dow === 0) {
+        const cur = byW[iso] || {};
+        byW[iso] = { ...cur, domingo: true };
+      }
+    }
+    return { ...prev, [gmWorker]: byW };
+  });
+}
+
+function desactivarDomingosRango() {
+  if (!gmWorker || !gmFrom || !gmTo) return;
+  const dias = eachDayISO(gmFrom, gmTo);
+  setOverrides((prev: OverridesState) => {
+    const byW = { ...(prev[gmWorker] || {}) };
+    for (const iso of dias) {
+      const dow = new Date(iso).getDay();
+      if (dow === 0) {
+        const cur = { ...(byW[iso] || {}) };
+        delete cur.domingo;
+        if (!cur.extra && !cur.sabado && !cur.domingo && !cur.vacacion) {
+          delete byW[iso];
+        } else {
+          byW[iso] = cur;
+        }
+      }
+    }
+    return { ...prev, [gmWorker]: byW };
+  });
+}
 
   /* ===================== Render ===================== */
+
+  
   return (
     <div style={appShell}>
       <style>{`
@@ -1708,11 +1867,13 @@ function downloadLastBackup() {
                     <div style={weekCol}>{format(week[0], "I")}</div>
                     {week.map((d) => {
                       const f = fmt(d);
+                      const iso = f || d.toISOString().slice(0, 10);
                       const delDia = f ? slices.filter((s) => s.trabajadorId === w.id && s.fecha === f) : [];
                       const cap = capacidadDia(w, d, overrides);
                       const used = usadasEnDia(slices, w.id, d);
                       const over = used > cap + 1e-9; // "over" significa "se pasó"
                       const ow = f ? overrides[w.id]?.[f] : undefined;
+                      const isVacation = !!((overrides[w.id] || {})[iso]?.vacacion);
 
                       return (
                         <div
@@ -1733,83 +1894,118 @@ function downloadLastBackup() {
                           {/* Cabecera del día: número + avisos + botón ＋ */}
 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
   <div>
-    <span style={dayNumber}>{format(d, "d")}</span>{" "}
-    {ow ? (
-      <span style={dayWarn}>
-        {getDay(d) !== 6 && ow.extra && Number(ow.extra) > 0 ? ("+" + ow.extra + " h extra") : ""}
-        {getDay(d) === 6 && ow.sabado ? "Sábado ON" : ""}
-      </span>
-    ) : null}
-  </div>
+  <span style={dayNumber}>{format(d, "d")}</span>{" "}
+  {/* Avisos */}
+  {ow ? (
+    <>
+      {ow.vacacion && <span style={dayWarn}>VACACIONES</span>}
+      {!ow.vacacion && getDay(d) !== 6 && ow.extra && Number(ow.extra) > 0 && (
+        <span style={dayWarn}>+{ow.extra} h extra</span>
+      )}
+      {!ow.vacacion && getDay(d) === 6 && ow.sabado && (
+        <span style={dayWarn}>Sábado ON</span>
+      )}
+      {!ow.vacacion && getDay(d) === 0 && ow.domingo && (
+        <span style={dayWarn}>Domingo ON</span>
+      )}
+    </>
+  ) : null}
+</div>
 
   {/* Botón + para insertar manual */}
-  {canEdit && (
-    <button
-      className="no-print"
-      onClick={() => addManualHere(w, d)}
-      style={smallPlusBtn}
-      title="Insertar manual aquí"
-    >
-      ＋
-    </button>
-  )}
+  {canEdit && !isVacation && (
+  <button className="no-print" onClick={() => addManualHere(w, d)} style={smallPlusBtn} title="Insertar manual aquí">
+    ＋
+  </button>
+)}
 </div>
 
                           <div style={horizontalLane}>
-                            {delDia.map((s) => {
-                              const desc = descs[s.producto];
-                              const isUrgent =
-                               s.color === URGENT_COLOR ||
-                               /^⚠️/.test(s.producto) ||
-                              /urgenc/i.test(s.producto);
-                              return (
-                                <div
-                                  key={s.id}
-                                  draggable={canEdit}
-                                  onDragStart={(e) => onDragStart(e, s.id)}
-                                  onDoubleClick={(e) => { e.stopPropagation(); if (canEdit) editBlockTotalFromSlice(s); }}
-                                  title={`${s.producto} — ${s.horas}h${desc ? "\n" + desc : ""}`}
-                                  style={{
-                                    ...blockStyle,
-                                    background: s.color,
-                                    width: Math.max(18, s.horas * PX_PER_HOUR),
-                                    position: "relative",
-                                  }}
-                                >
-                                  {canEdit && (
-                                    <>
-                                      <button onClick={(e) => { e.stopPropagation(); removeSlice(s.id); }} title="Eliminar tramo" style={deleteBtn}>✖</button>
-                                      <button onClick={(e) => { e.stopPropagation(); removeTask(s.taskId, s.trabajadorId); }} title="Eliminar bloque completo" style={deleteBtnAlt}>🗑</button>
-                                    </>
-                                  )}
+  {isVacation ? (
+    // Bloque fijo de VACACIONES
+    <div style={vacationBlock} title="Vacaciones (bloque fijo)">
+      VACACIONES
+      {canEdit && (
+        <button
+          onClick={() => borrarVacacionUnDia(w.id, iso)}
+          style={vacDeleteBtn}
+          title="Eliminar vacaciones de este día"
+        >
+          🗑
+        </button>
+      )}
+    </div>
+  ) : (
+    // === TU BLOQUE ORIGINAL (sin cambios) ===
+    delDia.map((s) => {
+      const desc = descs[s.producto];
+      const isUrgent =
+        s.color === URGENT_COLOR ||
+        /^⚠️/.test(s.producto) ||
+        /urgenc/i.test(s.producto);
 
-                                  <div style={blockTop}>
-                                    <span style={productFull}>
-                                      {isUrgent && (
-                                        <svg
-                                          xmlns="http://www.w3.org/2000/svg"
-                                          width="14"
-                                          height="14"
-                                          viewBox="0 0 24 24"
-                                          fill="#fff"
-                                          stroke="#000"
-                                          strokeWidth="2"
-                                          style={{ marginRight: 6 }}
-                                        >
-                                          <path d="M10.29 3.86L1.82 18a1 1 0 00.86 1.5h18.64a1 1 0 00.86-1.5L13.71 3.86a1 1 0 00-1.72 0z" />
-                                          <line x1="12" y1="9" x2="12" y2="13" />
-                                          <line x1="12" y1="17" x2="12" y2="17" />
-                                        </svg>
-                                      )}
-                                      {s.producto}
-                                    </span>
-                                    <span>{s.horas}h</span>
-                                  </div>
-                                  {desc ? <div style={miniHint}>ⓘ</div> : null}
-                                </div>
-                              );
-                            })}
-                          </div>
+      return (
+        <div
+          key={s.id}
+          draggable={canEdit}
+          onDragStart={(e) => onDragStart(e, s.id)}
+          onDoubleClick={(e) => { e.stopPropagation(); if (canEdit) editBlockTotalFromSlice(s); }}
+          title={`${s.producto} — ${s.horas}h${desc ? "\n" + desc : ""}`}
+          style={{
+            ...blockStyle,
+            background: s.color,
+            width: Math.max(18, s.horas * PX_PER_HOUR),
+            position: "relative",
+          }}
+        >
+          {canEdit && (
+            <>
+              <button
+                onClick={(e) => { e.stopPropagation(); removeSlice(s.id); }}
+                title="Eliminar tramo"
+                style={deleteBtn}
+              >
+                ✖
+              </button>
+              <button
+                onClick={(e) => { e.stopPropagation(); removeTask(s.taskId, s.trabajadorId); }}
+                title="Eliminar bloque completo"
+                style={deleteBtnAlt}
+              >
+                🗑
+              </button>
+            </>
+          )}
+
+          <div style={blockTop}>
+            <span style={productFull}>
+              {isUrgent && (
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="#fff"
+                  stroke="#000"
+                  strokeWidth="2"
+                  style={{ marginRight: 6 }}
+                >
+                  <path d="M10.29 3.86L1.82 18a1 1 0 00.86 1.5h18.64a1 1 0 00.86-1.5L13.71 3.86a1 1 0 00-1.72 0z" />
+                  <line x1="12" y1="9" x2="12" y2="13" />
+                  <line x1="12" y1="17" x2="12" y2="17" />
+                </svg>
+              )}
+              {s.producto}
+            </span>
+            <span>{s.horas}h</span>
+          </div>
+          {desc ? <div style={miniHint}>ⓘ</div> : null}
+        </div>
+      );
+    })
+  )}
+</div>
+
 
                           <DayCapacityBadge capacidad={cap} usado={used} />
                         </div>
@@ -2096,6 +2292,51 @@ function downloadLastBackup() {
   </div>
 </div>
 
+{/* === Gestión masiva: extras / vacaciones / domingos === */}
+<div style={{ ...panel, marginTop: 14 }}>
+  <div style={panelTitle}>Gestión masiva</div>
+
+  <div style={{ display: "grid", gap: 8 }}>
+    <label style={label}>Trabajador</label>
+    <select style={input} value={gmWorker} onChange={(e)=>setGmWorker(e.target.value)}>
+      {workers.map(w => <option key={`gmw-${w.id}`} value={w.id}>{w.nombre}</option>)}
+    </select>
+
+    <label style={label}>Desde</label>
+    <input type="date" style={input} value={gmFrom} onChange={(e)=>setGmFrom(e.target.value)} />
+
+    <label style={label}>Hasta</label>
+    <input type="date" style={input} value={gmTo} onChange={(e)=>setGmTo(e.target.value)} />
+
+    <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginTop: 6 }}>
+      {/* EXTRAS */}
+      <input
+        type="number"
+        step={0.5}
+        min={0}
+        placeholder="Horas extra/día"
+        style={{ ...input, width: 160 }}
+        value={gmExtra}
+        onChange={(e)=>setGmExtra(Number(e.target.value))}
+      />
+      <button style={btnLabeled} onClick={aplicarExtrasRango}>➕ Aplicar extras</button>
+
+      {/* VACACIONES */}
+      <button style={btnLabeled} onClick={marcarVacacionesRango}>🏖️ Marcar vacaciones</button>
+      <button style={btnTiny} onClick={borrarVacacionesRango}>🗑 Quitar vacaciones</button>
+
+      {/* DOMINGOS */}
+      <button style={btnLabeled} onClick={activarDomingosRango}>⛪ Activar domingos</button>
+      <button style={btnTiny} onClick={desactivarDomingosRango}>🚫 Desactivar domingos</button>
+    </div>
+
+    <div style={{ fontSize: 12, color: "#6b7280" }}>
+      Nota: las <b>vacaciones</b> generan un bloque fijo en los días seleccionados. No se pueden añadir bloques esos días, pero puedes <b>borrar</b> las vacaciones con el botón.
+    </div>
+  </div>
+</div>
+
+
         </aside>
       </div>
     </div>
@@ -2148,6 +2389,29 @@ const appShell: React.CSSProperties = {
   minHeight: "100vh",
 };
 
+// === Bloque de vacaciones ===
+const vacationBlock: React.CSSProperties = {
+  height: 28,
+  borderRadius: 8,
+  background: "#fde68a",
+  border: "1px solid #f59e0b",
+  color: "#92400e",
+  fontWeight: 800,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  padding: "0 8px",
+  userSelect: "none",
+};
+
+// === Botón eliminar vacaciones ===
+const vacDeleteBtn: React.CSSProperties = {
+  border: "none",
+  background: "transparent",
+  cursor: "pointer",
+  color: "#7c2d12",
+  fontSize: 14,
+};
 
 
 const topHeader: React.CSSProperties = {
