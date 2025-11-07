@@ -1,5 +1,5 @@
 // src/Planificador.tsx
-import React, { useMemo, useRef, useState, useEffect } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "./lib/supabase";
 import {
   addDays,
@@ -14,6 +14,7 @@ import {
   startOfWeek,
 } from "date-fns";
 import { es } from "date-fns/locale";
+import type { AuthChangeEvent, Session } from "@supabase/supabase-js";
 
 /* ===================== Configuración ===================== */
 const PASSWORD = "taller2025"; // ← cámbiala por la que quieras
@@ -110,7 +111,7 @@ function monthYear(d: Date | null | undefined): string {
   } catch { return ""; }
 }
 
-const weekDaysHeader = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
+const weekDaysHeader = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"];
 const PX_PER_HOUR = 20;
 const URGENT_COLOR = "#f59e0b";
 
@@ -395,6 +396,7 @@ const updMatches = useMemo(() => {
   const [userEmail, setUserEmail] = useState<string | null>(null);
 
   // Referencias para "debounce" y última instantánea guardada
+  const hydratedRef = useRef(false);
   const saveTimer = useRef<number | null>(null);
   const lastSavedRef = useRef<string>("");
 
@@ -402,6 +404,8 @@ const updMatches = useMemo(() => {
   const [printMode, setPrintMode] = useState<PrintMode>("none");
   const [printWorker, setPrintWorker] = useState<string>("W1");
   const [printDate, setPrintDate] = useState<string>(fmt(new Date()));
+
+  const saveEpoch = useRef(0);
   
   // === Copias de seguridad (localStorage)
 const BACKUP_INDEX_KEY = "planner:backup:index";
@@ -594,169 +598,235 @@ function editBlockTotalFromSlice(slice: TaskSlice) {
     }
   }
 
-  async function saveAll(uid: string) {
-    setSaveError(null);
-    setSavingCloud(true);
-    try {
-      // 1) Trabajadores
-      const wRows = workers.map(w => ({ user_id: uid,
-  id: w.id,
-  nombre: w.nombre,
-  extra_default: w.extraDefault,
-  sabado_default: w.sabadoDefault,
-tenant_id: TENANT_ID, }));
+  /**
+ * Guarda TODO el estado en Supabase de forma segura:
+ * 1) UPSERT (nunca nos quedamos a cero si falla algo)
+ * 2) Borra solo lo que sobra (selectivo)
+ */
+async function saveAll(uid: string) {
+  // --- 0) Preparar filas con tenant_id y user_id ---
+  const wRows = workers.map(w => ({
+    id: w.id,
+    nombre: w.nombre,
+    extra_default: w.extraDefault,
+    sabado_default: w.sabadoDefault,
+    user_id: uid,
+    tenant_id: TENANT_ID,
+  }));
 
-if (wRows.length) {
-  const { error } = await supabase.from("workers").upsert(wRows, { onConflict: "tenant_id,id" });
-  if (error) throw error;
-}
+  const sRows = slices.map(s => ({
+    id: s.id,
+    task_id: s.taskId,
+    producto: s.producto,
+    fecha: s.fecha,
+    horas: s.horas,
+    trabajador_id: s.trabajadorId,
+    color: s.color,
+    user_id: uid,
+    tenant_id: TENANT_ID,
+  }));
 
-      // 2) Slices (borramos todos del usuario y reinsertamos el snapshot actual)
-      const sRows = slices.map(s => ({
-        id: s.id,
-        task_id: s.taskId,
-        producto: s.producto,
-        fecha: s.fecha,
-        horas: s.horas,
-        trabajador_id: s.trabajadorId,
-        color: s.color,
-        user_id: uid,
-        tenant_id: TENANT_ID,
-      }));
-      await supabase.from("task_slices").delete().eq("tenant_id", TENANT_ID);
-      if (sRows.length) {
-        const { error } = await supabase.from("task_slices").insert(sRows);
-        if (error) throw error;
-      }
+  const oRows = flattenOverrides(overrides).map(r => ({
+    worker_id: r.worker_id,
+    fecha: r.fecha,
+    extra: r.extra ?? 0,
+    sabado: r.sabado ?? false,
+    user_id: uid,
+    tenant_id: TENANT_ID,
+  }));
 
-      // 3) Overrides (lo mismo: borramos y subimos snapshot plano)
-      const oRows = flattenOverrides(overrides).map(r => ({ ...r, user_id: uid, tenant_id: TENANT_ID, }));
-      await supabase.from("day_overrides").delete().eq("tenant_id", TENANT_ID);
-      if (oRows.length) {
-        const { error } = await supabase.from("day_overrides").insert(oRows);
-        if (error) throw error;
-      }
+  const dRows = Object.entries(descs).map(([nombre, texto]) => ({
+    nombre,
+    texto,
+    user_id: uid,
+    tenant_id: TENANT_ID,
+  }));
 
-      // 4) Descripciones (borramos y subimos snapshot actual)
-      const dRows = Object.entries(descs).map(([nombre, texto]) => ({
-        nombre,
-        texto,
-        user_id: uid,  tenant_id: TENANT_ID,  // ← importante
-}));
+  // --- 1) UPSERT de todo ---
+  {
+    const { error } = await supabase
+      .from("workers")
+      .upsert(wRows, { onConflict: "tenant_id,id" });
+    if (error) throw error;
+  }
+  {
+    const { error } = await supabase
+      .from("product_descs")
+      .upsert(dRows, { onConflict: "tenant_id,nombre" });
+    if (error) throw error;
+  }
+  {
+    const { error } = await supabase
+      .from("task_slices")
+      .upsert(sRows, { onConflict: "tenant_id,id" });
+    if (error) throw error;
+  }
+  {
+    const { error } = await supabase
+      .from("day_overrides")
+      .upsert(oRows, { onConflict: "tenant_id,worker_id,fecha" });
+    if (error) throw error;
+  }
 
-      await supabase.from("product_descs").delete().eq("tenant_id", TENANT_ID);
-      if (dRows.length) {
-        const { error } = await supabase.from("product_descs").insert(dRows);
-        if (error) throw error;
-      }
-    } catch (e: any) {
-      setSaveError(e.message ?? String(e));
-      throw e;
-    } finally {
-      setSavingCloud(false);
+  // --- 2) Borrado selectivo ---
+
+  // 2.a) task_slices: borra los IDs que ya no existen en memoria
+  {
+    const { data: existing, error } = await supabase
+      .from("task_slices")
+      .select("id")
+      .eq("tenant_id", TENANT_ID);
+    if (error) throw error;
+
+    const keepSet = new Set(sRows.map((r) => r.id));
+    const toDelete = (existing ?? [])
+      .map((r: { id: string }) => r.id)
+      .filter((id: string) => !keepSet.has(id));
+
+    if (toDelete.length > 0) {
+      const { error: delErr } = await supabase
+        .from("task_slices")
+        .delete()
+        .in("id", toDelete)
+        .eq("tenant_id", TENANT_ID);
+      if (delErr) throw delErr;
     }
   }
 
-  // ⬇️ 3.3-C (efecto que detecta sesión y carga Supabase)
-  useEffect(() => {
-    let mounted = true;
+  // 2.b) day_overrides: limpieza atómica con RPC (borra lo que sobra)
+  {
+    const keepKeys = oRows.map((r) => `${r.worker_id}|${r.fecha}`);
+    if (keepKeys.length > 0) {
+      const { error: rpcErr } = await supabase.rpc("delete_overrides_not_in", {
+        tenant: TENANT_ID,
+        keep_keys: keepKeys,
+      });
+      if (rpcErr) throw rpcErr;
+    }
+  }
 
-    async function init() {
-      // 1) ¿Hay sesión ya abierta?
-      const { data } = await supabase.auth.getSession();
-      const uid = data.session?.user?.id ?? null;
-      const mail = data.session?.user?.email ?? null;
+  return true;
+}
 
-      if (!mounted) return;
+useEffect(() => {
+  let mounted = true;
 
-      setUserId(uid);
-      setUserEmail(mail);
+  async function init() {
+    // 🔒 Bloquea autosave: todavía NO hemos hidratado datos
+    hydratedRef.current = false;
 
-      // 2) Si hay usuario, carga todo desde Supabase
-      if (uid) {
-        try {
-          setLoadingCloud(true);
-          await seedIfEmpty(uid);
-          await loadAll(uid);   // ← esta es tu función del paso 3.3-B
-        } finally {
-          if (mounted) setLoadingCloud(false);
-        }
-      } else {
-        // === NUEVO: si NO hay sesión, intenta cargar del almacenamiento local
-        const snap = safeLocal<any>(STORAGE_KEY, null as any);
-        if (snap) {
-          setWorkers(snap.workers ?? []);
-          setSlices(snap.slices ?? []);
-          setOverrides(snap.overrides ?? {});
-          setDescs(snap.descs ?? {});
-        }
+    // 1) ¿Hay sesión ya abierta?
+    const { data } = await supabase.auth.getSession();
+    const uid  = data.session?.user?.id    ?? null;
+    const mail = data.session?.user?.email ?? null;
+
+    if (!mounted) return;
+
+    setUserId(uid);
+    setUserEmail(mail);
+
+    // 2) Si hay usuario, carga todo desde Supabase
+    if (uid) {
+      try {
+        setLoadingCloud(true);
+        await seedIfEmpty(uid);
+        await loadAll(uid);   // ← tu carga desde la nube
+      } finally {
+        if (mounted) setLoadingCloud(false);
+      }
+    } else {
+      // 2-b) Si NO hay sesión, intenta cargar del almacenamiento local
+      const snap = safeLocal<any>(STORAGE_KEY, null as any);
+      if (snap && mounted) {
+        setWorkers(snap.workers ?? []);
+        setSlices(snap.slices ?? []);
+        setOverrides(snap.overrides ?? {});
+        setDescs(snap.descs ?? {});
       }
     }
 
-    init();
+    // ✅ Desbloquea autosave: YA estamos hidratados (nube o local)
+    hydratedRef.current = true;
+  }
 
-    // 3) Suscripción a cambios de sesión (login / logout)
-    const { data: sub } = supabase.auth.onAuthStateChange(async (_event, session) => {
-      if (!mounted) return;
-      const uid = session?.user?.id ?? null;
-      const mail = session?.user?.email ?? null;
-      setUserId(uid);
-      setUserEmail(mail);
+  init();
 
-      if (uid) {
-        try {
-          setLoadingCloud(true);
-          await seedIfEmpty(uid);
-          await loadAll(uid); // ← evitar duplicado de llamadas
-        } finally {
-          setLoadingCloud(false);
-        }
+  // 3) Suscripción a cambios de sesión (login / logout)
+const { data: sub } = supabase.auth.onAuthStateChange(async (_event: AuthChangeEvent, session: Session | null) => {
+    if (!mounted) return;
+
+    // 🔒 Bloquea autosave mientras cambiamos de sesión / recargamos datos
+    hydratedRef.current = false;
+
+    const uid  = session?.user?.id    ?? null;
+    const mail = session?.user?.email ?? null;
+    setUserId(uid);
+    setUserEmail(mail);
+
+    if (uid) {
+      try {
+        setLoadingCloud(true);
+        await seedIfEmpty(uid);
+        await loadAll(uid);   // ← recarga desde la nube con el nuevo usuario
+      } finally {
+        setLoadingCloud(false);
       }
-    });
+    } else {
+      // Logout: intenta cargar desde local (por si tenías algo guardado sin sesión)
+      const snap = safeLocal<any>(STORAGE_KEY, null as any);
+      setWorkers(snap?.workers ?? []);
+      setSlices(snap?.slices ?? []);
+      setOverrides(snap?.overrides ?? {});
+      setDescs(snap?.descs ?? {});
+    }
 
-    return () => {
-      mounted = false;
-      sub?.subscription?.unsubscribe();
-    };
-  }, []); // ← sin dependencias: solo al montar
+    // ✅ Desbloquea autosave: ya hemos re-hidratado tras el cambio de sesión
+    hydratedRef.current = true;
+  });
+
+  return () => {
+    mounted = false;
+    sub?.subscription?.unsubscribe();
+  };
+}, []); // ← sin dependencias: solo al montar
+
 
   // AUTOSAVE: guarda en Supabase cuando cambian datos (con debounce)
+  
   useEffect(() => {
-    if (!userId) return;          // sin sesión, no guardes
-    if (loadingCloud) return;     // no guardes mientras cargas desde la nube
+  if (!userId) return;               // sin sesión, no guardes nube
+  if (loadingCloud) return;          // si carga nube, espera
+  if (!hydratedRef.current) return;  // ⬅️ CLAVE: no guardes hasta hidratar
 
-    // Foto del estado para evitar guardados innecesarios
-    const snapshot = JSON.stringify({
-      workers,
-      slices,
-      overrides,
-      descs,
-    });
+  const snapshot = JSON.stringify({ workers, slices, overrides, descs });
+  if (snapshot === lastSavedRef.current) return;
 
-    if (snapshot === lastSavedRef.current) return;
+  if (saveTimer.current) window.clearTimeout(saveTimer.current);
+  saveTimer.current = window.setTimeout(async () => {
+    try {
+      await guardedSaveAll(userId);         // o guardedSaveAll(userId) si añadiste el candado
+      lastSavedRef.current = snapshot;
+    } catch (e) {
+      console.error("Autosave falló:", e);
+    }
+  }, 800);
 
-    // Debounce ~800ms
-    if (saveTimer.current) window.clearTimeout(saveTimer.current);
-    saveTimer.current = window.setTimeout(async () => {
-      try {
-        await saveAll(userId);
-        lastSavedRef.current = snapshot;
-      } catch {
-        // el error ya se guarda en setSaveError dentro de saveAll
-      }
-    }, 800);
+  return () => {
+    if (saveTimer.current) {
+      window.clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+    }
+  };
+}, [workers, slices, overrides, descs, userId, loadingCloud]);
 
-    return () => {
-      if (saveTimer.current) window.clearTimeout(saveTimer.current);
-    };
-  }, [workers, slices, overrides, descs, userId, loadingCloud]);
 
   // === NUEVO: guardado local automático cuando NO hay sesión ===
   useEffect(() => {
-    if (userId) return; // si hay sesión, no guardes en local
-    const snapshot = JSON.stringify({ workers, slices, overrides, descs });
-    try { localStorage.setItem(STORAGE_KEY, snapshot); } catch {}
-  }, [workers, slices, overrides, descs, userId]);
+  if (userId) return;               // con sesión, nube
+  if (!hydratedRef.current) return; // ⬅️ evita guardar antes de hidratar
+  const snapshot = JSON.stringify({ workers, slices, overrides, descs });
+  try { localStorage.setItem(STORAGE_KEY, snapshot); } catch {}
+}, [workers, slices, overrides, descs, userId]);
 
   // Copia automática inicial y cada 10 minutos
 useEffect(() => {
@@ -1168,46 +1238,27 @@ function updateBlockHoursForDay(taskId: string, trabajadorId: string, diaISO: st
 
     // === NUEVO: sobreasignar horas extras automáticamente si hace falta ===
     // 1) Total de horas usadas HOY por este trabajador (con el cambio aplicado)
-    const totalHoy = Math.round(result
-      .filter(s => s.trabajadorId === w.id && s.fecha === diaISO)
-      .reduce((a, s) => a + s.horas, 0) * 2) / 2;
+    // Total de horas usadas HOY (con el cambio aplicado)
+const totalHoy = Math.round(result
+  .filter(s => s.trabajadorId === w.id && s.fecha === diaISO)
+  .reduce((a, s) => a + s.horas, 0) * 2) / 2;
 
-    // 2) Capacidad base del día + extras anteriores (overrides)
-    const d = new Date(diaISO);
-    const weekday = d.getDay(); // 0=Domingo ... 6=Sábado
+// Capacidad del día con overrides actuales
+const capacidadHoy = capacidadDia(w, new Date(diaISO), overrides);
+const exceso = Math.max(0, Math.round((totalHoy - capacidadHoy) * 2) / 2);
 
-    // Intenta obtener la capacidad base de tu estructura "base".
-    // Si tu "base" está por trabajador y por día de semana, respeta ese esquema.
-    // Fallback seguro: 8 horas si no hay dato.
-    const baseCapPorSemanaDelWorker =
-      (base && (base as any)[w.id] && (base as any)[w.id][weekday]) ??
-      (base && (base as any)[weekday]) ??
-      8;
-
-    // Extras acumuladas previamente (si las hay) para ese día
-    const extrasPrevias =
-      (overrides && (overrides as any)[w.id] && (overrides as any)[w.id][diaISO]) ?? 0;
-
-    const capacidadHoy = Math.round((baseCapPorSemanaDelWorker + extrasPrevias) * 2) / 2;
-
-    // 3) Exceso de horas (lo que hay que sobreasignar como horas extra)
-    const exceso = Math.max(0, Math.round((totalHoy - capacidadHoy) * 2) / 2);
 
     if (exceso > 0) {
-      // Aumentamos las horas extra (override) de ese día en la cantidad justa
-      // para que el "Usado" no quede por encima de "Capacidad".
-      setOverrides((prevOv: any) => {
-        const byWorker = (prevOv && prevOv[w.id]) ? prevOv[w.id] : {};
-        const cur = byWorker[diaISO] ?? 0;
-        return {
-          ...prevOv,
-          [w.id]: {
-            ...byWorker,
-            [diaISO]: Math.round((cur + exceso) * 2) / 2,
-          },
-        };
-      });
-    }
+  setOverrides((prevOv: OverridesState) => {
+    const byWorker = { ...(prevOv[w.id] || {}) };
+    const cur = byWorker[diaISO] || { extra: 0, sabado: false };
+    byWorker[diaISO] = {
+      extra: Math.round((Number(cur.extra ?? 0) + exceso) * 2) / 2,
+      sabado: !!cur.sabado,
+    };
+    return { ...prevOv, [w.id]: byWorker };
+  });
+}
 
     return result;
   });
@@ -1246,43 +1297,25 @@ function addNewBlockFromDay(trabajadorId: string, diaISO: string, producto: stri
 
     // === NUEVO: sobreasignar horas extras si ese mismo día se supera la capacidad ===
     // 1) Total de horas usadas HOY por este trabajador (con el nuevo bloque ya añadido)
-    const totalHoy = Math.round(result
-      .filter(s => s.trabajadorId === w.id && s.fecha === diaISO)
-      .reduce((a, s) => a + s.horas, 0) * 2) / 2;
+    // === Sobreasignar horas extras si se supera la capacidad ===
+const totalHoy = Math.round(result
+  .filter(s => s.trabajadorId === w.id && s.fecha === diaISO)
+  .reduce((a, s) => a + s.horas, 0) * 2) / 2;
 
-    // 2) Capacidad base del día + extras previas (overrides)
-    const d = new Date(diaISO);
-    const weekday = d.getDay(); // 0=Domingo ... 6=Sábado
+const capacidadHoy = capacidadDia(w, new Date(diaISO), overrides);
+const exceso = Math.max(0, Math.round((totalHoy - capacidadHoy) * 2) / 2);
 
-    // Ajusta estas lecturas a tu estructura real de "base".
-    // Fallback: 8h si no hay dato.
-    const baseCapPorSemanaDelWorker =
-      (base && (base as any)[w.id] && (base as any)[w.id][weekday]) ??
-      (base && (base as any)[weekday]) ??
-      8;
-
-    const extrasPrevias =
-      (overrides && (overrides as any)[w.id] && (overrides as any)[w.id][diaISO]) ?? 0;
-
-    const capacidadHoy = Math.round((baseCapPorSemanaDelWorker + extrasPrevias) * 2) / 2;
-
-    // 3) Exceso a convertir en horas extra
-    const exceso = Math.max(0, Math.round((totalHoy - capacidadHoy) * 2) / 2);
-
-    if (exceso > 0) {
-      // Sumamos el exceso a las horas extra (override) de ese día
-      setOverrides((prevOv: any) => {
-        const byWorker = (prevOv && prevOv[w.id]) ? prevOv[w.id] : {};
-        const cur = byWorker[diaISO] ?? 0;
-        return {
-          ...prevOv,
-          [w.id]: {
-            ...byWorker,
-            [diaISO]: Math.round((cur + exceso) * 2) / 2,
-          },
-        };
-      });
-    }
+if (exceso > 0) {
+  setOverrides((prevOv: OverridesState) => {
+    const byWorker = { ...(prevOv[w.id] || {}) };
+    const cur = byWorker[diaISO] || { extra: 0, sabado: false };
+    byWorker[diaISO] = {
+      extra: Math.round((Number(cur.extra ?? 0) + exceso) * 2) / 2,
+      sabado: !!cur.sabado,
+    };
+    return { ...prevOv, [w.id]: byWorker };
+  });
+}
 
     return result;
   });
@@ -1439,6 +1472,19 @@ function downloadLastBackup() {
       alert("Copia restaurada desde la nube.");
     }
   }
+
+  async function guardedSaveAll(uid: string) {
+  const myTurn = ++saveEpoch.current;   // tomo un número de turno
+  try {
+    await saveAll(uid);                 // usa tu saveAll nuevo (con upsert + borrado selectivo)
+  } finally {
+    // si otro guardado empezó después, esta llamada ya es “vieja”
+    if (myTurn !== saveEpoch.current) {
+      // opcional: puedes relanzar un guardado final si quieres máxima seguridad:
+      // await saveAll(uid);
+    }
+  }
+}
 
   /* ===================== Render ===================== */
   return (
