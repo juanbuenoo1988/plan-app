@@ -525,16 +525,19 @@ const rows: OverrideRow[] = [];
 
 function editBlockTotalFromSlice(slice: TaskSlice) {
   if (!canEdit) return;
+
   const w = workers.find(x => x.id === slice.trabajadorId);
   if (!w) return;
 
-  // Todas las partes del bloque (taskId) para ese trabajador
+  // Todas las partes de ese bloque (taskId) para ese trabajador
   const delBloque = slices.filter(s => s.trabajadorId === w.id && s.taskId === slice.taskId);
   if (delBloque.length === 0) return;
 
+  // Primer día del bloque y total actual
   const startF = delBloque.reduce((m, s) => (s.fecha < m ? s.fecha : m), delBloque[0].fecha);
   const totalActual = Math.round(delBloque.reduce((a, s) => a + s.horas, 0) * 2) / 2;
 
+  // Pedimos nuevo total
   const nuevoStr = prompt(
     `Horas totales para "${slice.producto}" (${w.nombre}) desde ${startF}:`,
     String(totalActual)
@@ -544,32 +547,39 @@ function editBlockTotalFromSlice(slice: TaskSlice) {
   const nuevoTotal = Math.max(0.5, Math.round(Number(nuevoStr) * 2) / 2);
   if (!isFinite(nuevoTotal) || nuevoTotal <= 0) return;
 
+  // Parser robusto YYYY-MM-DD → fecha local (evita desfaces de huso horario)
+  const fromLocalISO = (iso: string) => {
+    const [y, m, d] = iso.split("-").map(Number);
+    return new Date(y, (m ?? 1) - 1, d ?? 1);
+  };
+
   setSlices(prev => {
-    // 1) Quita el bloque anterior de ese trabajador
+    // 1) Elimina el bloque antiguo de ese trabajador
     const restantes = prev.filter(s => !(s.taskId === slice.taskId && s.trabajadorId === w.id));
 
-    // 2) Vuelve a planificar ese bloque desde su primer día
+    // 2) Replanifica SOLO ese bloque desde su primer día
     const plan = planificarBloqueAuto(
       slice.producto,
       nuevoTotal,
       w,
-      fromLocalISO(startF),                 // ← importante: fecha local
-      base,
-      restantes,
+      fromLocalISO(startF), // ← fecha local segura
+      base,                 // tu estado "base" es Date, como en el antiguo
+      restantes,            // MUY IMPORTANTE: planificamos contra el snapshot
       overrides
     ).map(s => ({ ...s, taskId: slice.taskId, color: colorFromId(slice.taskId) }));
 
-    // 3) Mezcla “resto + plan nuevo”
+    // 3) Mezcla (resto + plan nuevo)
     const merged = [...restantes, ...plan];
 
-    // 4) Refluye DESDE startF usando el MISMO snapshot (sin tocar estado global)
-    const final = reflowFromWorkerPure(merged, w, startF, overrides);
+    // 4) (Opcional pero recomendado) Compacta TODO ese trabajador desde startF,
+    //    usando SOLO el snapshot "merged" (nada de setTimeout ni setState fuera).
+    const reflowedForWorker = compactFrom(w, startF, overrides, merged);
+    const others = merged.filter(s => s.trabajadorId !== w.id);
 
-    // 5) Devuelve el resultado definitivo
-    return final;
+    // 5) Devolvemos el resultado final en un ÚNICO setState
+    return [...others, ...reflowedForWorker];
   });
 }
-
 
 
   // === NUEVO: helper seguro para leer del almacenamiento local ===
