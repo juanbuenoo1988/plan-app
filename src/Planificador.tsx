@@ -147,6 +147,10 @@ const fromLocalISO = (iso: string) => {
 const weekDaysHeader = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"];
 const PX_PER_HOUR = 20;
 const URGENT_COLOR = "#f59e0b";
+const isUrgentSlice = (s: TaskSlice) =>
+  s.color === URGENT_COLOR ||
+  /^⚠️/.test(s.producto) ||
+  /urgenc/i.test(s.producto);
 
 
 function monthGrid(date: Date) {
@@ -579,6 +583,50 @@ function editBlockTotalFromSlice(slice: TaskSlice) {
     // 5) Devolvemos el resultado final en un ÚNICO setState
     return [...others, ...reflowedForWorker];
   });
+}
+
+function editUrgentSlice(slice: TaskSlice) {
+  // Edita SOLO ese tramo, sin replanificar ni mover
+  const nuevoStr = prompt(
+    `Horas reales para "${slice.producto}" el ${slice.fecha}:`,
+    String(slice.horas)
+  );
+  if (nuevoStr === null) return;
+
+  const h = Math.max(0.5, Math.round(Number(nuevoStr) * 2) / 2);
+  if (!isFinite(h)) return;
+
+  // 1) Actualiza únicamente ese slice y asegura color amarillo
+  setSlices(prev =>
+    prev.map(s =>
+      s.id === slice.id ? { ...s, horas: h, color: URGENT_COLOR } : s
+    )
+  );
+
+  // 2) Si al fijar horas nos pasamos de la capacidad del día, añade extra automáticamente
+  const w = workers.find(x => x.id === slice.trabajadorId);
+  if (!w) return;
+
+  const totalHoy = Math.round(
+    slices
+      .filter(s => s.trabajadorId === w.id && s.fecha === slice.fecha)
+      .reduce((a, s) => a + (s.id === slice.id ? h : s.horas), 0) * 2
+  ) / 2;
+
+  const capacidadHoy = capacidadDia(w, fromLocalISO(slice.fecha), overrides);
+  const exceso = Math.max(0, Math.round((totalHoy - capacidadHoy) * 2) / 2);
+
+  if (exceso > 0) {
+    setOverrides(prevOv => {
+      const byWorker = { ...(prevOv[w.id] || {}) };
+      const cur = byWorker[slice.fecha] || { extra: 0 };
+      byWorker[slice.fecha] = {
+        ...cur,
+        extra: Math.round((Number(cur.extra ?? 0) + exceso) * 2) / 2,
+      };
+      return { ...prevOv, [w.id]: byWorker };
+    });
+  }
 }
 
 
@@ -2641,11 +2689,26 @@ const handleDayHeaderDblClick = () => {
           key={s.id}
           draggable={canEdit}
           onDragStart={(e) => onDragStart(e, s.id)}
-          onDoubleClick={(e) => { e.stopPropagation(); if (canEdit) editBlockTotalFromSlice(s); }}
+          onDoubleClick={(e) => {
+  e.stopPropagation();
+  if (!canEdit) return;
+
+  const isUrgent =
+    s.color === URGENT_COLOR ||
+    /^⚠️/.test(s.producto) ||
+    /urgenc/i.test(s.producto);
+
+  if (isUrgent) {
+    editUrgentSlice(s);   // ← no replanifica ni cambia de día
+  } else {
+    editBlockTotalFromSlice(s); // comportamiento normal
+  }
+}}
+
           title={`${s.producto} — ${s.horas}h${desc ? "\n" + desc : ""}`}
           style={{
             ...blockStyle,
-            background: s.color,
+            background: isUrgent ? URGENT_COLOR : s.color,
             width: Math.max(18, s.horas * PX_PER_HOUR),
             position: "relative",
           }}
