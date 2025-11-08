@@ -1093,21 +1093,28 @@ useEffect(() => {
 }, [workers, slices, overrides, descs, userId]);
 
 useEffect(() => {
-  // Registramos handlers de estado del socket
-  supabase.realtime.on("open",  () => setRtStatus("connected"));
-  supabase.realtime.on("close", () => setRtStatus("connecting"));
-  supabase.realtime.on("error", () => setRtStatus("error"));
+  if (!userId) return;
 
-  // Si el socket ya estaba conectado al montar
-  try {
-    // @ts-ignore: acceso interno para lectura del estado inicial
-    if (supabase.realtime?.socket?.isConnected()) setRtStatus("connected");
-  } catch {}
+  const channel = supabase.channel("planner-realtime");
 
-  // No hay una API pública tipada para "off" en supabase-js v2,
-  // así que no hacemos cleanup explícito de estos listeners aquí.
-  return () => {};
-}, []);
+  const filter = `tenant_id=eq.${TENANT_ID}`;
+
+  // … tus channel.on(...) de workers, task_slices, day_overrides, product_descs …
+
+  // 👇 SUSCRÍBETE Y ACTUALIZA EL BADGE SEGÚN EL ESTADO DEL CANAL
+  channel.subscribe((status) => {
+    // 'SUBSCRIBED' cuando el canal está activo (socket OK)
+    if (status === "SUBSCRIBED") setRtStatus("connected");
+    // Estos estados indican reconexión o problemas
+    else if (status === "TIMED_OUT" || status === "CLOSED") setRtStatus("connecting");
+    else if (status === "CHANNEL_ERROR") setRtStatus("error");
+  });
+
+  return () => {
+    supabase.removeChannel(channel);
+  };
+}, [userId]);
+
 
 
   // Copia automática inicial y cada 10 minutos
