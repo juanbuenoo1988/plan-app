@@ -554,7 +554,7 @@ function editBlockTotalFromSlice(slice: TaskSlice) {
       slice.producto,
       nuevoTotal,
       w,
-      new Date(startF),
+      fromLocalISO(startF),
       base,
       restantes,
       overrides
@@ -1554,7 +1554,7 @@ function eachDayISO(fromISO: string, toISO: string): string[] {
     setSlices(prev=>{
       const color = colorFromId(ebSelected);
       const restantes = prev.filter(s => !(s.taskId===ebSelected && s.trabajadorId===w.id));
-      const start = new Date(match.startF);
+      const start = fromLocalISO(match.startF);
       const plan = planificarBloqueAuto(
         ebNombre.trim(),
         nuevoTotal,
@@ -1619,8 +1619,7 @@ function updateBlockHoursForDay(taskId: string, trabajadorId: string, diaISO: st
     // 3) Replanificar el resto desde el día siguiente
     let nuevos: typeof prev = [fixedToday];
     if (remaining > 0) {
-      const nextDay = new Date(diaISO);
-      nextDay.setDate(nextDay.getDate() + 1);
+      const nextDay = addDays(fromLocalISO(diaISO), 1);
 
       const replan = planificarBloqueAuto(
         today.producto,
