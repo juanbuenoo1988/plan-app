@@ -1,4 +1,5 @@
 // src/Planificador.tsx
+import type { RealtimePostgresChangesPayload } from "@supabase/supabase-js";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "./lib/supabase";
 import {
@@ -58,6 +59,11 @@ class ErrorBoundary extends React.Component<
 }
 
 /* ===================== Tipos ===================== */
+
+// Estado de la conexión Realtime
+type RTStatus = "connecting" | "connected" | "error";
+
+
 type Worker = {
   id: string;
   nombre: string;
@@ -417,6 +423,8 @@ const [updDate, setUpdDate] = useState<string>(() => {
 // Para añadir incidencias desde el panel
 const [updNewProd, setUpdNewProd] = useState("");
 const [updNewHoras, setUpdNewHoras] = useState<number>(1);
+const [rtStatus, setRtStatus] = useState<RTStatus>("connecting");
+
 
 // Derivados: bloques del día seleccionado
 const updMatches = useMemo(() => {
@@ -455,11 +463,26 @@ const updMatches = useMemo(() => {
 
   type PrintMode = "none" | "monthly" | "daily" | "dailyAll";
   const [printMode, setPrintMode] = useState<PrintMode>("none");
+  
   const [printWorker, setPrintWorker] = useState<string>("W1");
   const [printDate, setPrintDate] = useState<string>(fmt(new Date()));
 
   const saveEpoch = useRef(0);
-  
+  // === Realtime helpers ===
+const applyingRemoteRef = useRef(false);       // marca: estoy aplicando un cambio que vino del servidor
+const rafFlushRef = useRef<number | null>(null); // para liberar la marca en el siguiente frame
+
+function applyRemote(run: () => void) {
+  applyingRemoteRef.current = true;
+  run();
+  if (rafFlushRef.current) cancelAnimationFrame(rafFlushRef.current);
+  rafFlushRef.current = requestAnimationFrame(() => {
+    applyingRemoteRef.current = false;
+    rafFlushRef.current = null;
+  });
+}
+
+
   // === Copias de seguridad (localStorage)
 const BACKUP_INDEX_KEY = "planner:backup:index";
 const MAX_BACKUPS = 100; // número máximo de copias locales que se guardan
@@ -699,6 +722,7 @@ async function saveAll(uid: string) {
   vi_hours: w.jornada.vi,
   user_id: uid,
   tenant_id: TENANT_ID,
+  updated_by: uid,  
 }));
 
   const sRows = slices.map(s => ({
@@ -711,6 +735,7 @@ async function saveAll(uid: string) {
     color: s.color,
     user_id: uid,
     tenant_id: TENANT_ID,
+    updated_by: uid, 
   }));
 
   const oRows = flattenOverrides(overrides).map((r) => ({
@@ -722,6 +747,7 @@ async function saveAll(uid: string) {
   vacacion: !!r.vacacion,   // NUEVO
   user_id: uid,
   tenant_id: TENANT_ID,
+  updated_by: uid,
 }));
 
   const dRows = Object.entries(descs).map(([nombre, texto]) => ({
@@ -729,6 +755,7 @@ async function saveAll(uid: string) {
     texto,
     user_id: uid,
     tenant_id: TENANT_ID,
+    updated_by: uid,
   }));
 
   // --- 1) UPSERT de todo ---
@@ -879,13 +906,20 @@ const { data: sub } = supabase.auth.onAuthStateChange(async (_event: AuthChangeE
   };
 }, []); // ← sin dependencias: solo al montar
 
+function isOwnChange<T>(payload: RealtimePostgresChangesPayload<T>, uid: string | null) {
+  // Muchos eventos DELETE no traen "new", solo "old".
+  // Este corte solo aplica a INSERT/UPDATE (cuando hay "new").
+  const updatedBy = (payload as any)?.new?.updated_by ?? null;
+  return !!uid && !!updatedBy && updatedBy === uid;
+}
 
   // AUTOSAVE: guarda en Supabase cuando cambian datos (con debounce)
   
   useEffect(() => {
   if (!userId) return;               // sin sesión, no guardes nube
   if (loadingCloud) return;          // si está cargando, espera
-  if (!hydratedRef.current) return;  // no guardar hasta hidratar
+  if (!hydratedRef.current) return;
+   if (applyingRemoteRef.current) return;  // no guardar hasta hidratar
 
   const snapshot = JSON.stringify({ workers, slices, overrides, descs });
   if (snapshot === lastSavedRef.current) return;
@@ -925,6 +959,130 @@ const { data: sub } = supabase.auth.onAuthStateChange(async (_event: AuthChangeE
   };
 }, [workers, slices, overrides, descs, userId, loadingCloud]);
 
+useEffect(() => {
+  // Solo tiene sentido con sesión (para respetar RLS del backend)
+  if (!userId) return;
+
+  const channel = supabase.channel("planner-realtime");
+
+  // Filtra por tenant (reduce ruido y coste)
+  const filter = `tenant_id=eq.${TENANT_ID}`;
+
+  channel.on(
+  "postgres_changes",
+  { event: "*", schema: "public", table: "workers", filter },
+  (payload: RealtimePostgresChangesPayload<any>) => {
+    if (isOwnChange(payload, userId)) return;        // 👈 ignora tus propios cambios
+    const { eventType, new: rowNew, old: rowOld } = payload;
+
+    applyRemote(() => {
+      if (eventType === "INSERT" || eventType === "UPDATE") {
+        const w = mapRowToWorker(rowNew);
+        setWorkers(prev => {
+          const i = prev.findIndex(x => x.id === w.id);
+          if (i === -1) return [...prev, w].sort((a,b)=>a.nombre.localeCompare(b.nombre));
+          const copy = [...prev];
+          copy[i] = w;
+          return copy;
+        });
+      } else if (eventType === "DELETE") {
+        const id = rowOld?.id as string | undefined;
+        if (!id) return;
+        setWorkers(prev => prev.filter(x => x.id !== id));
+        setSlices(prev => prev.filter(s => s.trabajadorId !== id));
+        setOverrides(prev => { const c = { ...prev }; delete c[id]; return c; });
+      }
+    });
+  }
+);
+
+
+ channel.on(
+  "postgres_changes",
+  { event: "*", schema: "public", table: "task_slices", filter },
+  (payload: RealtimePostgresChangesPayload<any>) => {
+    if (isOwnChange(payload, userId)) return;        // 👈
+    const { eventType, new: rowNew, old: rowOld } = payload;
+
+    applyRemote(() => {
+      if (eventType === "INSERT" || eventType === "UPDATE") {
+        const s = mapRowToSlice(rowNew);
+        setSlices(prev => {
+          const i = prev.findIndex(x => x.id === s.id);
+          if (i === -1) return [...prev, s];
+          const copy = [...prev];
+          copy[i] = s;
+          return copy;
+        });
+      } else if (eventType === "DELETE") {
+        const id = rowOld?.id as string | undefined;
+        if (!id) return;
+        setSlices(prev => prev.filter(x => x.id !== id));
+      }
+    });
+  }
+);
+
+
+ channel.on(
+  "postgres_changes",
+  { event: "*", schema: "public", table: "day_overrides", filter },
+  (payload: RealtimePostgresChangesPayload<any>) => {
+    if (isOwnChange(payload, userId)) return;        // 👈
+    const { eventType, new: rowNew, old: rowOld } = payload;
+
+    applyRemote(() => {
+      if (eventType === "INSERT" || eventType === "UPDATE") {
+        setOverrides(prev => mergeOverrideRow(prev, {
+          worker_id: rowNew.worker_id,
+          fecha: rowNew.fecha,
+          extra: rowNew.extra,
+          sabado: rowNew.sabado,
+          domingo: rowNew.domingo,
+          vacacion: rowNew.vacacion,
+        }));
+      } else if (eventType === "DELETE") {
+        const worker_id = rowOld?.worker_id as string | undefined;
+        const fecha     = rowOld?.fecha as string | undefined;
+        if (!worker_id || !fecha) return;
+        setOverrides(prev => {
+          const byW = { ...(prev[worker_id] || {}) };
+          delete byW[fecha];
+          return { ...prev, [worker_id]: byW };
+        });
+      }
+    });
+  }
+);
+
+
+  channel.on(
+  "postgres_changes",
+  { event: "*", schema: "public", table: "product_descs", filter },
+  (payload: RealtimePostgresChangesPayload<any>) => {
+    if (isOwnChange(payload, userId)) return;        // 👈
+    const { eventType, new: rowNew, old: rowOld } = payload;
+
+    applyRemote(() => {
+      if (eventType === "INSERT" || eventType === "UPDATE") {
+        setDescs(prev => ({ ...prev, [rowNew.nombre]: rowNew.texto ?? "" }));
+      } else if (eventType === "DELETE") {
+        const nombre = rowOld?.nombre as string | undefined;
+        if (!nombre) return;
+        setDescs(prev => { const c = { ...prev }; delete c[nombre]; return c; });
+      }
+    });
+  }
+);
+
+
+  channel.subscribe(); // abre el canal
+
+  return () => {
+    supabase.removeChannel(channel); // cierra al desmontar/cambiar usuario
+  };
+}, [userId]);
+
 
   // === NUEVO: guardado local automático cuando NO hay sesión ===
   useEffect(() => {
@@ -933,6 +1091,24 @@ const { data: sub } = supabase.auth.onAuthStateChange(async (_event: AuthChangeE
   const snapshot = JSON.stringify({ workers, slices, overrides, descs });
   try { localStorage.setItem(STORAGE_KEY, snapshot); } catch {}
 }, [workers, slices, overrides, descs, userId]);
+
+useEffect(() => {
+  // Registramos handlers de estado del socket
+  supabase.realtime.on("open",  () => setRtStatus("connected"));
+  supabase.realtime.on("close", () => setRtStatus("connecting"));
+  supabase.realtime.on("error", () => setRtStatus("error"));
+
+  // Si el socket ya estaba conectado al montar
+  try {
+    // @ts-ignore: acceso interno para lectura del estado inicial
+    if (supabase.realtime?.socket?.isConnected()) setRtStatus("connected");
+  } catch {}
+
+  // No hay una API pública tipada para "off" en supabase-js v2,
+  // así que no hacemos cleanup explícito de estos listeners aquí.
+  return () => {};
+}, []);
+
 
   // Copia automática inicial y cada 10 minutos
 useEffect(() => {
@@ -1958,6 +2134,55 @@ function compactarBloques(workerId: string) {
     return [...otros, ...compactados];
   });
 }
+// === Mappers fila -> estado local ===
+function mapRowToSlice(r: any): TaskSlice {
+  return {
+    id: r.id,
+    taskId: r.task_id,
+    producto: r.producto,
+    fecha: r.fecha,
+    horas: Number(r.horas),
+    trabajadorId: r.trabajador_id,
+    color: r.color,
+  };
+}
+
+function mapRowToWorker(r: any): Worker {
+  return {
+    id: r.id,
+    nombre: r.nombre,
+    jornada: {
+      lu: Number(r.lu_hours ?? 8.5),
+      ma: Number(r.ma_hours ?? 8.5),
+      mi: Number(r.mi_hours ?? 8.5),
+      ju: Number(r.ju_hours ?? 8.5),
+      vi: Number(r.vi_hours ?? 6),
+    },
+  };
+}
+
+// day_overrides: estructura { [workerId]: { [fechaISO]: { extra?, sabado?, domingo?, vacacion? } } }
+function mergeOverrideRow(
+  prev: OverridesState,
+  row: { worker_id: string; fecha: string; extra?: number; sabado?: boolean; domingo?: boolean; vacacion?: boolean }
+): OverridesState {
+  const byW = { ...(prev[row.worker_id] || {}) };
+  const cur = {
+    ...(byW[row.fecha] || {}),
+    extra: Number(row.extra ?? 0),
+    sabado: !!row.sabado,
+    domingo: !!row.domingo,
+    vacacion: !!row.vacacion,
+  };
+
+  // limpia si no queda nada relevante
+  if (!cur.extra && !cur.sabado && !cur.domingo && !cur.vacacion) {
+    delete byW[row.fecha];
+  } else {
+    byW[row.fecha] = cur;
+  }
+  return { ...prev, [row.worker_id]: byW };
+}
 
 
   /* ===================== Render ===================== */
@@ -1983,6 +2208,12 @@ function compactarBloques(workerId: string) {
     <div style={{ fontWeight: 700, color: "#fff", marginRight: 8 }}>{monthYear(base)}</div>
     <button style={btnLabeled} onClick={() => setBase(addMonths(base, -1))}>◀ Mes anterior</button>
     <button style={btnLabeled} onClick={() => setBase(addMonths(base, 1))}>Siguiente mes ▶</button>
+
+{/* Indicador de conexión Realtime */}
+<div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+  <RTBadge status={rtStatus} />
+</div>
+
 
     {locked ? (
       <button style={btnUnlock} className="no-print" onClick={tryUnlock}>🔒 Desbloquear</button>
@@ -2732,6 +2963,32 @@ function disabledIf<T extends React.CSSProperties>(style: T, disabled: boolean):
     ? { ...style, opacity: 0.6, cursor: "not-allowed" }
     : style) as T;
 }
+
+function RTBadge({ status }: { status: RTStatus }) {
+  const color =
+    status === "connected" ? "#10b981" : // verde
+    status === "connecting" ? "#f59e0b" : // ámbar
+    "#ef4444"; // rojo
+
+  const label =
+    status === "connected" ? "Realtime: conectado" :
+    status === "connecting" ? "Realtime: reconectando…" :
+    "Realtime: error de conexión";
+
+  return (
+    <div title={label} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+      <span
+        style={{
+          width: 10, height: 10, borderRadius: "50%",
+          background: color, boxShadow: "0 0 0 2px rgba(255,255,255,.2)"
+        }}
+      />
+      <span style={{ color: "#e5e7eb", fontSize: 12 }}>{label}</span>
+    </div>
+  );
+}
+
+
 
 /* ===================== Badge ===================== */
 function DayCapacityBadge({ capacidad, usado }: { capacidad: number; usado: number }) {
