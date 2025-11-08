@@ -129,6 +129,15 @@ function monthYear(d: Date | null | undefined): string {
   } catch { return ""; }
 }
 
+// --- FORMATEO LOCAL, sin UTC ---
+const toLocalISO = (d: Date) => format(d, "yyyy-MM-dd");
+
+// Construye un Date a medianoche local desde "YYYY-MM-DD"
+const fromLocalISO = (iso: string) => {
+  const [y, m, dd] = iso.split("-").map(Number);
+  return new Date(y, (m ?? 1) - 1, dd ?? 1); // ← SIN UTC
+};
+
 const weekDaysHeader = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"];
 const PX_PER_HOUR = 20;
 const URGENT_COLOR = "#f59e0b";
@@ -160,7 +169,7 @@ function colorFromId(id: string) {
 const WEEKEND_BASE_HOURS = 6; // cuando se habilita sábado/domingo
 
 function capacidadDia(w: Worker, d: Date, ov: OverridesState): number {
-  const iso = d.toISOString().slice(0, 10);
+  const iso = toLocalISO(d as Date);
   const dow = getDay(d); // 0=domingo, 1=lunes,...,6=sábado
   const byW = ov[w.id] || {};
   const o: DayOverride = byW[iso] || {};
@@ -1211,7 +1220,7 @@ function editOverrideForDay(worker: Worker, date: Date) {
   const h = Number(hStr);
   if (!isFinite(h) || h <= 0) return;
 
-  const startISO = date.toISOString().slice(0, 10);
+  const startISO = toLocalISO(date);
 
   // 2) Bloques anteriores y los que van a refluírse desde startISO
   const before = slices
@@ -1267,9 +1276,9 @@ function editOverrideForDay(worker: Worker, date: Date) {
       }
     }
 
-    const d = new Date(dayISO);
-    d.setDate(d.getDate() + 1);
-    dayISO = d.toISOString().slice(0, 10);
+    const d = fromLocalISO(dayISO);
+const nextDay = addDays(d, 1);
+dayISO = toLocalISO(nextDay);
   }
 
   // 5) Actualizamos el estado global
@@ -1310,11 +1319,11 @@ function editOverrideForDay(worker: Worker, date: Date) {
 
 // Lista todos los días (ISO: YYYY-MM-DD) entre dos fechas (incluidas)
 function eachDayISO(fromISO: string, toISO: string): string[] {
-  const from = new Date(fromISO);
-  const to = new Date(toISO);
+  const from = fromLocalISO(fromISO);
+  const to   = fromLocalISO(toISO);
   const out: string[] = [];
   for (let d = new Date(from); d <= to; d.setDate(d.getDate() + 1)) {
-    out.push(d.toISOString().slice(0, 10));
+    out.push(toLocalISO(d));
   }
   return out;
 }
@@ -1454,7 +1463,7 @@ const totalHoy = Math.round(result
   .reduce((a, s) => a + s.horas, 0) * 2) / 2;
 
 // Capacidad del día con overrides actuales
-const capacidadHoy = capacidadDia(w, new Date(diaISO), overrides);
+const capacidadHoy = capacidadDia(w, fromLocalISO(diaISO), overrides);
 const exceso = Math.max(0, Math.round((totalHoy - capacidadHoy) * 2) / 2);
 
 
@@ -1473,7 +1482,6 @@ const exceso = Math.max(0, Math.round((totalHoy - capacidadHoy) * 2) / 2);
     return result;
   });
 }
-
 
 /**
  * Añade un bloque NUEVO (incidencia) para un trabajador empezando en un día concreto.
@@ -1497,7 +1505,7 @@ function addNewBlockFromDay(trabajadorId: string, diaISO: string, producto: stri
       producto.trim(),
       safeHoras,
       w,
-      new Date(diaISO),
+      fromLocalISO(diaISO),
       base,
       prev,         // planificar contra lo que ya existe
       overrides
@@ -1512,7 +1520,7 @@ const totalHoy = Math.round(result
   .filter(s => s.trabajadorId === w.id && s.fecha === diaISO)
   .reduce((a, s) => a + s.horas, 0) * 2) / 2;
 
-const capacidadHoy = capacidadDia(w, new Date(diaISO), overrides);
+const capacidadHoy = capacidadDia(w, fromLocalISO(diaISO), overrides);
 const exceso = Math.max(0, Math.round((totalHoy - capacidadHoy) * 2) / 2);
 
 if (exceso > 0) {
@@ -1786,11 +1794,7 @@ function newId() {
   return (crypto as any)?.randomUUID ? (crypto as any).randomUUID() : String(Math.random()).slice(2);
 }
 
-function isoPlusDays(iso: string, days: number): string {
-  const d = new Date(iso);
-  d.setDate(d.getDate() + days);
-  return d.toISOString().slice(0, 10);
-}
+
 
 /**
  * Refluye TODOS los tramos (slices) del trabajador a partir de startISO inclusive,
@@ -1829,7 +1833,7 @@ function reflowFromWorker(workerId: string, startISO: string) {
     guard++;
 
     // Capacidad del día teniendo en cuenta overrides (extra, sabado, domingo, vacaciones)
-    const cap = capacidadDia(w, new Date(dayISO), overrides);
+    const cap = capacidadDia(w, fromLocalISO(dayISO), overrides);
     let capLeft = Math.max(0, cap);
 
     // Si hay vacaciones o cap=0, no colocamos nada este día
@@ -1859,7 +1863,7 @@ function reflowFromWorker(workerId: string, startISO: string) {
     }
 
     // Avanzamos al siguiente día
-    dayISO = isoPlusDays(dayISO, 1);
+    dayISO = toLocalISO(addDays(fromLocalISO(dayISO), 1));
   }
 
   // 3) Escribimos nuevo estado: lo de antes + lo re-empacado
@@ -1889,7 +1893,7 @@ function reflowFromWorkerWithOverrides(workerId: string, startISO: string, ov: O
 
   while (queue.length > 0 && guard < 365) {
     guard++;
-    const cap = capacidadDia(w, new Date(dayISO), ov); // ← usa ov (nuevo)
+    const cap = capacidadDia(w, fromLocalISO(dayISO), ov); // ← usa ov (nuevo)
     let capLeft = Math.max(0, cap);
 
     if (capLeft > 0) {
@@ -1914,7 +1918,7 @@ function reflowFromWorkerWithOverrides(workerId: string, startISO: string, ov: O
       }
     }
 
-    dayISO = isoPlusDays(dayISO, 1);
+    dayISO = toLocalISO(addDays(fromLocalISO(dayISO), 1));
   }
 
   const restOthers = slices.filter(s => s.trabajadorId !== workerId);
@@ -2182,7 +2186,7 @@ function compactarBloques(workerId: string) {
                     <div style={weekCol}>{format(week[0], "I")}</div>
                     {week.map((d) => {
                       const f = fmt(d);
-                      const iso = f || d.toISOString().slice(0, 10);
+                      const iso = f || toLocalISO(d);
                       const delDia = f ? slices.filter((s) => s.trabajadorId === w.id && s.fecha === f) : [];
                       const cap = capacidadDia(w, d, overrides);
                       const used = usadasEnDia(slices, w.id, d);
