@@ -1195,32 +1195,90 @@ function editOverrideForDay(worker: Worker, date: Date) {
 
   // Urgencia
   function addManualHere(worker: Worker, date: Date) {
-    if (!canEdit) return;
-    const prod = prompt("Producto a insertar:", "Urgente");
-    if (!prod) return;
-    const hStr = prompt("Horas de ese producto:", "4");
-    const h = Number(hStr);
-    if (!isFinite(h) || h <= 0) return;
+  if (!canEdit) return;
 
-    const delTrabajador = slices
-      .filter((s) => s.trabajadorId === worker.id)
-      .sort((a, b) => a.fecha.localeCompare(b.fecha));
+  // 1) Nombre de la urgencia (con ⚠️ automático)
+  const baseProd = prompt("Producto a insertar (urgente):", "Urgente");
+  if (!baseProd) return;
 
-    const keepBefore = delTrabajador.filter((s) => s.fecha < fmt(date));
-    const tail = delTrabajador.filter((s) => s.fecha >= fmt(date));
+  const prod = baseProd.trim();
+  const nombreFinal =
+    /^⚠️/.test(prod) || /urgenc/i.test(prod)
+      ? prod // si ya lo tiene
+      : `⚠️ ${prod}`; // añade icono automáticamente
 
-    const urgent: QueueItem = {
-      producto: prod.trim(),
-      horas: Math.round(h * 2) / 2,
-      color: URGENT_COLOR,        // amarillo para urgencias
-      taskId: "T" + Math.random().toString(36).slice(2, 8),
-    };
+  const hStr = prompt("Horas de esa urgencia:", "4");
+  const h = Number(hStr);
+  if (!isFinite(h) || h <= 0) return;
 
-    const queue: QueueItem[] = [urgent, ...aggregateToQueue(tail)];
+  const startISO = date.toISOString().slice(0, 10);
 
-    const startISO = date.toISOString().slice(0, 10);   // ⬅️ ISO del día desde el que quieres reempacar
-reflowFromWorker(worker.id, startISO);    
+  // 2) Bloques anteriores y los que van a refluírse desde startISO
+  const before = slices
+    .filter(s => s.trabajadorId === worker.id && s.fecha < startISO)
+    .sort((a,b) => a.fecha.localeCompare(b.fecha));
+
+  const fromHere = slices
+    .filter(s => s.trabajadorId === worker.id && s.fecha >= startISO)
+    .sort((a,b) =>
+      a.fecha < b.fecha ? -1 :
+      a.fecha > b.fecha ? 1  :
+      (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+    );
+
+  // 3) Cola con la URGENCIA primero (prioridad máxima)
+  const urgentTaskId = "T" + Math.random().toString(36).slice(2, 8);
+  const queue: QueueItem[] = [
+    { taskId: urgentTaskId, producto: nombreFinal, color: URGENT_COLOR, horas: Math.round(h * 2) / 2 },
+    ...fromHere.map(s => ({ taskId: s.taskId, producto: s.producto, color: s.color, horas: s.horas })),
+  ];
+
+  // 4) Reempacado de ese día en adelante
+  const rebuilt: TaskSlice[] = [];
+  let dayISO = startISO;
+  let guard = 0;
+
+  function newId() {
+    return (crypto as any)?.randomUUID ? (crypto as any).randomUUID() : "S" + Math.random().toString(36).slice(2, 10);
   }
+
+  while (queue.length > 0 && guard < 365) {
+    guard++;
+    let capLeft = Math.max(0, capacidadDia(worker, new Date(dayISO), overrides));
+
+    if (capLeft > 0) {
+      while (queue.length > 0 && capLeft > 1e-9) {
+        const head = queue[0];
+        const take = Math.min(head.horas, capLeft);
+        if (take > 1e-9) {
+          rebuilt.push({
+            id: newId(),
+            taskId: head.taskId,
+            producto: head.producto,
+            fecha: dayISO,
+            horas: Math.round(take * 2) / 2,
+            trabajadorId: worker.id,
+            color: head.color, // ⚠️ amarillo para urgencias
+          });
+          head.horas = Math.round((head.horas - take) * 2) / 2;
+          capLeft    = Math.round((capLeft - take) * 2) / 2;
+        }
+        if (head.horas <= 1e-9) queue.shift();
+      }
+    }
+
+    const d = new Date(dayISO);
+    d.setDate(d.getDate() + 1);
+    dayISO = d.toISOString().slice(0, 10);
+  }
+
+  // 5) Actualizamos el estado global
+  const restOthers = slices.filter(s => s.trabajadorId !== worker.id);
+  setSlices([...before, ...rebuilt, ...restOthers]);
+
+  // 6) Compactamos por seguridad (combina tramos del mismo día)
+  compactarBloques(worker.id);
+}
 
   // Descripciones CRUD
   function saveDesc() {
