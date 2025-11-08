@@ -528,10 +528,8 @@ function editBlockTotalFromSlice(slice: TaskSlice) {
   const w = workers.find(x => x.id === slice.trabajadorId);
   if (!w) return;
 
-  // Todas las partes de ese bloque (taskId) para ese trabajador
-  const delBloque = slices
-    .filter(s => s.trabajadorId === w.id && s.taskId === slice.taskId);
-
+  // Todas las partes del bloque (taskId) para ese trabajador
+  const delBloque = slices.filter(s => s.trabajadorId === w.id && s.taskId === slice.taskId);
   if (delBloque.length === 0) return;
 
   const startF = delBloque.reduce((m, s) => (s.fecha < m ? s.fecha : m), delBloque[0].fecha);
@@ -547,30 +545,31 @@ function editBlockTotalFromSlice(slice: TaskSlice) {
   if (!isFinite(nuevoTotal) || nuevoTotal <= 0) return;
 
   setSlices(prev => {
-    // Quitamos el plan anterior de ese bloque+trabajador
+    // 1) Quita el bloque anterior de ese trabajador
     const restantes = prev.filter(s => !(s.taskId === slice.taskId && s.trabajadorId === w.id));
-    // Replanificamos desde el primer día del bloque
+
+    // 2) Vuelve a planificar ese bloque desde su primer día
     const plan = planificarBloqueAuto(
       slice.producto,
       nuevoTotal,
       w,
-      fromLocalISO(startF),
+      fromLocalISO(startF),                 // ← importante: fecha local
       base,
       restantes,
       overrides
     ).map(s => ({ ...s, taskId: slice.taskId, color: colorFromId(slice.taskId) }));
 
+    // 3) Mezcla “resto + plan nuevo”
     const merged = [...restantes, ...plan];
 
-    // 👇 Programamos el reflujo global desde startF para rellenar huecos/partir donde toque
-    // (usamos setTimeout 0 para que React aplique primero este setState)
-    setTimeout(() => {
-      reflowFromWorker(w.id, startF);
-    }, 0);
+    // 4) Refluye DESDE startF usando el MISMO snapshot (sin tocar estado global)
+    const final = reflowFromWorkerPure(merged, w, startF, overrides);
 
-    return merged;
+    // 5) Devuelve el resultado definitivo
+    return final;
   });
 }
+
 
 
   // === NUEVO: helper seguro para leer del almacenamiento local ===
@@ -2106,6 +2105,66 @@ function reflowFromWorkerWithOverrides(workerId: string, startISO: string, ov: O
   const restOthers = slices.filter(s => s.trabajadorId !== workerId);
   setSlices([...before, ...rebuilt, ...restOthers]);
 }
+
+function reflowFromWorkerPure(
+  baseSlices: TaskSlice[],
+  worker: Worker,
+  startISO: string,
+  ov: OverridesState
+): TaskSlice[] {
+  const before = baseSlices.filter(s => s.trabajadorId === worker.id && s.fecha < startISO);
+  const fromHere = baseSlices
+    .filter(s => s.trabajadorId === worker.id && s.fecha >= startISO)
+    .sort((a, b) =>
+      a.fecha < b.fecha ? -1 :
+      a.fecha > b.fecha ?  1 :
+      (a.id   < b.id   ? -1 : a.id > b.id ? 1 : 0)
+    );
+
+  const queue = fromHere.map(s => ({
+    taskId: s.taskId,
+    producto: s.producto,
+    color: s.color,
+    horas: s.horas,
+  }));
+
+  const rebuilt: TaskSlice[] = [];
+  let guard = 0;
+  let dayISO = startISO;
+
+  while (queue.length > 0 && guard < 365) {
+    guard++;
+    let capLeft = Math.max(0, capacidadDia(worker, fromLocalISO(dayISO), ov));
+
+    if (capLeft > 0) {
+      while (queue.length > 0 && capLeft > 1e-9) {
+        const head = queue[0];
+        const take = Math.min(head.horas, capLeft);
+        if (take > 1e-9) {
+          rebuilt.push({
+            id: newId(),
+            taskId: head.taskId,
+            producto: head.producto,
+            fecha: dayISO,
+            horas: Math.round(take * 2) / 2,
+            trabajadorId: worker.id,
+            color: head.color,
+          });
+          head.horas = Math.round((head.horas - take) * 2) / 2;
+          capLeft    = Math.round((capLeft    - take) * 2) / 2;
+        }
+        if (head.horas <= 1e-9) queue.shift();
+        if (capLeft < 1e-9) capLeft = 0;
+      }
+    }
+
+    dayISO = toLocalISO(addDays(fromLocalISO(dayISO), 1));
+  }
+
+  const restOthers = baseSlices.filter(s => s.trabajadorId !== worker.id);
+  return [...before, ...rebuilt, ...restOthers];
+}
+
 
 function compactarBloques(workerId: string) {
   setSlices((prev) => {
