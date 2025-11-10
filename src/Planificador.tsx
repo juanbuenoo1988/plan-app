@@ -253,10 +253,72 @@ function compactFrom(
   overrides: OverridesState,
   allSlices: TaskSlice[]
 ): TaskSlice[] {
-  // Base: todo lo que ya hay (antes y desde startF)
-  // Reutilizamos la función pinned pasando la base completa
-  return reflowFromWorkerPurePinned(allSlices, worker, startF, overrides);
+  // 1) Partes del trabajador ANTES de startF (se conservan)
+  const keepBefore = allSlices
+    .filter((s) => s.trabajadorId === worker.id && s.fecha < startF)
+    .sort((a, b) => a.fecha.localeCompare(b.fecha));
+
+  // 2) Partes del trabajador DESDE startF (se reempacan)
+  const fromHere = allSlices
+    .filter((s) => s.trabajadorId === worker.id && s.fecha >= startF)
+    .sort((a, b) =>
+      a.fecha < b.fecha ? -1 :
+      a.fecha > b.fecha ?  1 :
+      (a.id   < b.id   ? -1 : a.id > b.id ? 1 : 0)
+    );
+
+  // 3) Separar URGENTES (no se mueven de su día) y movibles
+  const pinned  = fromHere.filter(isUrgentSlice);
+  const movable = fromHere.filter((s) => !isUrgentSlice(s));
+
+  // 4) Cola agregada por bloque (sólo lo movible)
+  const queue = aggregateToQueue(movable);
+
+  // 5) Reconstrucción día a día dejando primero URGENCIAS fijas
+  const rebuilt: TaskSlice[] = [];
+  let dayISO = startF;
+  let guard = 0;
+  while ((queue.length > 0 || pinned.length > 0) && guard < 365) {
+    guard++;
+
+    let capLeft = Math.max(0, capacidadDia(worker, fromLocalISO(dayISO), overrides));
+
+    // URGENCIAS de este día (no se tocan)
+    const todaysPinned = pinned.filter((p) => p.fecha === dayISO);
+    for (const p of todaysPinned) {
+      rebuilt.push({ ...p });
+      capLeft = Math.max(0, Math.round((capLeft - p.horas) * 2) / 2);
+    }
+
+    // Rellenar con la cola movible
+    while (queue.length > 0 && capLeft > 1e-9) {
+      const head = queue[0];
+      const take = Math.min(head.horas, capLeft);
+      if (take > 1e-9) {
+        rebuilt.push({
+          id: (crypto as any)?.randomUUID
+  ? (crypto as any).randomUUID()
+  : "S" + Math.random().toString(36).slice(2, 10),
+          taskId: head.taskId,
+          producto: head.producto,
+          fecha: dayISO,
+          horas: Math.round(take * 2) / 2,
+          trabajadorId: worker.id,
+          color: head.color,
+        });
+        head.horas = Math.round((head.horas - take) * 2) / 2;
+        capLeft    = Math.round((capLeft    - take) * 2) / 2;
+      }
+      if (head.horas <= 1e-9) queue.shift();
+    }
+
+    dayISO = toLocalISO(addDays(fromLocalISO(dayISO), 1));
+  }
+
+  // 6) Devuelve SOLO lo del trabajador (antes + reconstruido)
+  return [...keepBefore, ...rebuilt];
 }
+
 
 
 function reflowFrom(
@@ -600,9 +662,12 @@ function editUrgentSlice(slice: TaskSlice) {
     );
 
     // 2) re-empaqueta desde ese día manteniendo urgencias clavadas
-    return reflowFromWorkerPurePinned(fixed, w, slice.fecha, overrides);
+    const reflowedForWorker = compactFrom(w, slice.fecha, overrides, fixed);
+    const others = fixed.filter(s => s.trabajadorId !== w.id);
+    return [...others, ...reflowedForWorker];
   });
 }
+
 
 
 
@@ -2020,14 +2085,25 @@ function newId() {
 function reflowFromWorker(workerId: string, startISO: string) {
   const w = workers.find(x => x.id === workerId);
   if (!w) return;
-  setSlices(prev => reflowFromWorkerPurePinned(prev, w, startISO, overrides));
+
+  setSlices(prev => {
+    const reflowedForWorker = compactFrom(w, startISO, overrides, prev);
+    const others = prev.filter(s => s.trabajadorId !== w.id);
+    return [...others, ...reflowedForWorker];
+  });
 }
 
 function reflowFromWorkerWithOverrides(workerId: string, startISO: string, ov: OverridesState) {
   const w = workers.find(x => x.id === workerId);
   if (!w) return;
-  setSlices(prev => reflowFromWorkerPurePinned(prev, w, startISO, ov));
+
+  setSlices(prev => {
+    const reflowedForWorker = compactFrom(w, startISO, ov, prev);
+    const others = prev.filter(s => s.trabajadorId !== w.id);
+    return [...others, ...reflowedForWorker];
+  });
 }
+
 
 
 function reflowFromWorkerPure(
@@ -2555,7 +2631,7 @@ const handleDayHeaderDblClick = () => {
                           }}
                           title={`Doble clic: extras / sábado / domingo para ${w.nombre} el ${f || "día"}`}
 
-                          
+                          onDoubleClick={() => canEdit && editOverrideForDay(w, d)}
                           onDragOver={onDragOver}
                           onDrop={(e) => onDropDay(e, w.id, d)}
                         >
