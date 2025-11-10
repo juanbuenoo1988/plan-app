@@ -2006,31 +2006,29 @@ function aplicarExtrasRango() {
   const nextOverrides: OverridesState = (() => {
     const prev = overrides;
     const byW = { ...(prev[gmWorker] || {}) };
+
     for (const iso of dias) {
-  const dow = getDay(fromLocalISO(iso)); // 0=domingo, 1=lunes, ..., 6=sábado
+      const dow = getDay(fromLocalISO(iso)); // 0=domingo, 1=lunes,...,6=sábado
+      const cur = { ...(byW[iso] || {}) };
 
-  // ❌ NO aplicar en domingos ni sábados
-  if (dow === 0 || dow === 6) continue;
-
-  const cur = { ...(byW[iso] || {}) };
-
-  if (gmExtra === 0) {
-    // 🔹 Si pones 0 → ELIMINAR las horas extra de ese día
-    delete cur.extra;
-
-    // Si el override queda vacío, quítalo del mapa
-    if (!cur.extra && !cur.sabado && !cur.domingo && !cur.vacacion) {
-      delete byW[iso];
-    } else {
-      byW[iso] = cur;
+      if (gmExtra === 0) {
+        // ✅ Permitir BORRAR extras también en DOMINGOS (antes se saltaba)
+        if ("extra" in cur) {
+          delete cur.extra;
+        }
+        // Limpia el override si queda vacío
+        if (!cur.extra && !cur.sabado && !cur.domingo && !cur.vacacion) {
+          delete byW[iso];
+        } else {
+          byW[iso] = cur;
+        }
+      } else {
+        // ➕ Añadir extras SOLO L–V (no sábados, no domingos)
+        if (dow === 0 || dow === 6) continue;
+        cur.extra = Math.round(gmExtra * 2) / 2;
+        byW[iso] = cur;
+      }
     }
-  } else {
-    // 🔹 Si pones >0 → sumar al valor actual (comportamiento anterior)
-    const before = Number(cur.extra ?? 0);
-    cur.extra = Math.round((before + gmExtra) * 2) / 2;
-    byW[iso] = cur;
-  }
-}
 
     return { ...prev, [gmWorker]: byW };
   })();
@@ -2043,6 +2041,8 @@ function aplicarExtrasRango() {
   reflowFromWorkerWithOverrides(gmWorker, startISO, nextOverrides);
   compactarBloques(gmWorker);
 }
+
+
 
 
 
