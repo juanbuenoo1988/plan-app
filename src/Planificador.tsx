@@ -524,7 +524,8 @@ const updMatches = useMemo(() => {
 
   type PrintMode = "none" | "monthly" | "daily" | "dailyAll";
   const [printMode, setPrintMode] = useState<PrintMode>("none");
-  
+  const [isNewBlockOpen, setIsNewBlockOpen] = useState(false);
+const [isWorkersOpen, setIsWorkersOpen] = useState(false);
   const [printWorker, setPrintWorker] = useState<string>("W1");
   const [printDate, setPrintDate] = useState<string>(fmt(new Date()));
 
@@ -2431,122 +2432,173 @@ function mergeOverrideRow(
           {/* FORM + TRABAJADORES */}
           <div style={panelRow} className="no-print">
             <div style={panel}>
-              <div style={panelTitle}>Nuevo bloque</div>
-              <div style={panelInner}>
-                <div style={grid2}>
-                  <label style={label}>Producto</label>
-                  <input style={disabledIf(input, locked)} disabled={locked} value={form.producto} onChange={(e) => setForm({ ...form, producto: e.target.value })} />
-                  <label style={label}>Horas totales</label>
+  <div
+    style={{ ...panelTitle, ...collapsibleHeader }}
+    onClick={() => setIsNewBlockOpen(v => !v)}
+    aria-expanded={isNewBlockOpen}
+  >
+    <span>Nuevo bloque</span>
+    <span style={caret}>{isNewBlockOpen ? "▾" : "▸"}</span>
+  </div>
+
+  {isNewBlockOpen && (
+    <div style={panelInner}>
+      <div style={grid2}>
+        <label style={label}>Producto</label>
+        <input
+          style={disabledIf(input, locked)}
+          disabled={locked}
+          value={form.producto}
+          onChange={(e) => setForm({ ...form, producto: e.target.value })}
+        />
+
+        <label style={label}>Horas totales</label>
+        <input
+          style={disabledIf(input, locked)}
+          disabled={locked}
+          type="number"
+          min={0.5}
+          step={0.5}
+          value={form.horasTotales}
+          onChange={(e) => {
+            const v = Number(e.target.value);
+            setForm({ ...form, horasTotales: isFinite(v) ? v : 0 });
+          }}
+        />
+
+        <label style={label}>Trabajador</label>
+        <select
+          style={disabledIf(input, locked)}
+          disabled={locked}
+          value={form.trabajadorId}
+          onChange={(e) => {
+            const id = e.target.value;
+            setForm(prev => ({ ...prev, trabajadorId: id }));
+            moveWorkerToTop(id);
+          }}
+        >
+          {workers.map((w) => (
+            <option key={`wopt-${w.id}`} value={w.id}>{w.nombre}</option>
+          ))}
+        </select>
+
+        <label style={label}>Fecha inicio</label>
+        <input
+          style={disabledIf(input, locked)}
+          disabled={locked}
+          type="date"
+          value={form.fechaInicio}
+          onChange={(e) => setForm({ ...form, fechaInicio: e.target.value })}
+        />
+      </div>
+
+      <div style={{ marginTop: 12, display: "flex", justifyContent: "center" }}>
+        <button
+          style={disabledIf(btnPrimary, locked)}
+          disabled={locked}
+          onClick={crearBloque}
+        >
+          ➕ Planificar
+        </button>
+      </div>
+    </div>
+  )}
+</div>
+
+
+            <div style={panel}>
+  <div
+    style={{ ...panelTitle, ...collapsibleHeader }}
+    onClick={() => setIsWorkersOpen(v => !v)}
+    aria-expanded={isWorkersOpen}
+  >
+    <span>Trabajadores</span>
+    <span style={caret}>{isWorkersOpen ? "▾" : "▸"}</span>
+  </div>
+
+  {isWorkersOpen && (
+    <>
+      <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+        <input
+          style={disabledIf(input, locked)}
+          disabled={locked}
+          placeholder="Nombre del trabajador"
+          value={nuevoTrabajador}
+          onChange={(e) => setNuevoTrabajador(e.target.value)}
+        />
+        <button
+          style={disabledIf(btnLabeled, locked)}
+          disabled={locked}
+          onClick={addWorker}
+        >
+          ➕ Añadir
+        </button>
+      </div>
+
+      <table style={table}>
+        <thead>
+          <tr>
+            <th style={th}>Nombre</th>
+            <th style={th}>L</th>
+            <th style={th}>M</th>
+            <th style={th}>X</th>
+            <th style={th}>J</th>
+            <th style={th}>V</th>
+            <th style={th}>Acciones</th>
+          </tr>
+        </thead>
+        <tbody>
+          {workers.map((w) => (
+            <tr key={`row-${w.id}`}>
+              <td style={td}>
+                <input
+                  style={disabledIf(input, locked)}
+                  disabled={locked}
+                  value={w.nombre}
+                  onChange={(e) => editWorker(w.id, { nombre: e.target.value })}
+                />
+              </td>
+
+              {(["lu","ma","mi","ju","vi"] as const).map((dia) => (
+                <td key={`${w.id}-${dia}`} style={td}>
                   <input
                     style={disabledIf(input, locked)}
                     disabled={locked}
                     type="number"
-                    min={0.5}
+                    min={0}
                     step={0.5}
-                    value={form.horasTotales}
+                    value={w.jornada[dia]}
                     onChange={(e) => {
-                      const v = Number(e.target.value);
-                      setForm({ ...form, horasTotales: isFinite(v) ? v : 0 });
+                      const v = Math.max(0, Number(e.target.value));
+                      setWorkers(prev => prev.map(x =>
+                        x.id === w.id ? { ...x, jornada: { ...x.jornada, [dia]: v } } : x
+                      ));
                     }}
                   />
-                  <label style={label}>Trabajador</label>
-                 
-                 <select
-  style={disabledIf(input, locked)}
-  disabled={locked}
-  value={form.trabajadorId}
-  onChange={(e) => {
-    const id = e.target.value;
-    setForm(prev => ({ ...prev, trabajadorId: id }));
-    moveWorkerToTop(id); // ⬅️ reordena para ponerlo el primero
-  }}
->
-  {workers.map((w) => <option key={`wopt-${w.id}`} value={w.id}>{w.nombre}</option>)}
-</select>
+                </td>
+              ))}
 
+              <td style={{ ...td, width: 1, whiteSpace: "nowrap" }}>
+                <button
+                  style={disabledIf(btnTinyDanger, locked)}
+                  disabled={locked}
+                  onClick={() => deleteWorker(w.id)}
+                  title="Eliminar trabajador y todas sus asignaciones"
+                >
+                  🗑 Eliminar
+                </button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
 
-                  <label style={label}>Fecha inicio</label>
-                  <input
-                    style={disabledIf(input, locked)}
-                    disabled={locked}
-                    type="date"
-                    value={form.fechaInicio}
-                    onChange={(e) => setForm({ ...form, fechaInicio: e.target.value })}
-                  />
-                </div>
-                <div style={{ marginTop: 12, display: "flex", justifyContent: "center" }}>
-                  <button style={disabledIf(btnPrimary, locked)} disabled={locked} onClick={crearBloque}>➕ Planificar</button>
-                </div>
-              </div>
-            </div>
-
-            <div style={panel}>
-              <div style={panelTitle}>Trabajadores</div>
-              <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-                <input style={disabledIf(input, locked)} disabled={locked} placeholder="Nombre del trabajador" value={nuevoTrabajador} onChange={(e) => setNuevoTrabajador(e.target.value)} />
-                <button style={disabledIf(btnLabeled, locked)} disabled={locked} onClick={addWorker}>➕ Añadir</button>
-              </div>
-              <table style={table}>
-                <thead>
-  <tr>
-    <th style={th}>Nombre</th>
-    <th style={th}>L</th>
-    <th style={th}>M</th>
-    <th style={th}>X</th>
-    <th style={th}>J</th>
-    <th style={th}>V</th>
-    <th style={th}>Acciones</th>
-  </tr>
-</thead>
-                <tbody>
-  {workers.map((w) => (
-    <tr key={`row-${w.id}`}>
-      <td style={td}>
-        <input
-          style={disabledIf(input, locked)}
-          disabled={locked}
-          value={w.nombre}
-          onChange={(e) => editWorker(w.id, { nombre: e.target.value })}
-        />
-      </td>
-
-      {(["lu","ma","mi","ju","vi"] as const).map((dia) => (
-        <td key={`${w.id}-${dia}`} style={td}>
-          <input
-            style={disabledIf(input, locked)}
-            disabled={locked}
-            type="number"
-            min={0}
-            step={0.5}
-            value={w.jornada[dia]}
-            onChange={(e) => {
-              const v = Math.max(0, Number(e.target.value));
-              setWorkers(prev => prev.map(x =>
-                x.id === w.id ? { ...x, jornada: { ...x.jornada, [dia]: v } } : x
-              ));
-            }}
-          />
-        </td>
-      ))}
-
-      <td style={{ ...td, width: 1, whiteSpace: "nowrap" }}>
-        <button
-          style={disabledIf(btnTinyDanger, locked)}
-          disabled={locked}
-          onClick={() => deleteWorker(w.id)}
-          title="Eliminar trabajador y todas sus asignaciones"
-        >
-          🗑 Eliminar
-        </button>
-      </td>
-    </tr>
-  ))}
-</tbody>
-              </table>
-              <div style={{ fontSize: 18, color: "#000000ff", marginTop: 6 }}>
-                {locked ? "Bloqueado: solo lectura." :
-                <>Doble clic en una <b>celda</b> para fijar <b>extras/sábado</b> de ese <b>día</b>. Botón <b>＋</b> inserta un bloque desde ese día.</>}
-              </div>
+      <div style={{ fontSize: 18, color: "#000000ff", marginTop: 6 }}>
+        {locked
+          ? "Bloqueado: solo lectura."
+          : <>Doble clic en una <b>celda</b> para fijar <b>extras/sábado</b> de ese <b>día</b>. Botón <b>＋</b> inserta un bloque desde ese día.</>}
+      </div>    </>  )}
+</div>
             </div>
           </div>
 
@@ -3282,6 +3334,16 @@ const panelInner: React.CSSProperties = {
 };
 
 const panelTitle: React.CSSProperties = { fontWeight: 700, marginBottom: 8, color: "#111827" };
+// Encabezados desplegables
+const collapsibleHeader: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  cursor: "pointer",
+  userSelect: "none",
+};
+const caret: React.CSSProperties = { opacity: 0.7, marginLeft: 8, fontWeight: 700 };
+
 const grid2: React.CSSProperties = { display: "grid", gap: 8, gridTemplateColumns: "180px 1fr", alignItems: "center" };
 const label: React.CSSProperties = { fontSize: 13, color: "#374151" };
 const input: React.CSSProperties = { padding: "8px 10px", border: "1px solid #e5e7eb", borderRadius: 8, outline: "none", width: "100%", boxSizing: "border-box" };
