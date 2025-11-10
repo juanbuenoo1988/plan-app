@@ -2009,15 +2009,26 @@ function aplicarExtrasRango() {
     for (const iso of dias) {
   const dow = getDay(fromLocalISO(iso)); // 0=domingo, 1=lunes, ..., 6=sábado
 
-  // ❌ Saltar DOMINGOS (y opcionalmente sábados, si algún día lo quieres)
-  if (dow === 0) continue; // domingo: no aplicar extras
-  // Si algún día quieres excluir también sábados, usa: if (dow === 0 || dow === 6) continue;
+  // ❌ NO aplicar en domingos ni sábados
+  if (dow === 0 || dow === 6) continue;
 
-  // ✅ Solo aplicamos extras en L–V (1..5)
-  if (dow >= 1 && dow <= 5) {
-    const cur = byW[iso] || {};
+  const cur = { ...(byW[iso] || {}) };
+
+  if (gmExtra === 0) {
+    // 🔹 Si pones 0 → ELIMINAR las horas extra de ese día
+    delete cur.extra;
+
+    // Si el override queda vacío, quítalo del mapa
+    if (!cur.extra && !cur.sabado && !cur.domingo && !cur.vacacion) {
+      delete byW[iso];
+    } else {
+      byW[iso] = cur;
+    }
+  } else {
+    // 🔹 Si pones >0 → sumar al valor actual (comportamiento anterior)
     const before = Number(cur.extra ?? 0);
-    byW[iso] = { ...cur, extra: Math.round((before + gmExtra) * 2) / 2 };
+    cur.extra = Math.round((before + gmExtra) * 2) / 2;
+    byW[iso] = cur;
   }
 }
 
