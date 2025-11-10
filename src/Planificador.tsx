@@ -147,6 +147,7 @@ const fromLocalISO = (iso: string) => {
 const weekDaysHeader = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"];
 const PX_PER_HOUR = 20;
 const URGENT_COLOR = "#f59e0b";
+
 const isUrgentSlice = (s: TaskSlice) =>
   s.color === URGENT_COLOR ||
   /^⚠️/.test(s.producto) ||
@@ -252,17 +253,11 @@ function compactFrom(
   overrides: OverridesState,
   allSlices: TaskSlice[]
 ): TaskSlice[] {
-  const keepBefore = allSlices
-    .filter((s) => s.trabajadorId === worker.id && s.fecha < startF)
-    .sort((a, b) => a.fecha.localeCompare(b.fecha));
-
-  const tail = allSlices
-    .filter((s) => s.trabajadorId === worker.id && s.fecha >= startF)
-    .sort((a, b) => a.fecha.localeCompare(b.fecha));
-
-  const queue = aggregateToQueue(tail);
-  return reflowFrom(worker, new Date(startF), overrides, keepBefore, queue);
+  // Base: todo lo que ya hay (antes y desde startF)
+  // Reutilizamos la función pinned pasando la base completa
+  return reflowFromWorkerPurePinned(allSlices, worker, startF, overrides);
 }
+
 
 function reflowFrom(
   worker: Worker,
@@ -586,7 +581,6 @@ function editBlockTotalFromSlice(slice: TaskSlice) {
 }
 
 function editUrgentSlice(slice: TaskSlice) {
-  // Edita SOLO ese tramo, sin replanificar ni mover
   const nuevoStr = prompt(
     `Horas reales para "${slice.producto}" el ${slice.fecha}:`,
     String(slice.horas)
@@ -596,38 +590,20 @@ function editUrgentSlice(slice: TaskSlice) {
   const h = Math.max(0.5, Math.round(Number(nuevoStr) * 2) / 2);
   if (!isFinite(h)) return;
 
-  // 1) Actualiza únicamente ese slice y asegura color amarillo
-  setSlices(prev =>
-    prev.map(s =>
-      s.id === slice.id ? { ...s, horas: h, color: URGENT_COLOR } : s
-    )
-  );
-
-  // 2) Si al fijar horas nos pasamos de la capacidad del día, añade extra automáticamente
   const w = workers.find(x => x.id === slice.trabajadorId);
   if (!w) return;
 
-  const totalHoy = Math.round(
-    slices
-      .filter(s => s.trabajadorId === w.id && s.fecha === slice.fecha)
-      .reduce((a, s) => a + (s.id === slice.id ? h : s.horas), 0) * 2
-  ) / 2;
+  setSlices(prev => {
+    // 1) fija SOLO ese tramo (amarillo)
+    const fixed = prev.map(s =>
+      s.id === slice.id ? { ...s, horas: h, color: URGENT_COLOR } : s
+    );
 
-  const capacidadHoy = capacidadDia(w, fromLocalISO(slice.fecha), overrides);
-  const exceso = Math.max(0, Math.round((totalHoy - capacidadHoy) * 2) / 2);
-
-  if (exceso > 0) {
-    setOverrides(prevOv => {
-      const byWorker = { ...(prevOv[w.id] || {}) };
-      const cur = byWorker[slice.fecha] || { extra: 0 };
-      byWorker[slice.fecha] = {
-        ...cur,
-        extra: Math.round((Number(cur.extra ?? 0) + exceso) * 2) / 2,
-      };
-      return { ...prevOv, [w.id]: byWorker };
-    });
-  }
+    // 2) re-empaqueta desde ese día manteniendo urgencias clavadas
+    return reflowFromWorkerPurePinned(fixed, w, slice.fecha, overrides);
+  });
 }
+
 
 
   // === NUEVO: helper seguro para leer del almacenamiento local ===
@@ -2044,125 +2020,15 @@ function newId() {
 function reflowFromWorker(workerId: string, startISO: string) {
   const w = workers.find(x => x.id === workerId);
   if (!w) return;
-
-  // 1) Preparamos una cola con todos los slices del worker desde startISO
-  const before = slices.filter(s => s.trabajadorId === workerId && s.fecha < startISO);
-  const fromHere = slices
-    .filter(s => s.trabajadorId === workerId && s.fecha >= startISO)
-    // orden estable: primero por fecha, luego por orden de inserción (id) como fallback
-    .sort((a, b) => (a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)));
-
-  // Cola con { taskId, producto, color, horasRestantes }
-  const queue = fromHere.map(s => ({
-    taskId: s.taskId,
-    producto: s.producto,
-    color: s.color,
-    horas: s.horas, // se irá consumiendo
-  }));
-
-  // 2) Construimos los slices re-empacados a partir de startISO
-  const rebuilt: typeof slices = []; // solo lo que va desde startISO
-
-  // límite de seguridad para no entrar en bucles infinitos
-  let guard = 0;
-  let dayISO = startISO;
-
-  // Vamos avanzando días mientras queden horas en la cola
-  while (queue.length > 0 && guard < 365) {
-    guard++;
-
-    // Capacidad del día teniendo en cuenta overrides (extra, sabado, domingo, vacaciones)
-    const cap = capacidadDia(w, fromLocalISO(dayISO), overrides);
-    let capLeft = Math.max(0, cap);
-
-    // Si hay vacaciones o cap=0, no colocamos nada este día
-    if (capLeft > 0) {
-      // Consume de la cola mientras quede capacidad
-      while (queue.length > 0 && capLeft > 1e-9) {
-        const head = queue[0];
-        const take = Math.min(head.horas, capLeft);
-        if (take > 1e-9) {
-          rebuilt.push({
-            id: newId(),
-            taskId: head.taskId,
-            producto: head.producto,
-            fecha: dayISO,
-            horas: Math.round(take * 2) / 2,
-            trabajadorId: workerId,
-            color: head.color,
-          });
-          head.horas = Math.round((head.horas - take) * 2) / 2;
-          capLeft = Math.round((capLeft - take) * 2) / 2;
-        }
-        // si ya consumimos ese bloque, lo sacamos de la cola
-        if (head.horas <= 1e-9) queue.shift();
-        // si por redondeos queda un pelín negativo, corrige
-        if (capLeft < 1e-9) capLeft = 0;
-      }
-    }
-
-    // Avanzamos al siguiente día
-    dayISO = toLocalISO(addDays(fromLocalISO(dayISO), 1));
-  }
-
-  // 3) Escribimos nuevo estado: lo de antes + lo re-empacado
-  const restOthers = slices.filter(s => s.trabajadorId !== workerId);
-  setSlices([...before, ...rebuilt, ...restOthers]);
+  setSlices(prev => reflowFromWorkerPurePinned(prev, w, startISO, overrides));
 }
 
 function reflowFromWorkerWithOverrides(workerId: string, startISO: string, ov: OverridesState) {
   const w = workers.find(x => x.id === workerId);
   if (!w) return;
-
-  const before = slices.filter(s => s.trabajadorId === workerId && s.fecha < startISO);
-  const fromHere = slices
-    .filter(s => s.trabajadorId === workerId && s.fecha >= startISO)
-    .sort((a, b) => (a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)));
-
-  const queue = fromHere.map(s => ({
-    taskId: s.taskId,
-    producto: s.producto,
-    color: s.color,
-    horas: s.horas,
-  }));
-
-  const rebuilt: typeof slices = [];
-  let guard = 0;
-  let dayISO = startISO;
-
-  while (queue.length > 0 && guard < 365) {
-    guard++;
-    const cap = capacidadDia(w, fromLocalISO(dayISO), ov); // ← usa ov (nuevo)
-    let capLeft = Math.max(0, cap);
-
-    if (capLeft > 0) {
-      while (queue.length > 0 && capLeft > 1e-9) {
-        const head = queue[0];
-        const take = Math.min(head.horas, capLeft);
-        if (take > 1e-9) {
-          rebuilt.push({
-            id: newId(),
-            taskId: head.taskId,
-            producto: head.producto,
-            fecha: dayISO,
-            horas: Math.round(take * 2) / 2,
-            trabajadorId: workerId,
-            color: head.color,
-          });
-          head.horas = Math.round((head.horas - take) * 2) / 2;
-          capLeft    = Math.round((capLeft    - take) * 2) / 2;
-        }
-        if (head.horas <= 1e-9) queue.shift();
-        if (capLeft < 1e-9) capLeft = 0;
-      }
-    }
-
-    dayISO = toLocalISO(addDays(fromLocalISO(dayISO), 1));
-  }
-
-  const restOthers = slices.filter(s => s.trabajadorId !== workerId);
-  setSlices([...before, ...rebuilt, ...restOthers]);
+  setSlices(prev => reflowFromWorkerPurePinned(prev, w, startISO, ov));
 }
+
 
 function reflowFromWorkerPure(
   baseSlices: TaskSlice[],
@@ -2214,6 +2080,73 @@ function reflowFromWorkerPure(
         if (head.horas <= 1e-9) queue.shift();
         if (capLeft < 1e-9) capLeft = 0;
       }
+    }
+
+    dayISO = toLocalISO(addDays(fromLocalISO(dayISO), 1));
+  }
+
+  const restOthers = baseSlices.filter(s => s.trabajadorId !== worker.id);
+  return [...before, ...rebuilt, ...restOthers];
+}
+
+function reflowFromWorkerPurePinned(
+  baseSlices: TaskSlice[],
+  worker: Worker,
+  startISO: string,
+  ov: OverridesState
+): TaskSlice[] {
+  const before = baseSlices
+    .filter(s => s.trabajadorId === worker.id && s.fecha < startISO);
+
+  const fromHere = baseSlices
+    .filter(s => s.trabajadorId === worker.id && s.fecha >= startISO)
+    .sort((a, b) =>
+      a.fecha < b.fecha ? -1 :
+      a.fecha > b.fecha ?  1 :
+      (a.id   < b.id   ? -1 : a.id > b.id ? 1 : 0)
+    );
+
+  // “pinned” = URGENCIAS: no se mueven de su día
+  const pinned  = fromHere.filter(isUrgentSlice);
+  const movable = fromHere.filter(s => !isUrgentSlice(s));
+
+  // Cola con lo movible (agregado por bloque)
+  const queue = aggregateToQueue(movable).map(q => ({ ...q }));
+
+  const rebuilt: TaskSlice[] = [];
+  let dayISO = startISO;
+  let guard = 0;
+
+  while ((queue.length > 0 || pinned.length > 0) && guard < 365) {
+    guard++;
+
+    let capLeft = Math.max(0, capacidadDia(worker, fromLocalISO(dayISO), ov));
+
+    // 1) Coloca primero las urgencias del propio día (no se tocan)
+    const todaysPinned = pinned.filter(s => s.fecha === dayISO);
+    for (const p of todaysPinned) {
+      rebuilt.push({ ...p });
+      capLeft = Math.max(0, Math.round((capLeft - p.horas) * 2) / 2);
+    }
+
+    // 2) Rellena con la cola movible
+    while (queue.length > 0 && capLeft > 1e-9) {
+      const head = queue[0];
+      const take = Math.min(head.horas, capLeft);
+      if (take > 1e-9) {
+        rebuilt.push({
+          id: newId(),
+          taskId: head.taskId,
+          producto: head.producto,
+          fecha: dayISO,
+          horas: Math.round(take * 2) / 2,
+          trabajadorId: worker.id,
+          color: head.color,
+        });
+        head.horas = Math.round((head.horas - take) * 2) / 2;
+        capLeft    = Math.round((capLeft    - take) * 2) / 2;
+      }
+      if (head.horas <= 1e-9) queue.shift();
     }
 
     dayISO = toLocalISO(addDays(fromLocalISO(dayISO), 1));
@@ -2622,7 +2555,7 @@ const handleDayHeaderDblClick = () => {
                           }}
                           title={`Doble clic: extras / sábado / domingo para ${w.nombre} el ${f || "día"}`}
 
-                          onDoubleClick={() => canEdit && editOverrideForDay(w, d)}
+                          
                           onDragOver={onDragOver}
                           onDrop={(e) => onDropDay(e, w.id, d)}
                         >
