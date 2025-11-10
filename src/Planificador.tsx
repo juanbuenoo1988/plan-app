@@ -2763,27 +2763,13 @@ const handleDayHeaderDblClick = () => {
           )}
 
           <div style={blockTop}>
-            <span style={productFull}>
-              {isUrgent && (
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  width="14"
-                  height="14"
-                  viewBox="0 0 24 24"
-                  fill="#fff"
-                  stroke="#000"
-                  strokeWidth="2"
-                  style={{ marginRight: 6 }}
-                >
-                  <path d="M10.29 3.86L1.82 18a1 1 0 00.86 1.5h18.64a1 1 0 00.86-1.5L13.71 3.86a1 1 0 00-1.72 0z" />
-                  <line x1="12" y1="9" x2="12" y2="13" />
-                  <line x1="12" y1="17" x2="12" y2="17" />
-                </svg>
-              )}
-              {s.producto}
-            </span>
-            <span>{s.horas}h</span>
-          </div>
+            
+  <span style={productFull}>
+    {s.producto}
+  </span>
+  <span>{s.horas}h</span>
+</div>
+
           {desc ? <div style={miniHint}>ⓘ</div> : null}
         </div>
       );
