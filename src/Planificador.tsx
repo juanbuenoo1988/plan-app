@@ -177,7 +177,7 @@ function colorFromId(id: string) {
 }
 
 // Capacidad real del día para un trabajador, teniendo en cuenta overrides
-const WEEKEND_BASE_HOURS = 6; // cuando se habilita sábado/domingo
+const WEEKEND_BASE_HOURS = 8; // cuando se habilita sábado/domingo
 
 function capacidadDia(w: Worker, d: Date, ov: OverridesState): number {
   const iso = toLocalISO(d as Date);
@@ -2007,10 +2007,20 @@ function aplicarExtrasRango() {
     const prev = overrides;
     const byW = { ...(prev[gmWorker] || {}) };
     for (const iso of dias) {
-      const cur = byW[iso] || {};
-      const before = Number(cur.extra ?? 0);
-      byW[iso] = { ...cur, extra: Math.round((before + gmExtra) * 2) / 2 };
-    }
+  const dow = getDay(fromLocalISO(iso)); // 0=domingo, 1=lunes, ..., 6=sábado
+
+  // ❌ Saltar DOMINGOS (y opcionalmente sábados, si algún día lo quieres)
+  if (dow === 0) continue; // domingo: no aplicar extras
+  // Si algún día quieres excluir también sábados, usa: if (dow === 0 || dow === 6) continue;
+
+  // ✅ Solo aplicamos extras en L–V (1..5)
+  if (dow >= 1 && dow <= 5) {
+    const cur = byW[iso] || {};
+    const before = Number(cur.extra ?? 0);
+    byW[iso] = { ...cur, extra: Math.round((before + gmExtra) * 2) / 2 };
+  }
+}
+
     return { ...prev, [gmWorker]: byW };
   })();
 
