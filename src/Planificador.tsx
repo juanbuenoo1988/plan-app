@@ -18,7 +18,7 @@ import { es } from "date-fns/locale";
 import type { AuthChangeEvent, Session } from "@supabase/supabase-js";
 
 /* ===================== Configuración ===================== */
-const PASSWORD = "taller2025"; // ← cámbiala por la que quieras
+const PASSWORD = "0000"; // ← cámbiala por la que quieras
 const STORAGE_KEY = "planificador:v1";
 
 
