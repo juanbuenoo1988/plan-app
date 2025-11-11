@@ -524,7 +524,7 @@ const updMatches = useMemo(() => {
 
   type PrintMode = "none" | "monthly" | "daily" | "dailyAll";
   const [printMode, setPrintMode] = useState<PrintMode>("none");
-  const [isNewBlockOpen, setIsNewBlockOpen] = useState(false);
+  const [isNewBlockOpen, setIsNewBlockOpen] = useState(true);
 const [isWorkersOpen, setIsWorkersOpen] = useState(false);
   const [printWorker, setPrintWorker] = useState<string>("W1");
   const [printDate, setPrintDate] = useState<string>(fmt(new Date()));
