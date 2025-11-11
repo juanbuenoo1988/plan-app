@@ -812,42 +812,30 @@ setOverrides(obj);
   }
 
 
-async function ensureSessionOrExplain(): Promise<boolean> {
+ async function ensureSessionOrExplain(): Promise<boolean> {
   // 1) Conectividad
   if (typeof navigator !== "undefined" && navigator.onLine === false) {
     setSaveError("Sin conexión. No se puede guardar.");
     return false;
   }
-
-  // 2) Estado de sesión actual
-  const res = await supabase.auth.getSession();
-  let session = res.data.session ?? null;
-
-  // 3) Si NO hay sesión, intenta refrescar una vez (cubrir reanudaciones)
+  // 2) Sesión válida
+  const { data: { session } } = await supabase.auth.getSession();
   if (!session) {
-    const { data, error } = await supabase.auth.refreshSession();
-    session = data?.session ?? null;
-    if (error || !session) {
-      setSaveError("Sesión caducada. Inicia sesión para seguir guardando.");
-      setAuthMsg("Sesión caducada. Introduce tu email y pulsa «Enviarme enlace».");
-      return false;
-    }
+    setSaveError("Sesión caducada. Inicia sesión para seguir guardando.");
+    setAuthMsg("Sesión caducada. Introduce tu email y pulsa «Enviarme enlace».");
+    return false;
   }
-
-  // 4) Si está a punto de caducar (< 2 min), refresca
-  const expMs = (session.expires_at ?? 0) * 1000;
-  if (expMs && expMs - Date.now() < 120_000) {
-    const { data, error } = await supabase.auth.refreshSession();
+  // 3) (Opcional) Si al token le queda <60s, deja que Supabase lo refresque
+  const exp = session.expires_at ? session.expires_at * 1000 : 0;
+  if (exp && exp - Date.now() < 60_000) {
+    const { data, error } = await supabase.auth.getSession(); // refresca solo
     if (error || !data.session) {
       setSaveError("No se pudo refrescar la sesión. Vuelve a entrar.");
-      setAuthMsg("Sesión caducada. Introduce tu email y pulsa «Enviarme enlace».");
       return false;
     }
   }
-
   return true;
 }
-
 
 
   /**
@@ -1307,60 +1295,6 @@ useEffect(() => {
     setRtStatus("connecting");
   };
 }, [userId]);
-
-
-// === Revalida sesión si vuelves a la pestaña o recuperas conexión ===
-useEffect(() => {
-  let alive = true;
-
-  async function revalidateAndResync(reason: "focus" | "online") {
-    try {
-      const { data } = await supabase.auth.getSession();
-      let session = data.session ?? null;
-
-      if (!session) {
-        // Intenta refrescar silenciosamente
-        const { data: d2 } = await supabase.auth.refreshSession();
-        session = d2?.session ?? null;
-      } else {
-        // Si va a caducar pronto (<2min), refresca
-        const expMs = (session.expires_at ?? 0) * 1000;
-        if (expMs && expMs - Date.now() < 120_000) {
-          await supabase.auth.refreshSession();
-        }
-      }
-
-      const uid = session?.user?.id ?? null;
-      if (!alive) return;
-
-      if (uid) {
-        // Re-sincroniza desde la nube por si hubo cambios
-        setLoadingCloud(true);
-        await loadAll(uid);
-      }
-    } catch {
-      // no hacemos nada: el próximo autosave lo revalidará
-    } finally {
-      if (alive) setLoadingCloud(false);
-    }
-  }
-
-  const onFocus = () => revalidateAndResync("focus");
-  const onOnline = () => revalidateAndResync("online");
-
-  window.addEventListener("focus", onFocus);
-  window.addEventListener("online", onOnline);
-  document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") onFocus();
-  });
-
-  return () => {
-    alive = false;
-    window.removeEventListener("focus", onFocus);
-    window.removeEventListener("online", onOnline);
-  };
-}, []);
-
 
   // === NUEVO: guardado local automático cuando NO hay sesión ===
   useEffect(() => {
@@ -2128,47 +2062,39 @@ function downloadLastBackup() {
     }
   }
   
- async function guardedSaveAll(uid: string) {
+  async function guardedSaveAll(uid: string) {
   const myTurn = ++saveEpoch.current;
 
-  const ok = await ensureSessionOrExplain();
-  if (!ok) return;
+  async function attempt(max = 3, delay = 700) {
+    try {
+      await saveAll(uid);
+      return;
+    } catch (e: any) {
+      const msg = e?.message || "";
+      const code = e?.status || e?.code;
 
-  // Helper: detectar error de auth (401/JWT)
-  const isAuthError = (e: any) => {
-    const msg = (e?.message ?? e?.error_description ?? e?.hint ?? "").toString().toLowerCase();
-    const code = (e?.code ?? e?.status ?? e?.statusCode ?? "").toString();
-    return code === "401"
-      || /jwt|token|session|expired|invalid/.test(msg);
-  };
+      // Si la sesión está caída (401/403), refresca y reintenta
+      if (code === 401 || code === 403 || /JWT|auth|session/i.test(msg)) {
+        try {
+          await supabase.auth.refreshSession();
+        } catch {}
+      }
+
+      if (max <= 1) throw e;
+      await new Promise(r => setTimeout(r, delay));
+      return attempt(max - 1, Math.floor(delay * 1.8));
+    }
+  }
 
   try {
-    await saveAll(uid);
-  } catch (e: any) {
-    // Si fue auth, intentamos 1 refresco + 1 reintento
-    if (isAuthError(e)) {
-      const { data, error } = await supabase.auth.refreshSession();
-      if (!error && data?.session) {
-        try {
-          await saveAll(uid);
-          if (myTurn === saveEpoch.current) setSaveError(null);
-          return;
-        } catch (e2: any) {
-          setSaveError(e2?.message ?? String(e2));
-          return;
-        }
-      } else {
-        setSaveError("Sesión caducada. Vuelve a entrar.");
-        setAuthMsg("Tu sesión ha caducado. Introduce tu email y pulsa «Enviarme enlace».");
-        return;
-      }
+    await attempt();
+  } finally {
+    if (myTurn !== saveEpoch.current) {
+      // había un guardado más nuevo en marcha; si quieres, fuerza uno final:
+      // await saveAll(uid);
     }
-    // Otros errores (red, RLS, etc.)
-    setSaveError(e?.message ?? String(e));
-    return;
   }
 }
-
 
 
 function borrarVacacionUnDia(workerId: string, iso: string) {
