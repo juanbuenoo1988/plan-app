@@ -804,6 +804,33 @@ setOverrides(obj);
     }
   }
 
+
+ async function ensureSessionOrExplain(): Promise<boolean> {
+  // 1) Conectividad
+  if (typeof navigator !== "undefined" && navigator.onLine === false) {
+    setSaveError("Sin conexión. No se puede guardar.");
+    return false;
+  }
+  // 2) Sesión válida
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session) {
+    setSaveError("Sesión caducada. Inicia sesión para seguir guardando.");
+    setAuthMsg("Sesión caducada. Introduce tu email y pulsa «Enviarme enlace».");
+    return false;
+  }
+  // 3) (Opcional) Si al token le queda <60s, deja que Supabase lo refresque
+  const exp = session.expires_at ? session.expires_at * 1000 : 0;
+  if (exp && exp - Date.now() < 60_000) {
+    const { data, error } = await supabase.auth.getSession(); // refresca solo
+    if (error || !data.session) {
+      setSaveError("No se pudo refrescar la sesión. Vuelve a entrar.");
+      return false;
+    }
+  }
+  return true;
+}
+
+
   /**
  * Guarda TODO el estado en Supabase de forma segura:
  * 1) UPSERT (nunca nos quedamos a cero si falla algo)
@@ -1058,129 +1085,133 @@ function isOwnChange<T>(payload: RealtimePostgresChangesPayload<T>, uid: string 
   };
 }, [workers, slices, overrides, descs, userId, loadingCloud]);
 
+// 🔁 Realtime: un solo canal con handlers + estado del badge
 useEffect(() => {
-  // Solo tiene sentido con sesión (para respetar RLS del backend)
+  // Solo tiene sentido con sesión (por RLS)
   if (!userId) return;
 
   const channel = supabase.channel("planner-realtime");
-
-  // Filtra por tenant (reduce ruido y coste)
   const filter = `tenant_id=eq.${TENANT_ID}`;
 
+  // WORKERS
   channel.on(
-  "postgres_changes",
-  { event: "*", schema: "public", table: "workers", filter },
-  (payload: RealtimePostgresChangesPayload<any>) => {
-    if (isOwnChange(payload, userId)) return;        // 👈 ignora tus propios cambios
-    const { eventType, new: rowNew, old: rowOld } = payload;
+    "postgres_changes",
+    { event: "*", schema: "public", table: "workers", filter },
+    (payload: any) => {
+      if (isOwnChange(payload, userId)) return;
+      const { eventType, new: rowNew, old: rowOld } = payload;
 
-    applyRemote(() => {
-      if (eventType === "INSERT" || eventType === "UPDATE") {
-        const w = mapRowToWorker(rowNew);
-        setWorkers(prev => {
-          const i = prev.findIndex(x => x.id === w.id);
-          if (i === -1) return [...prev, w].sort((a,b)=>a.nombre.localeCompare(b.nombre));
-          const copy = [...prev];
-          copy[i] = w;
-          return copy;
-        });
-      } else if (eventType === "DELETE") {
-        const id = rowOld?.id as string | undefined;
-        if (!id) return;
-        setWorkers(prev => prev.filter(x => x.id !== id));
-        setSlices(prev => prev.filter(s => s.trabajadorId !== id));
-        setOverrides(prev => { const c = { ...prev }; delete c[id]; return c; });
-      }
-    });
-  }
-);
+      applyRemote(() => {
+        if (eventType === "INSERT" || eventType === "UPDATE") {
+          const w = mapRowToWorker(rowNew);
+          setWorkers(prev => {
+            const i = prev.findIndex(x => x.id === w.id);
+            if (i === -1) return [...prev, w].sort((a,b)=>a.nombre.localeCompare(b.nombre));
+            const copy = [...prev]; copy[i] = w; return copy;
+          });
+        } else if (eventType === "DELETE") {
+          const id = rowOld?.id as string | undefined;
+          if (!id) return;
+          setWorkers(prev => prev.filter(x => x.id !== id));
+          setSlices(prev => prev.filter(s => s.trabajadorId !== id));
+          setOverrides(prev => { const c = { ...prev }; delete c[id]; return c; });
+        }
+      });
+    }
+  );
 
-
- channel.on(
-  "postgres_changes",
-  { event: "*", schema: "public", table: "task_slices", filter },
-  (payload: RealtimePostgresChangesPayload<any>) => {
-    if (isOwnChange(payload, userId)) return;        // 👈
-    const { eventType, new: rowNew, old: rowOld } = payload;
-
-    applyRemote(() => {
-      if (eventType === "INSERT" || eventType === "UPDATE") {
-        const s = mapRowToSlice(rowNew);
-        setSlices(prev => {
-          const i = prev.findIndex(x => x.id === s.id);
-          if (i === -1) return [...prev, s];
-          const copy = [...prev];
-          copy[i] = s;
-          return copy;
-        });
-      } else if (eventType === "DELETE") {
-        const id = rowOld?.id as string | undefined;
-        if (!id) return;
-        setSlices(prev => prev.filter(x => x.id !== id));
-      }
-    });
-  }
-);
-
-
- channel.on(
-  "postgres_changes",
-  { event: "*", schema: "public", table: "day_overrides", filter },
-  (payload: RealtimePostgresChangesPayload<any>) => {
-    if (isOwnChange(payload, userId)) return;        // 👈
-    const { eventType, new: rowNew, old: rowOld } = payload;
-
-    applyRemote(() => {
-      if (eventType === "INSERT" || eventType === "UPDATE") {
-        setOverrides(prev => mergeOverrideRow(prev, {
-          worker_id: rowNew.worker_id,
-          fecha: rowNew.fecha,
-          extra: rowNew.extra,
-          sabado: rowNew.sabado,
-          domingo: rowNew.domingo,
-          vacacion: rowNew.vacacion,
-        }));
-      } else if (eventType === "DELETE") {
-        const worker_id = rowOld?.worker_id as string | undefined;
-        const fecha     = rowOld?.fecha as string | undefined;
-        if (!worker_id || !fecha) return;
-        setOverrides(prev => {
-          const byW = { ...(prev[worker_id] || {}) };
-          delete byW[fecha];
-          return { ...prev, [worker_id]: byW };
-        });
-      }
-    });
-  }
-);
-
-
+  // TASK_SLICES
   channel.on(
-  "postgres_changes",
-  { event: "*", schema: "public", table: "product_descs", filter },
-  (payload: RealtimePostgresChangesPayload<any>) => {
-    if (isOwnChange(payload, userId)) return;        // 👈
-    const { eventType, new: rowNew, old: rowOld } = payload;
+    "postgres_changes",
+    { event: "*", schema: "public", table: "task_slices", filter },
+    (payload: any) => {
+      if (isOwnChange(payload, userId)) return;
+      const { eventType, new: rowNew, old: rowOld } = payload;
 
-    applyRemote(() => {
-      if (eventType === "INSERT" || eventType === "UPDATE") {
-        setDescs(prev => ({ ...prev, [rowNew.nombre]: rowNew.texto ?? "" }));
-      } else if (eventType === "DELETE") {
-        const nombre = rowOld?.nombre as string | undefined;
-        if (!nombre) return;
-        setDescs(prev => { const c = { ...prev }; delete c[nombre]; return c; });
-      }
-    });
-  }
-);
+      applyRemote(() => {
+        if (eventType === "INSERT" || eventType === "UPDATE") {
+          const s = mapRowToSlice(rowNew);
+          setSlices(prev => {
+            const i = prev.findIndex(x => x.id === s.id);
+            if (i === -1) return [...prev, s];
+            const copy = [...prev]; copy[i] = s; return copy;
+          });
+        } else if (eventType === "DELETE") {
+          const id = rowOld?.id as string | undefined;
+          if (!id) return;
+          setSlices(prev => prev.filter(x => x.id !== id));
+        }
+      });
+    }
+  );
 
+  // DAY_OVERRIDES
+  channel.on(
+    "postgres_changes",
+    { event: "*", schema: "public", table: "day_overrides", filter },
+    (payload: any) => {
+      if (isOwnChange(payload, userId)) return;
+      const { eventType, new: rowNew, old: rowOld } = payload;
 
-  channel.subscribe(); // abre el canal
+      applyRemote(() => {
+        if (eventType === "INSERT" || eventType === "UPDATE") {
+          setOverrides(prev => mergeOverrideRow(prev, {
+            worker_id: rowNew.worker_id,
+            fecha: rowNew.fecha,
+            extra: rowNew.extra,
+            sabado: rowNew.sabado,
+            domingo: rowNew.domingo,
+            vacacion: rowNew.vacacion,
+          }));
+        } else if (eventType === "DELETE") {
+          const worker_id = rowOld?.worker_id as string | undefined;
+          const fecha     = rowOld?.fecha as string | undefined;
+          if (!worker_id || !fecha) return;
+          setOverrides(prev => {
+            const byW = { ...(prev[worker_id] || {}) };
+            delete byW[fecha];
+            return { ...prev, [worker_id]: byW };
+          });
+        }
+      });
+    }
+  );
 
+  // PRODUCT_DESCS
+  channel.on(
+    "postgres_changes",
+    { event: "*", schema: "public", table: "product_descs", filter },
+    (payload: any) => {
+      if (isOwnChange(payload, userId)) return;
+      const { eventType, new: rowNew, old: rowOld } = payload;
+
+      applyRemote(() => {
+        if (eventType === "INSERT" || eventType === "UPDATE") {
+          setDescs(prev => ({ ...prev, [rowNew.nombre]: rowNew.texto ?? "" }));
+        } else if (eventType === "DELETE") {
+          const nombre = rowOld?.nombre as string | undefined;
+          if (!nombre) return;
+          setDescs(prev => { const c = { ...prev }; delete c[nombre]; return c; });
+        }
+      });
+    }
+  );
+
+  // Estado del canal → badge Realtime
+  channel.subscribe((status: "SUBSCRIBED" | "TIMED_OUT" | "CLOSED" | "CHANNEL_ERROR") => {
+
+    if (status === "SUBSCRIBED") setRtStatus("connected");
+    else if (status === "TIMED_OUT" || status === "CLOSED") setRtStatus("connecting");
+    else if (status === "CHANNEL_ERROR") setRtStatus("error");
+  });
+
+  // Limpieza
   return () => {
-    supabase.removeChannel(channel); // cierra al desmontar/cambiar usuario
+    supabase.removeChannel(channel);
+    setRtStatus("connecting"); // opcional
   };
 }, [userId]);
+
 
 
   // === NUEVO: guardado local automático cuando NO hay sesión ===
@@ -1190,29 +1221,6 @@ useEffect(() => {
   const snapshot = JSON.stringify({ workers, slices, overrides, descs });
   try { localStorage.setItem(STORAGE_KEY, snapshot); } catch {}
 }, [workers, slices, overrides, descs, userId]);
-
-useEffect(() => {
-  if (!userId) return;
-
-  const channel = supabase.channel("planner-realtime");
-
-  const filter = `tenant_id=eq.${TENANT_ID}`;
-
-  // … tus channel.on(...) de workers, task_slices, day_overrides, product_descs …
-
-  // 👇 SUSCRÍBETE Y ACTUALIZA EL BADGE SEGÚN EL ESTADO DEL CANAL
-  channel.subscribe((status) => {
-    // 'SUBSCRIBED' cuando el canal está activo (socket OK)
-    if (status === "SUBSCRIBED") setRtStatus("connected");
-    // Estos estados indican reconexión o problemas
-    else if (status === "TIMED_OUT" || status === "CLOSED") setRtStatus("connecting");
-    else if (status === "CHANNEL_ERROR") setRtStatus("error");
-  });
-
-  return () => {
-    supabase.removeChannel(channel);
-  };
-}, [userId]);
 
 
 
@@ -1973,17 +1981,20 @@ function downloadLastBackup() {
   }
   
   async function guardedSaveAll(uid: string) {
-  const myTurn = ++saveEpoch.current;   // tomo un número de turno
+  const myTurn = ++saveEpoch.current;
+
+  const ok = await ensureSessionOrExplain();
+  if (!ok) return; // no guardes si no hay sesión o estás offline
+
   try {
-    await saveAll(uid);                 // usa tu saveAll nuevo (con upsert + borrado selectivo)
+    await saveAll(uid);
   } finally {
-    // si otro guardado empezó después, esta llamada ya es “vieja”
     if (myTurn !== saveEpoch.current) {
-      // opcional: puedes relanzar un guardado final si quieres máxima seguridad:
-      // await saveAll(uid);
+      // había otro guardado más nuevo; no hacemos nada más
     }
   }
 }
+
 function borrarVacacionUnDia(workerId: string, iso: string) {
   setOverrides((prev: OverridesState) => {
     const byW = { ...(prev[workerId] || {}) };
