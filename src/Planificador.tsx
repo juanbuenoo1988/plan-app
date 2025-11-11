@@ -2597,8 +2597,8 @@ function mergeOverrideRow(
         {locked
           ? "Bloqueado: solo lectura."
           : <>Doble clic en una <b>celda</b> para fijar <b>extras/sábado</b> de ese <b>día</b>. Botón <b>＋</b> inserta un bloque desde ese día.</>}
-      </div>    </>  )}
-</div>
+     
+             </div>    </>  )}
             </div>
           </div>
 
