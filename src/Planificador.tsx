@@ -1032,6 +1032,33 @@ const { data: sub } = supabase.auth.onAuthStateChange(async (_event: AuthChangeE
   };
 }, []); // ← sin dependencias: solo al montar
 
+// 🔐 Heartbeat de sesión: mantiene vivo el token y repara sesiones dormidas
+useEffect(() => {
+  async function ping() {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      // Si no hay sesión (o está dormida), intenta refrescar silenciosamente
+      if (!session) {
+        await supabase.auth.refreshSession().catch(() => {});
+      } else {
+        // Si queda <60s, fuerza una lectura para que el SDK renueve
+        const expMs = session.expires_at ? session.expires_at * 1000 : 0;
+        if (expMs && expMs - Date.now() < 60_000) {
+          await supabase.auth.getSession(); // provoca auto-refresh
+        }
+      }
+    } catch {
+      // sin ruido: reintentará en el siguiente tick
+    }
+  }
+
+  // primer toque y luego cada 2 minutos
+  ping();
+  const id = setInterval(ping, 2 * 60 * 1000);
+  return () => clearInterval(id);
+}, []);
+
+
 function isOwnChange<T>(payload: RealtimePostgresChangesPayload<T>, uid: string | null) {
   // Muchos eventos DELETE no traen "new", solo "old".
   // Este corte solo aplica a INSERT/UPDATE (cuando hay "new").
@@ -1197,20 +1224,50 @@ useEffect(() => {
     }
   );
 
-  // Estado del canal → badge Realtime
-  channel.subscribe((status: "SUBSCRIBED" | "TIMED_OUT" | "CLOSED" | "CHANNEL_ERROR") => {
+  // =========================
+  //   ESTADO + RECONEXIÓN
+  // =========================
 
+  // 1) Cambia el badge según estado del canal
+  channel.subscribe((status: "SUBSCRIBED" | "TIMED_OUT" | "CLOSED" | "CHANNEL_ERROR") => {
     if (status === "SUBSCRIBED") setRtStatus("connected");
     else if (status === "TIMED_OUT" || status === "CLOSED") setRtStatus("connecting");
     else if (status === "CHANNEL_ERROR") setRtStatus("error");
+
+    // 2) Auto-reintento sencillo: recarga si el canal se cae
+    if (status === "TIMED_OUT" || status === "CLOSED" || status === "CHANNEL_ERROR") {
+      // Espera breve para no ser agresivo
+      setTimeout(() => {
+        try { supabase.removeChannel(channel); } catch {}
+        // Recarga “limpia” para re-hidratar sesión y volver a suscribir todo
+        window.location.reload();
+      }, 1200);
+    }
+  });
+
+  // 3) Además, escucha eventos del sistema (defensa extra)
+  channel.on("system", { event: "closed" }, () => {
+    setRtStatus("connecting");
+    setTimeout(() => {
+      try { supabase.removeChannel(channel); } catch {}
+      window.location.reload();
+    }, 1200);
+  });
+  channel.on("system", { event: "timed_out" }, () => {
+    setRtStatus("connecting");
+    setTimeout(() => {
+      try { supabase.removeChannel(channel); } catch {}
+      window.location.reload();
+    }, 1200);
   });
 
   // Limpieza
   return () => {
-    supabase.removeChannel(channel);
+    try { supabase.removeChannel(channel); } catch {}
     setRtStatus("connecting"); // opcional
   };
 }, [userId]);
+
 
 
 
@@ -1983,17 +2040,37 @@ function downloadLastBackup() {
   async function guardedSaveAll(uid: string) {
   const myTurn = ++saveEpoch.current;
 
-  const ok = await ensureSessionOrExplain();
-  if (!ok) return; // no guardes si no hay sesión o estás offline
+  async function attempt(max = 3, delay = 700) {
+    try {
+      await saveAll(uid);
+      return;
+    } catch (e: any) {
+      const msg = e?.message || "";
+      const code = e?.status || e?.code;
+
+      // Si la sesión está caída (401/403), refresca y reintenta
+      if (code === 401 || code === 403 || /JWT|auth|session/i.test(msg)) {
+        try {
+          await supabase.auth.refreshSession();
+        } catch {}
+      }
+
+      if (max <= 1) throw e;
+      await new Promise(r => setTimeout(r, delay));
+      return attempt(max - 1, Math.floor(delay * 1.8));
+    }
+  }
 
   try {
-    await saveAll(uid);
+    await attempt();
   } finally {
     if (myTurn !== saveEpoch.current) {
-      // había otro guardado más nuevo; no hacemos nada más
+      // había un guardado más nuevo en marcha; si quieres, fuerza uno final:
+      // await saveAll(uid);
     }
   }
 }
+
 
 function borrarVacacionUnDia(workerId: string, iso: string) {
   setOverrides((prev: OverridesState) => {
@@ -2053,10 +2130,6 @@ function aplicarExtrasRango() {
   reflowFromWorkerWithOverrides(gmWorker, startISO, nextOverrides);
   compactarBloques(gmWorker);
 }
-
-
-
-
 
 function marcarVacacionesRango() {
   if (!gmWorker || !gmFrom || !gmTo) return;
@@ -2136,8 +2209,6 @@ function reflowFromWorkerWithOverrides(workerId: string, startISO: string, ov: O
     return [...others, ...reflowedForWorker];
   });
 }
-
-
 
 function reflowFromWorkerPure(
   baseSlices: TaskSlice[],
@@ -2349,9 +2420,7 @@ function mergeOverrideRow(
   return { ...prev, [row.worker_id]: byW };
 }
 
-
   /* ===================== Render ===================== */
-
   
   return (
     <div style={appShell}>
@@ -2840,7 +2909,6 @@ const handleDayHeaderDblClick = () => {
   )}
 </div>
 
-
                           <DayCapacityBadge capacidad={cap} usado={used} />
                         </div>
                       );
@@ -3167,7 +3235,6 @@ const handleDayHeaderDblClick = () => {
   </div>
 </div>
 
-
         </aside>
       </div>
     </div>
@@ -3205,8 +3272,6 @@ function RTBadge({ status }: { status: RTStatus }) {
   );
 }
 
-
-
 /* ===================== Badge ===================== */
 function DayCapacityBadge({ capacidad, usado }: { capacidad: number; usado: number }) {
   const libre = Math.round((capacidad - usado) * 10) / 10;
@@ -3238,7 +3303,6 @@ function DayCapacityBadge({ capacidad, usado }: { capacidad: number; usado: numb
     </div>
   );
 }
-
 /* ===================== Estilos ===================== */
 const appShell: React.CSSProperties = {
   fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
@@ -3321,21 +3385,18 @@ const dayWarn: React.CSSProperties = {
   fontWeight: 700,
   marginLeft: 6,
 };
-
 const panelRow: React.CSSProperties = {
   display: "grid",
   gridTemplateColumns: "1fr 1fr",
   gap: 12,
   marginBottom: 12,
 };
-
 const panel: React.CSSProperties = {
   border: "1px solid #e5e7eb",
   borderRadius: 10,
   padding: 12,
   background: "#fff",
 };
-
 const panelInner: React.CSSProperties = {
   width: "100%",
   maxWidth: "640px",
@@ -3372,7 +3433,6 @@ const daysHeader: React.CSSProperties = {
   margin: "8px 0 4px",
   color: "#000000ff",
 };
-
 const weekRow: React.CSSProperties = { display: "grid", gridTemplateColumns: "56px repeat(7, 1fr)", gap: 2, marginBottom: 2 };
 const dayCell: React.CSSProperties = {
   border: "1px solid #e5e7eb",
@@ -3422,7 +3482,6 @@ const productFull: React.CSSProperties = {
   marginRight: 8,
   maxWidth: "100%",
 };
-
 // === Botones ===
 const btnBase: React.CSSProperties = {
   padding: "8px 12px",
