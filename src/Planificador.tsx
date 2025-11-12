@@ -99,6 +99,7 @@ type TaskSlice = {
   horas: number;
   trabajadorId: string;
   color: string;
+  validado?: boolean;
 };
 
 type NewTaskForm = {
@@ -550,7 +551,7 @@ function editBlockTotalFromSlice(slice: TaskSlice) {
   const startF = delBloque.reduce((m, s) => (s.fecha < m ? s.fecha : m), delBloque[0].fecha);
   const totalActual = Math.round(delBloque.reduce((a, s) => a + s.horas, 0) * 2) / 2;
 
-  // Pedimos nuevo total
+  // 1) Pedimos nuevo total de horas
   const nuevoStr = prompt(
     `Horas totales para "${slice.producto}" (${w.nombre}) desde ${startF}:`,
     String(totalActual)
@@ -559,6 +560,10 @@ function editBlockTotalFromSlice(slice: TaskSlice) {
 
   const nuevoTotal = Math.max(0.5, Math.round(Number(nuevoStr) * 2) / 2);
   if (!isFinite(nuevoTotal) || nuevoTotal <= 0) return;
+
+  // 2) Preguntamos si el bloque queda validado
+  const validado = preguntarValidacionBloque(delBloque[0]?.validado);
+  if (validado === null) return; // si ha cancelado o puesto algo raro, no hacemos nada
 
   // Parser robusto YYYY-MM-DD → fecha local (evita desfaces de huso horario)
   const fromLocalISO = (iso: string) => {
@@ -575,23 +580,52 @@ function editBlockTotalFromSlice(slice: TaskSlice) {
       slice.producto,
       nuevoTotal,
       w,
-      fromLocalISO(startF), // ← fecha local segura
-      base,                 // tu estado "base" es Date, como en el antiguo
-      restantes,            // MUY IMPORTANTE: planificamos contra el snapshot
+      fromLocalISO(startF), // fecha local segura
+      base,
+      restantes,
       overrides
     ).map(s => ({ ...s, taskId: slice.taskId, color: colorFromId(slice.taskId) }));
 
     // 3) Mezcla (resto + plan nuevo)
     const merged = [...restantes, ...plan];
 
-    // 4) (Opcional pero recomendado) Compacta TODO ese trabajador desde startF,
-    //    usando SOLO el snapshot "merged" (nada de setTimeout ni setState fuera).
+    // 4) Compacta TODO ese trabajador desde startF
     const reflowedForWorker = compactFrom(w, startF, overrides, merged);
     const others = merged.filter(s => s.trabajadorId !== w.id);
 
-    // 5) Devolvemos el resultado final en un ÚNICO setState
-    return [...others, ...reflowedForWorker];
+    // 5) Marcamos validación en el resultado final
+    const final = [...others, ...reflowedForWorker];
+    return final.map(s =>
+      s.taskId === slice.taskId && s.trabajadorId === w.id
+        ? { ...s, validado }
+        : s
+    );
   });
+}
+
+
+function preguntarValidacionBloque(actual?: boolean): boolean | null {
+  const resp = prompt(
+    "¿Este bloque está VALIDADO? (s = sí / n = no)",
+    actual ? "s" : "n"
+  );
+  if (resp === null) return null; // usuario ha pulsado Cancelar
+
+  const r = resp.trim().toLowerCase();
+  if (r === "s" || r === "si" || r === "sí" || r === "y") return true;
+  if (r === "n" || r === "no") return false;
+
+  return null; // respuesta rara → no tocar
+}
+
+function marcarValidacionBloque(taskId: string, trabajadorId: string, validado: boolean) {
+  setSlices(prev =>
+    prev.map(s =>
+      s.taskId === taskId && s.trabajadorId === trabajadorId
+        ? { ...s, validado }
+        : s
+    )
+  );
 }
 
 function editUrgentSlice(slice: TaskSlice) {
@@ -603,6 +637,10 @@ function editUrgentSlice(slice: TaskSlice) {
 
   const h = Math.max(0.5, Math.round(Number(nuevoStr) * 2) / 2);
   if (!isFinite(h)) return;
+
+  // Pregunta de validación
+  const validado = preguntarValidacionBloque(slice.validado);
+  if (validado === null) return;
 
   const w = workers.find(x => x.id === slice.trabajadorId);
   if (!w) return;
@@ -616,11 +654,16 @@ function editUrgentSlice(slice: TaskSlice) {
     // 2) re-empaqueta desde ese día manteniendo urgencias clavadas
     const reflowedForWorker = compactFrom(w, slice.fecha, overrides, fixed);
     const others = fixed.filter(s => s.trabajadorId !== w.id);
-    return [...others, ...reflowedForWorker];
+    const final = [...others, ...reflowedForWorker];
+
+    // 3) Marca validación en todo el bloque
+    return final.map(s =>
+      s.taskId === slice.taskId && s.trabajadorId === w.id
+        ? { ...s, validado }
+        : s
+    );
   });
 }
-
-
 
 
   // === NUEVO: helper seguro para leer del almacenamiento local ===
@@ -783,6 +826,7 @@ async function saveAll(uid: string) {
     horas: s.horas,
     trabajador_id: s.trabajadorId,
     color: s.color,
+    validado: !!s.validado,
     user_id: uid,
     tenant_id: TENANT_ID,
     updated_by: uid, 
@@ -2226,6 +2270,7 @@ function mapRowToSlice(r: any): TaskSlice {
     horas: Number(r.horas),
     trabajadorId: r.trabajador_id,
     color: r.color,
+    validado: !!r.validado,
   };
 }
 
@@ -2741,12 +2786,20 @@ const handleDayHeaderDblClick = () => {
           )}
 
           <div style={blockTop}>
-            
   <span style={productFull}>
     {s.producto}
+    <span
+      style={{
+        ...statusBadge,
+        color: s.validado ? "#16a34a" : "#dc2626", // verde o rojo
+      }}
+    >
+      {s.validado ? "✓" : "✗"}
+    </span>
   </span>
   <span>{s.horas}h</span>
 </div>
+
 
           {desc ? <div style={miniHint}>ⓘ</div> : null}
         </div>
@@ -3310,6 +3363,18 @@ const blockStyle: React.CSSProperties = {
   boxShadow: "0 1px 2px rgba(0,0,0,.15)",
 };
 const blockTop: React.CSSProperties = { display: "flex", justifyContent: "space-between", gap: 8, alignItems: "flex-start" };
+
+const statusBadge: React.CSSProperties = {
+  marginLeft: 6,
+  padding: "1px 4px",
+  borderRadius: 6,
+  background: "#ffffff", // fondo blanco para destacar
+  fontSize: 11,
+  fontWeight: 700,
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+};
 
 const productFull: React.CSSProperties = {
   fontWeight: 700,
