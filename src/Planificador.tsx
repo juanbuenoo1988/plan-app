@@ -95,11 +95,11 @@ type TaskSlice = {
   id: string;
   taskId: string;
   producto: string;
-  fecha: string;     // YYYY-MM-DD
+  fecha: string;        // ISO
   horas: number;
   trabajadorId: string;
   color: string;
-  validado?: boolean;
+  validado?: boolean;   // ⬅️ NUEVO
 };
 
 type NewTaskForm = {
@@ -744,25 +744,19 @@ function editUrgentSlice(slice: TaskSlice) {
 }
 
       // 2) Bloques / Slices
-      const { data: sData, error: sErr } = await supabase
-        .from("task_slices")
-        .select("*")
-        .eq("tenant_id", TENANT_ID);
+      // 2) Bloques / Slices
+const { data: sData, error: sErr } = await supabase
+  .from("task_slices")
+  .select("*")
+  .eq("tenant_id", TENANT_ID);
 
-      if (sErr) console.error("task_slices error:", sErr);
-      if (sData) {
-        setSlices(
-          sData.map((r: any) => ({
-            id: r.id,
-            taskId: r.task_id,
-            producto: r.producto,
-            fecha: r.fecha,
-            horas: Number(r.horas),
-            trabajadorId: r.trabajador_id,
-            color: r.color,
-          }))
-        );
-      }
+if (sErr) console.error("task_slices error:", sErr);
+if (sData) {
+  setSlices(
+    sData.map((r: any) => mapRowToSlice(r))   // ⬅️ usamos el mapper de abajo
+  );
+}
+
 
       // 3) Overrides (extras/sábado)
       const { data: oData, error: oErr } = await supabase
@@ -832,10 +826,10 @@ async function saveAll(uid: string) {
     horas: s.horas,
     trabajador_id: s.trabajadorId,
     color: s.color,
-    validado: !!s.validado,
     user_id: uid,
     tenant_id: TENANT_ID,
     updated_by: uid, 
+    validado: s.validado ?? false,
   }));
 
   const oRows = flattenOverrides(overrides).map((r) => ({
@@ -2299,7 +2293,7 @@ function mapRowToSlice(r: any): TaskSlice {
     horas: Number(r.horas),
     trabajadorId: r.trabajador_id,
     color: r.color,
-    validado: !!r.validado,
+    validado: r.validado ?? false,   // ⬅️ aquí lo leemos
   };
 }
 
@@ -2777,69 +2771,65 @@ const handleDayHeaderDblClick = () => {
         /^⚠️/.test(s.producto) ||
         /urgenc/i.test(s.producto);
 
-      return (
-        <div
-          key={s.id}
-          draggable={canEdit}
-          onDragStart={(e) => onDragStart(e, s.id)}
-          onDoubleClick={(e) => {
-  e.stopPropagation();
-  if (!canEdit) return;
+     return (
+  <div
+    key={s.id}
+    draggable={canEdit}
+    onDragStart={(e) => onDragStart(e, s.id)}
+    onDoubleClick={(e) => {
+      e.stopPropagation();
+      if (!canEdit) return;
 
-  const isUrgent =
-    s.color === URGENT_COLOR ||
-    /^⚠️/.test(s.producto) ||
-    /urgenc/i.test(s.producto);
+      const isUrgent =
+        s.color === URGENT_COLOR ||
+        /^⚠️/.test(s.producto) ||
+        /urgenc/i.test(s.producto);
 
-  if (isUrgent) {
-    editUrgentSlice(s);   // ← no replanifica ni cambia de día
-  } else {
-    editBlockTotalFromSlice(s); // comportamiento normal
-  }
-}}
-
-          title={`${s.producto} — ${s.horas}h${desc ? "\n" + desc : ""}`}
-          style={{
-            ...blockStyle,
-            background: isUrgent ? URGENT_COLOR : s.color,
-            width: Math.max(18, s.horas * PX_PER_HOUR),
-            position: "relative",
-          }}
+      if (isUrgent) {
+        editUrgentSlice(s);
+      } else {
+        editBlockTotalFromSlice(s);
+      }
+    }}
+    title={`${s.producto} — ${s.horas}h${desc ? "\n" + desc : ""}`}
+    style={{
+      ...blockStyle,
+      background: isUrgent ? URGENT_COLOR : s.color,
+      width: Math.max(18, s.horas * PX_PER_HOUR),
+      position: "relative",
+    }}
+  >
+    {canEdit && (
+      <>
+        <button
+          onClick={(e) => { e.stopPropagation(); removeSlice(s.id); }}
+          title="Eliminar tramo"
+          style={deleteBtn}
         >
-          {canEdit && (
-            <>
-              <button
-                onClick={(e) => { e.stopPropagation(); removeSlice(s.id); }}
-                title="Eliminar tramo"
-                style={deleteBtn}
-              >
-                ✖
-              </button>
-              <button
-                onClick={(e) => { e.stopPropagation(); removeTask(s.taskId, s.trabajadorId); }}
-                title="Eliminar bloque completo"
-                style={deleteBtnAlt}
-              >
-                🗑
-              </button>
-            </>
-          )}
+          ✖
+        </button>
+        <button
+          onClick={(e) => { e.stopPropagation(); removeTask(s.taskId, s.trabajadorId); }}
+          title="Eliminar bloque completo"
+          style={deleteBtnAlt}
+        >
+          🗑
+        </button>
+      </>
+    )}
 
-                  <div style={blockTop}>
-            {/* Izquierda: nombre + icono de validado */}
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 4 }}>
-              <span style={productFull}>{s.producto}</span>
-              <ValidIcon validado={s.validado} />
-            </div>
+    {/* Icono de validado NO dentro del texto, sino flotando */}
+    <ValidIcon validado={s.validado} />
 
-            {/* Derecha: horas */}
-            <span>{s.horas}h</span>
-          </div>
-  
+    <div style={blockTop}>
+      <span style={productFull}>{s.producto}</span>
+      <span>{s.horas}h</span>
+    </div>
 
-          {desc ? <div style={miniHint}>ⓘ</div> : null}
-        </div>
-      );
+    {desc ? <div style={miniHint}>ⓘ</div> : null}
+  </div>
+);
+
     })
   )}
 </div>
@@ -3298,23 +3288,22 @@ function DayCapacityBadge({ capacidad, usado }: { capacidad: number; usado: numb
 }
 
 function ValidIcon({ validado }: { validado?: boolean }) {
-  // Si aún no se ha marcado nada, no mostramos icono
-  if (typeof validado !== "boolean") return null;
-
-  const symbol = validado ? "✓" : "✗";
-  const color = validado ? "#16a34a" : "#b91c1c";
+  if (validado == null) return null;
 
   return (
-    <span
-      style={{
-        ...validIconBox,
-        color,
-      }}
-    >
-      {symbol}
-    </span>
+    <div style={validIconWrapper}>
+      <span
+        style={{
+          ...statusBadge,
+          color: validado ? "#16a34a" : "#dc2626", // verde / rojo
+        }}
+      >
+        {validado ? "✓" : "✗"}
+      </span>
+    </div>
   );
 }
+
 
 
 /* ===================== Estilos ===================== */
@@ -3481,6 +3470,7 @@ const weekCol: React.CSSProperties = {
 };
 
 const horizontalLane: React.CSSProperties = { display: "flex", gap: 6, overflowX: "auto", alignItems: "flex-start" };
+
 const blockStyle: React.CSSProperties = {
   color: "#fff",
   borderRadius: 8,
@@ -3495,16 +3485,24 @@ const blockStyle: React.CSSProperties = {
 };
 const blockTop: React.CSSProperties = { display: "flex", justifyContent: "space-between", gap: 8, alignItems: "flex-start" };
 
+const validIconWrapper: React.CSSProperties = {
+  position: "absolute",
+  bottom: 4,
+  left: 4,
+  zIndex: 20,          // por encima del resto
+};
+
 const statusBadge: React.CSSProperties = {
-  marginLeft: 6,
-  padding: "1px 4px",
+  minWidth: 22,
+  height: 22,
+  padding: "0 4px",
   borderRadius: 6,
-  background: "#ffffff", // fondo blanco para destacar
-  fontSize: 11,
-  fontWeight: 700,
+  background: "#ffffff",
   display: "inline-flex",
   alignItems: "center",
   justifyContent: "center",
+  fontSize: 12,
+  fontWeight: 700,
 };
 
 const productFull: React.CSSProperties = {
