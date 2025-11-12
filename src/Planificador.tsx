@@ -2825,22 +2825,17 @@ const handleDayHeaderDblClick = () => {
             </>
           )}
 
-          <div style={blockTop}>
-  <span style={productFull}>
-    {s.producto}
-    <ValidIcon validado={s.validado} />
-    <span
-      style={{
-        ...statusBadge,
-        color: s.validado ? "#16a34a" : "#dc2626", // verde o rojo
-      }}
-    >
-      {s.validado ? "✓" : "✗"}
-    </span>
-  </span>
-  <span>{s.horas}h</span>
-</div>
+                  <div style={blockTop}>
+            {/* Izquierda: nombre + icono de validado */}
+            <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              <span style={productFull}>{s.producto}</span>
+              <ValidIcon validado={s.validado} />
+            </div>
 
+            {/* Derecha: horas */}
+            <span>{s.horas}h</span>
+          </div>
+  
 
           {desc ? <div style={miniHint}>ⓘ</div> : null}
         </div>
