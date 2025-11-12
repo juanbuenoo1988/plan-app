@@ -2828,6 +2828,7 @@ const handleDayHeaderDblClick = () => {
           <div style={blockTop}>
   <span style={productFull}>
     {s.producto}
+    <ValidIcon validado={s.validado} />
     <span
       style={{
         ...statusBadge,
@@ -3014,22 +3015,80 @@ const handleDayHeaderDblClick = () => {
             </div>
           </div>
 
-          <div style={{ marginTop: 12, fontWeight: 700 }}>Listado</div>
+                    <div style={{ marginTop: 12, fontWeight: 700 }}>Listado</div>
           <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 6 }}>
             {Object.keys(descs).length === 0 && (
               <div style={{ color: "#6b7280", fontSize: 13 }}>No hay descripciones todavía.</div>
             )}
-            {Object.entries(descs).map(([prod, texto]) => (
-              <div key={`desc-${prod}`} style={descItem}>
-                <div style={{ fontWeight: 700 }}>{prod}</div>
-                <div style={{ fontSize: 12, color: "#374151", whiteSpace: "pre-wrap" }}>{texto}</div>
-                <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
-                  <button style={disabledIf(btnTiny, locked)} disabled={locked} onClick={() => editDesc(prod)}>✏️ Editar</button>
-                  <button style={disabledIf(btnTinyDanger, locked)} disabled={locked} onClick={() => deleteDesc(prod)}>🗑 Eliminar</button>
+
+            {Object.entries(descs).map(([prod, texto]) => {
+              // buscamos todos los bloques que usan este producto
+              const prodSlices = slices.filter(s => s.producto === prod);
+
+              // estado:
+              //   true  → todos validados
+              //   false → ninguno validado
+              //   undefined → mezcla (no mostramos icono)
+              let estado: boolean | undefined;
+              if (prodSlices.length > 0) {
+                const allValid = prodSlices.every(s => s.validado === true);
+                const noneValid = prodSlices.every(s => s.validado !== true);
+                if (allValid) estado = true;
+                else if (noneValid) estado = false;
+              }
+
+              return (
+                <div key={`desc-${prod}`} style={descItem}>
+                  {/* Cabecera: nombre + icono */}
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center" }}>
+                      <span style={{ fontWeight: 700 }}>{prod}</span>
+                      <ValidIcon validado={estado} />
+                    </div>
+                  </div>
+
+                  {/* Texto de descripción */}
+                  <div
+                    style={{
+                      fontSize: 12,
+                      color: "#374151",
+                      whiteSpace: "pre-wrap",
+                      marginTop: 4,
+                    }}
+                  >
+                    {texto}
+                  </div>
+
+                  {/* Botones */}
+                  <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+                    <button
+                      style={disabledIf(btnTiny, locked)}
+                      disabled={locked}
+                      onClick={() => editDesc(prod)}
+                    >
+                      ✏️ Editar
+                    </button>
+                    <button
+                      style={disabledIf(btnTinyDanger, locked)}
+                      disabled={locked}
+                      onClick={() => deleteDesc(prod)}
+                    >
+                      🗑 Eliminar
+                    </button>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
+
+          {/* Editor de bloques por producto */}
+
 
           {/* Editor de bloques por producto */}
           <div style={{ ...panel, marginTop: 14 }}>
@@ -3242,6 +3301,27 @@ function DayCapacityBadge({ capacidad, usado }: { capacidad: number; usado: numb
     </div>
   );
 }
+
+function ValidIcon({ validado }: { validado?: boolean }) {
+  // Si aún no se ha marcado nada, no mostramos icono
+  if (typeof validado !== "boolean") return null;
+
+  const symbol = validado ? "✓" : "✗";
+  const color = validado ? "#16a34a" : "#b91c1c";
+
+  return (
+    <span
+      style={{
+        ...validIconBox,
+        color,
+      }}
+    >
+      {symbol}
+    </span>
+  );
+}
+
+
 /* ===================== Estilos ===================== */
 const appShell: React.CSSProperties = {
   fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
@@ -3285,6 +3365,22 @@ const topHeader: React.CSSProperties = {
   background: "#1f2937",
   borderBottom: "1px solid rgba(255,255,255,.15)",
 };
+
+const validIconBox: React.CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  minWidth: 18,
+  height: 18,
+  padding: "0 4px",
+  borderRadius: 6,
+  background: "#ffffff",
+  border: "1px solid rgba(0,0,0,.2)",
+  marginLeft: 6,
+  fontSize: 12,
+  fontWeight: 700,
+};
+
 
 const appTitle: React.CSSProperties = {
   fontSize: 18,
