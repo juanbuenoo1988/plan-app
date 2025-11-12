@@ -1,5 +1,4 @@
 // src/Planificador.tsx
-import SessionHeartbeat from "./components/SessionHeartbeat";
 import type { RealtimePostgresChangesPayload } from "@supabase/supabase-js";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "./lib/supabase";
@@ -384,11 +383,11 @@ function planificarBloqueAuto(
 export default function Planificador() {
   return (
     <ErrorBoundary>
-      <SessionHeartbeat />
       <AppInner />
     </ErrorBoundary>
   );
 }
+
 
 /* ===================== App ===================== */
 function AppInner() {
@@ -957,31 +956,35 @@ const { data: sub } = supabase.auth.onAuthStateChange(async (_event: AuthChangeE
   };
 }, []); // ← sin dependencias: solo al montar
 
-// 🔐 Heartbeat de sesión: mantiene vivo el token y repara sesiones dormidas
+// 🔐 Heartbeat de sesión: mantiene viva la sesión y repara sesiones dormidas
 useEffect(() => {
   async function ping() {
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      // Si no hay sesión (o está dormida), intenta refrescar silenciosamente
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
       if (!session) {
+        // si no hay sesión, intenta refrescar en silencio
         await supabase.auth.refreshSession().catch(() => {});
       } else {
-        // Si queda <60s, fuerza una lectura para que el SDK renueve
+        // si al token le queda <60s, provocamos un refresh
         const expMs = session.expires_at ? session.expires_at * 1000 : 0;
         if (expMs && expMs - Date.now() < 60_000) {
-          await supabase.auth.getSession(); // provoca auto-refresh
+          await supabase.auth.getSession();
         }
       }
     } catch {
-      // sin ruido: reintentará en el siguiente tick
+      // ignoramos errores puntuales; reintentará en el siguiente tick
     }
   }
 
-  // primer toque y luego cada 2 minutos
+  // primer toque y luego cada 30 segundos
   ping();
-  const id = setInterval(ping, 2 * 60 * 1000);
+  const id = setInterval(ping, 30_000);
   return () => clearInterval(id);
 }, []);
+
 
 
 function isOwnChange(
@@ -1975,7 +1978,46 @@ function downloadLastBackup() {
     }
   }
   
+async function ensureSessionOrExplain(): Promise<boolean> {
+  // 1) Conectividad
+  if (typeof navigator !== "undefined" && navigator.onLine === false) {
+    setSaveError("Sin conexión. No se puede guardar.");
+    return false;
+  }
+
+  // 2) Sesión válida
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session) {
+    setSaveError("Sesión caducada. Inicia sesión para seguir guardando.");
+    setAuthMsg("Sesión caducada. Introduce tu email y pulsa «Enviarme enlace».");
+    return false;
+  }
+
+  // 3) Si al token le queda <60s, deja que Supabase lo refresque
+  const exp = session.expires_at ? session.expires_at * 1000 : 0;
+  if (exp && exp - Date.now() < 60_000) {
+    const { data, error } = await supabase.auth.getSession(); // refresca solo
+    if (error || !data.session) {
+      setSaveError("No se pudo refrescar la sesión. Vuelve a entrar.");
+      return false;
+    }
+  }
+
+  return true;
+}
+
+
+
   async function guardedSaveAll(uid: string) {
+  // 1) Antes de guardar, comprobamos conexión y sesión
+  const ok = await ensureSessionOrExplain();
+  if (!ok) {
+    // ensureSessionOrExplain ya ha puesto el mensaje de error en pantalla,
+    // así que simplemente NO intentamos guardar nada.
+    return;
+  }
+
+  // 2) Si la sesión está bien, seguimos con el guardado normal
   const myTurn = ++saveEpoch.current;
 
   async function attempt(max = 3, delay = 700) {
@@ -1994,7 +2036,7 @@ function downloadLastBackup() {
       }
 
       if (max <= 1) throw e;
-      await new Promise(r => setTimeout(r, delay));
+      await new Promise((r) => setTimeout(r, delay));
       return attempt(max - 1, Math.floor(delay * 1.8));
     }
   }
@@ -2008,6 +2050,8 @@ function downloadLastBackup() {
     }
   }
 }
+
+
 
 
 function borrarVacacionUnDia(workerId: string, iso: string) {
