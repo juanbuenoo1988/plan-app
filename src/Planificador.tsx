@@ -1,5 +1,5 @@
 // src/Planificador.tsx
-import SessionHeartbeat from "./components/SessionHeartbeat";
+import SessionHeartbeat from "./SessionHeartbeat";
 import type { RealtimePostgresChangesPayload } from "@supabase/supabase-js";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "./lib/supabase";
