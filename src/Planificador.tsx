@@ -2827,7 +2827,7 @@ const handleDayHeaderDblClick = () => {
 
                   <div style={blockTop}>
             {/* Izquierda: nombre + icono de validado */}
-            <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <div style={{ display: "flex", alignItems: "flex-start", gap: 4 }}>
               <span style={productFull}>{s.producto}</span>
               <ValidIcon validado={s.validado} />
             </div>
