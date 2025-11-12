@@ -104,9 +104,10 @@ type TaskSlice = {
 
 type NewTaskForm = {
   producto: string;
+  descripcion: string;   // ⬅️ NUEVO
   horasTotales: number;
   trabajadorId: string;
-  fechaInicio: string; // YYYY-MM-DD
+  fechaInicio: string;   // YYYY-MM-DD
 };
 
 
@@ -449,11 +450,12 @@ const updMatches = useMemo(() => {
 }, [slices, updWorker, updDate]);
 
   const [form, setForm] = useState<NewTaskForm>({
-    producto: "",
-    horasTotales: 0,
-    trabajadorId: "W1",
-    fechaInicio: fmt(new Date()),
-  });
+  producto: "",
+  descripcion: "",       // ⬅️ NUEVO
+  horasTotales: 0,
+  trabajadorId: "W1",
+  fechaInicio: fmt(new Date()),
+});
   // ⬇️ 3.3-C (estados de sesión/carga en la nube)
   const [userId, setUserId] = useState<string | null>(null);
   const [loadingCloud, setLoadingCloud] = useState(false);
@@ -1340,24 +1342,47 @@ useEffect(() => {
 
   // Crear bloque
   function crearBloque() {
-    if (!canEdit) return;
-    const w = workers.find((x) => x.id === form.trabajadorId);
-    if (!w) return;
-    const horas = Number(form.horasTotales);
-    if (!form.producto.trim() || !isFinite(horas) || horas <= 0) return;
+  if (!canEdit) return;
+  const w = workers.find((x) => x.id === form.trabajadorId);
+  if (!w) return;
 
-    const start = new Date(form.fechaInicio);
-    const plan = planificarBloqueAuto(
-      form.producto.trim(),
-      Math.max(0.5, Math.round(horas * 2) / 2),
-      w,
-      start,
-      base,
-      slices,
-      overrides
-    );
-    setSlices((prev) => [...prev, ...plan]);
+  const producto = form.producto.trim();
+  const horas = Number(form.horasTotales);
+
+  if (!producto || !isFinite(horas) || horas <= 0) return;
+
+  const start = new Date(form.fechaInicio);
+  const plan = planificarBloqueAuto(
+    producto,
+    Math.max(0.5, Math.round(horas * 2) / 2),
+    w,
+    start,
+    base,
+    slices,
+    overrides
+  );
+
+  // 1) Añadimos las barras al calendario
+  setSlices((prev) => [...prev, ...plan]);
+
+  // 2) Guardamos automáticamente la descripción del producto
+  const desc = form.descripcion.trim();
+  if (desc) {
+    setDescs((prev) => ({
+      ...prev,
+      [producto]: desc,   // crea o actualiza la descripción de ese producto
+    }));
   }
+
+  // (Opcional) Si quieres limpiar los campos después de crear:
+  // setForm((prev) => ({
+  //   ...prev,
+  //   producto: "",
+  //   descripcion: "",
+  //   horasTotales: 0,
+  // }));
+}
+
 
   function moveWorkerToTop(id: string) {
   setWorkers(prev => {
@@ -2426,6 +2451,17 @@ function mergeOverrideRow(
           value={form.producto}
           onChange={(e) => setForm({ ...form, producto: e.target.value })}
         />
+
+        {/* Descripción del producto */}
+  <label style={label}>Descripción</label>
+  <textarea
+    style={disabledIf(textarea, locked)}
+    disabled={locked}
+    rows={3}
+    placeholder="Descripción / instrucciones para este producto"
+    value={form.descripcion}
+    onChange={(e) => setForm({ ...form, descripcion: e.target.value })}
+  />
 
         <label style={label}>Horas totales</label>
         <input
