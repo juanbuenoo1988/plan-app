@@ -605,18 +605,22 @@ function editBlockTotalFromSlice(slice: TaskSlice) {
 
 
 function preguntarValidacionBloque(actual?: boolean): boolean | null {
+  const defecto = actual ? "1" : "0";
+
   const resp = prompt(
-    "¿Este bloque está VALIDADO? (s = sí / n = no)",
-    actual ? "s" : "n"
+    "¿Estado de VALIDACIÓN del bloque? (0 = NO validado, 1 = VALIDADO)",
+    defecto
   );
-  if (resp === null) return null; // usuario ha pulsado Cancelar
+  if (resp === null) return null; // Cancelar → no hacemos nada
 
-  const r = resp.trim().toLowerCase();
-  if (r === "s" || r === "si" || r === "sí" || r === "y") return true;
-  if (r === "n" || r === "no") return false;
+  const r = resp.trim();
+  if (r === "1") return true;   // validado
+  if (r === "0") return false;  // no validado
 
-  return null; // respuesta rara → no tocar
+  // Cualquier otra cosa rara → no tocar
+  return null;
 }
+
 
 function marcarValidacionBloque(taskId: string, trabajadorId: string, validado: boolean) {
   setSlices(prev =>
