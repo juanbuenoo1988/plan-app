@@ -112,15 +112,6 @@ type NewTaskForm = {
 
 type ProductDescriptions = Record<string, string>;
 
-// === Estado que guardaremos en Supabase (todo el planificador) ===
-type CloudState = {
-  workers: Worker[];                 // trabajadores
-  slices: TaskSlice[];               // bloques del calendario
-  overrides: OverridesState;         // extras/sábados por día y trabajador
-  descs: ProductDescriptions;        // descripciones de productos
-  base?: string;                     // mes base (guardado como texto ISO)
-  locked?: boolean;                  // si el planificador está bloqueado
-};
 
 /* ===================== Util ===================== */
 const fmt = (d: Date | null | undefined) => {
@@ -321,51 +312,6 @@ function compactFrom(
 }
 
 
-
-function reflowFrom(
-  worker: Worker,
-  startDate: Date,
-  overrides: OverridesState,
-  keepBefore: TaskSlice[],
-  queue: QueueItem[]
-): TaskSlice[] {
-  const out: TaskSlice[] = [...keepBefore];
-  let cursor = startDate;
-  if (isNaN(startDate.getTime?.() ?? NaN)) return out;
-
-  while (queue.length) {
-    const cap = capacidadDia(worker, cursor, overrides);
-    const used = usadasEnDia(out, worker.id, cursor);
-    let libre = Math.max(0, Math.floor((cap - used) * 2) / 2);
-
-    if (libre <= 0) {
-      cursor = addDays(cursor, 1);
-      continue;
-    }
-
-    const q = queue[0];
-    const take = Math.min(q.horas, libre);
-    if (take > 0) {
-      pushOrMergeSameDay(out, {
-        id: "S" + Math.random().toString(36).slice(2, 9),
-        taskId: q.taskId,
-        producto: q.producto,
-        fecha: fmt(cursor),
-        horas: take,
-        trabajadorId: worker.id,
-        color: q.color,
-      });
-      q.horas = Math.round((q.horas - take) * 2) / 2;
-      libre = Math.round((libre - take) * 2) / 2;
-    }
-
-    if (q.horas <= 0.0001) queue.shift();
-    if (libre <= 0.0001) cursor = addDays(cursor, 1);
-  }
-
-  return out;
-}
-
 // Planificación de un bloque (crea taskId/color únicos por bloque)
 function planificarBloqueAuto(
   producto: string,
@@ -527,10 +473,7 @@ const updMatches = useMemo(() => {
   type PrintMode = "none" | "monthly" | "daily" | "dailyAll";
   const [printMode, setPrintMode] = useState<PrintMode>("none");
   const [isNewBlockOpen, setIsNewBlockOpen] = useState(true);
-const [isWorkersOpen, setIsWorkersOpen] = useState(false);
-  const [printWorker, setPrintWorker] = useState<string>("W1");
-  const [printDate, setPrintDate] = useState<string>(fmt(new Date()));
-
+  const [isWorkersOpen, setIsWorkersOpen] = useState(false);
   const saveEpoch = useRef(0);
   // === Realtime helpers ===
 const applyingRemoteRef = useRef(false);       // marca: estoy aplicando un cambio que vino del servidor
@@ -727,10 +670,10 @@ function editUrgentSlice(slice: TaskSlice) {
   }
 
   // CARGA TODO DE SUPABASE PARA ESTE USUARIO
-  async function loadAll(uid: string) {
+  async function loadAll(_uid: string) {
     try {
       // 1) Trabajadores
-      const { data: wData, error: wErr } = await supabase
+      const { data: wData} = await supabase
         .from("workers")
         .select("*")
         .eq("tenant_id", TENANT_ID)
@@ -812,34 +755,7 @@ setOverrides(obj);
       console.error("loadAll() error:", e);
     }
   }
-
-
- async function ensureSessionOrExplain(): Promise<boolean> {
-  // 1) Conectividad
-  if (typeof navigator !== "undefined" && navigator.onLine === false) {
-    setSaveError("Sin conexión. No se puede guardar.");
-    return false;
-  }
-  // 2) Sesión válida
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session) {
-    setSaveError("Sesión caducada. Inicia sesión para seguir guardando.");
-    setAuthMsg("Sesión caducada. Introduce tu email y pulsa «Enviarme enlace».");
-    return false;
-  }
-  // 3) (Opcional) Si al token le queda <60s, deja que Supabase lo refresque
-  const exp = session.expires_at ? session.expires_at * 1000 : 0;
-  if (exp && exp - Date.now() < 60_000) {
-    const { data, error } = await supabase.auth.getSession(); // refresca solo
-    if (error || !data.session) {
-      setSaveError("No se pudo refrescar la sesión. Vuelve a entrar.");
-      return false;
-    }
-  }
-  return true;
-}
-
-
+ 
   /**
  * Guarda TODO el estado en Supabase de forma segura:
  * 1) UPSERT (nunca nos quedamos a cero si falla algo)
@@ -1068,12 +984,14 @@ useEffect(() => {
 }, []);
 
 
-function isOwnChange<T>(payload: RealtimePostgresChangesPayload<T>, uid: string | null) {
-  // Muchos eventos DELETE no traen "new", solo "old".
-  // Este corte solo aplica a INSERT/UPDATE (cuando hay "new").
+function isOwnChange(
+  payload: RealtimePostgresChangesPayload<any>,
+  uid: string | null
+) {
   const updatedBy = (payload as any)?.new?.updated_by ?? null;
   return !!uid && !!updatedBy && updatedBy === uid;
 }
+
 
   // AUTOSAVE: guarda en Supabase cuando cambian datos (con debounce)
   
@@ -1329,13 +1247,6 @@ useEffect(() => {
     document.removeEventListener("visibilitychange", onVis);
   };
 }, []);
-
-
-  function triggerPrint(mode: PrintMode) {
-    setPrintMode(mode);
-    setTimeout(() => window.print(), 80);
-    setTimeout(() => setPrintMode("none"), 600);
-  }
 
   // Autenticación simple (bloqueo)
   function tryUnlock() {
@@ -2215,16 +2126,7 @@ function newId() {
  * - Respeta vacaciones (capacidad 0) y sab/domingo ON/OFF ya que capacidadDia lo decide.
  * - Puede partir un bloque en varios días (crea nuevos slices con mismo taskId).
  */
-function reflowFromWorker(workerId: string, startISO: string) {
-  const w = workers.find(x => x.id === workerId);
-  if (!w) return;
 
-  setSlices(prev => {
-    const reflowedForWorker = compactFrom(w, startISO, overrides, prev);
-    const others = prev.filter(s => s.trabajadorId !== w.id);
-    return [...others, ...reflowedForWorker];
-  });
-}
 
 function reflowFromWorkerWithOverrides(workerId: string, startISO: string, ov: OverridesState) {
   const w = workers.find(x => x.id === workerId);
@@ -2236,133 +2138,6 @@ function reflowFromWorkerWithOverrides(workerId: string, startISO: string, ov: O
     return [...others, ...reflowedForWorker];
   });
 }
-
-function reflowFromWorkerPure(
-  baseSlices: TaskSlice[],
-  worker: Worker,
-  startISO: string,
-  ov: OverridesState
-): TaskSlice[] {
-  const before = baseSlices.filter(s => s.trabajadorId === worker.id && s.fecha < startISO);
-  const fromHere = baseSlices
-    .filter(s => s.trabajadorId === worker.id && s.fecha >= startISO)
-    .sort((a, b) =>
-      a.fecha < b.fecha ? -1 :
-      a.fecha > b.fecha ?  1 :
-      (a.id   < b.id   ? -1 : a.id > b.id ? 1 : 0)
-    );
-
-  const queue = fromHere.map(s => ({
-    taskId: s.taskId,
-    producto: s.producto,
-    color: s.color,
-    horas: s.horas,
-  }));
-
-  const rebuilt: TaskSlice[] = [];
-  let guard = 0;
-  let dayISO = startISO;
-
-  while (queue.length > 0 && guard < 365) {
-    guard++;
-    let capLeft = Math.max(0, capacidadDia(worker, fromLocalISO(dayISO), ov));
-
-    if (capLeft > 0) {
-      while (queue.length > 0 && capLeft > 1e-9) {
-        const head = queue[0];
-        const take = Math.min(head.horas, capLeft);
-        if (take > 1e-9) {
-          rebuilt.push({
-            id: newId(),
-            taskId: head.taskId,
-            producto: head.producto,
-            fecha: dayISO,
-            horas: Math.round(take * 2) / 2,
-            trabajadorId: worker.id,
-            color: head.color,
-          });
-          head.horas = Math.round((head.horas - take) * 2) / 2;
-          capLeft    = Math.round((capLeft    - take) * 2) / 2;
-        }
-        if (head.horas <= 1e-9) queue.shift();
-        if (capLeft < 1e-9) capLeft = 0;
-      }
-    }
-
-    dayISO = toLocalISO(addDays(fromLocalISO(dayISO), 1));
-  }
-
-  const restOthers = baseSlices.filter(s => s.trabajadorId !== worker.id);
-  return [...before, ...rebuilt, ...restOthers];
-}
-
-function reflowFromWorkerPurePinned(
-  baseSlices: TaskSlice[],
-  worker: Worker,
-  startISO: string,
-  ov: OverridesState
-): TaskSlice[] {
-  const before = baseSlices
-    .filter(s => s.trabajadorId === worker.id && s.fecha < startISO);
-
-  const fromHere = baseSlices
-    .filter(s => s.trabajadorId === worker.id && s.fecha >= startISO)
-    .sort((a, b) =>
-      a.fecha < b.fecha ? -1 :
-      a.fecha > b.fecha ?  1 :
-      (a.id   < b.id   ? -1 : a.id > b.id ? 1 : 0)
-    );
-
-  // “pinned” = URGENCIAS: no se mueven de su día
-  const pinned  = fromHere.filter(isUrgentSlice);
-  const movable = fromHere.filter(s => !isUrgentSlice(s));
-
-  // Cola con lo movible (agregado por bloque)
-  const queue = aggregateToQueue(movable).map(q => ({ ...q }));
-
-  const rebuilt: TaskSlice[] = [];
-  let dayISO = startISO;
-  let guard = 0;
-
-  while ((queue.length > 0 || pinned.length > 0) && guard < 365) {
-    guard++;
-
-    let capLeft = Math.max(0, capacidadDia(worker, fromLocalISO(dayISO), ov));
-
-    // 1) Coloca primero las urgencias del propio día (no se tocan)
-    const todaysPinned = pinned.filter(s => s.fecha === dayISO);
-    for (const p of todaysPinned) {
-      rebuilt.push({ ...p });
-      capLeft = Math.max(0, Math.round((capLeft - p.horas) * 2) / 2);
-    }
-
-    // 2) Rellena con la cola movible
-    while (queue.length > 0 && capLeft > 1e-9) {
-      const head = queue[0];
-      const take = Math.min(head.horas, capLeft);
-      if (take > 1e-9) {
-        rebuilt.push({
-          id: newId(),
-          taskId: head.taskId,
-          producto: head.producto,
-          fecha: dayISO,
-          horas: Math.round(take * 2) / 2,
-          trabajadorId: worker.id,
-          color: head.color,
-        });
-        head.horas = Math.round((head.horas - take) * 2) / 2;
-        capLeft    = Math.round((capLeft    - take) * 2) / 2;
-      }
-      if (head.horas <= 1e-9) queue.shift();
-    }
-
-    dayISO = toLocalISO(addDays(fromLocalISO(dayISO), 1));
-  }
-
-  const restOthers = baseSlices.filter(s => s.trabajadorId !== worker.id);
-  return [...before, ...rebuilt, ...restOthers];
-}
-
 
 function compactarBloques(workerId: string) {
   setSlices((prev) => {
@@ -3391,12 +3166,6 @@ const mainLayout: React.CSSProperties = {
   alignItems: "start",
 };
 
-const bar: React.CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "space-between",
-  marginBottom: 12,
-};
 
 // === Estilos del número de día y avisos ===
 const dayNumber: React.CSSProperties = {
@@ -3470,7 +3239,6 @@ const dayCell: React.CSSProperties = {
   background: "#fafafa",
   borderRadius: 8,
 };
-const dayLabel: React.CSSProperties = { fontSize: 11, color: "#6b7280" };
 
 const weekCol: React.CSSProperties = {
   display: "flex",
@@ -3537,9 +3305,6 @@ const deleteBtnAlt: React.CSSProperties = {
   cursor: "pointer", lineHeight: "22px", fontSize: 12,
 };
 const smallPlusBtn: React.CSSProperties = { background: "#111827", color: "#fff", border: "none", borderRadius: 6, padding: "2px 6px", cursor: "pointer", fontSize: 12 };
-
-const pth: React.CSSProperties = { textAlign: "left", borderBottom: "1px solid #ddd", padding: "6px" };
-const ptd: React.CSSProperties = { borderBottom: "1px solid #eee", padding: "6px" };
 
 const sidebar: React.CSSProperties = {
   position: "sticky",
