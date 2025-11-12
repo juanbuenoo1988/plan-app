@@ -1,1 +1,38 @@
+// src/components/SessionHeartbeat.tsx
+import { useEffect } from "react";
+import { supabase } from "../lib/supabase";
+
+/**
+ * Mantiene viva la sesión y refresca el token en segundo plano.
+ * - Hace un getSession al montar
+ * - Vuelve a pedir la sesión cada 45s (si está a punto de expirar, Supabase la refresca)
+ */
+export default function SessionHeartbeat() {
+  useEffect(() => {
+    let timer: number | null = null;
+    let mounted = true;
+
+    const tick = async () => {
+      try {
+        // Esto fuerza a Supabase a comprobar/refrescar el token si toca
+        await supabase.auth.getSession();
+      } catch {
+        // ignoramos
+      }
+    };
+
+    // primer golpe al montar
+    tick();
+
+    // cada 45s
+    timer = window.setInterval(tick, 45_000);
+
+    return () => {
+      mounted = false;
+      if (timer) window.clearInterval(timer);
+    };
+  }, []);
+
+  return null;
+}
 
