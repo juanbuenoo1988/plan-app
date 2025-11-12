@@ -1,4 +1,5 @@
 // src/Planificador.tsx
+import SessionHeartbeat from "./components/SessionHeartbeat";
 import type { RealtimePostgresChangesPayload } from "@supabase/supabase-js";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "./lib/supabase";
@@ -16,19 +17,6 @@ import {
 } from "date-fns";
 import { es } from "date-fns/locale";
 import type { AuthChangeEvent, Session } from "@supabase/supabase-js";
-
-import SessionHeartbeat from "./components/SessionHeartbeat";
-
-function App() {
-  return (
-    <>
-      <SessionHeartbeat />  {/* ← agrega esto */}
-      {/* el resto de tu app */}
-    </>
-  );
-}
-
-export default App;
 
 /* ===================== Configuración ===================== */
 const PASSWORD = "0000"; // ← cámbiala por la que quieras
@@ -450,6 +438,7 @@ function planificarBloqueAuto(
 export default function Planificador() {
   return (
     <ErrorBoundary>
+      <SessionHeartbeat />
       <AppInner />
     </ErrorBoundary>
   );
