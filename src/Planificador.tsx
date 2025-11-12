@@ -17,6 +17,19 @@ import {
 import { es } from "date-fns/locale";
 import type { AuthChangeEvent, Session } from "@supabase/supabase-js";
 
+import SessionHeartbeat from "./components/SessionHeartbeat";
+
+function App() {
+  return (
+    <>
+      <SessionHeartbeat />  {/* ← agrega esto */}
+      {/* el resto de tu app */}
+    </>
+  );
+}
+
+export default App;
+
 /* ===================== Configuración ===================== */
 const PASSWORD = "0000"; // ← cámbiala por la que quieras
 const STORAGE_KEY = "planificador:v1";
