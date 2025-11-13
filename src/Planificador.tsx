@@ -2818,12 +2818,14 @@ const handleDayHeaderDblClick = () => {
       </>
     )}
 
-    {/* Icono de validado NO dentro del texto, sino flotando */}
-    <ValidIcon validado={s.validado} />
+   
 
     <div style={blockTop}>
-      <span style={productFull}>{s.producto}</span>
-      <span>{s.horas}h</span>
+  <span style={productFull}>
+    <ValidIcon validado={s.validado} />
+    {s.producto}
+  </span>
+  <span>{s.horas}h</span>
     </div>
 
     {desc ? <div style={miniHint}>ⓘ</div> : null}
@@ -3014,13 +3016,12 @@ const handleDayHeaderDblClick = () => {
               //   true  → todos validados
               //   false → ninguno validado
               //   undefined → mezcla (no mostramos icono)
-              let estado: boolean | undefined;
-              if (prodSlices.length > 0) {
-                const allValid = prodSlices.every(s => s.validado === true);
-                const noneValid = prodSlices.every(s => s.validado !== true);
-                if (allValid) estado = true;
-                else if (noneValid) estado = false;
-              }
+              let estado: boolean | undefined = undefined;
+if (prodSlices.length > 0) {
+  const allValid = prodSlices.every(s => s.validado === true);
+  // si no están todos validados, mostramos X (false)
+  estado = allValid ? true : false;
+}
 
               return (
                 <div key={`desc-${prod}`} style={descItem}>
@@ -3289,22 +3290,12 @@ function DayCapacityBadge({ capacidad, usado }: { capacidad: number; usado: numb
 
 function ValidIcon({ validado }: { validado?: boolean }) {
   if (validado == null) return null;
-
   return (
-    <div style={validIconWrapper}>
-      <span
-        style={{
-          ...statusBadge,
-          color: validado ? "#16a34a" : "#dc2626", // verde / rojo
-        }}
-      >
-        {validado ? "✓" : "✗"}
-      </span>
-    </div>
+    <span style={{ ...validIconBox, color: validado ? "#16a34a" : "#dc2626" }}>
+      {validado ? "✓" : "✗"}
+    </span>
   );
 }
-
-
 
 /* ===================== Estilos ===================== */
 const appShell: React.CSSProperties = {
@@ -3360,9 +3351,10 @@ const validIconBox: React.CSSProperties = {
   borderRadius: 6,
   background: "#ffffff",
   border: "1px solid rgba(0,0,0,.2)",
-  marginLeft: 6,
+  marginRight: 6,        // ← separa el icono del texto
   fontSize: 12,
   fontWeight: 700,
+  verticalAlign: "text-top"
 };
 
 
@@ -3514,6 +3506,9 @@ const productFull: React.CSSProperties = {
   lineHeight: 1.1,
   marginRight: 8,
   maxWidth: "100%",
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 6,
 };
 // === Botones ===
 const btnBase: React.CSSProperties = {
