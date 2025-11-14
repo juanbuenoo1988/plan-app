@@ -2449,10 +2449,16 @@ async function borrarVacacionesRango() {
 
 
 // ============ Re-empacado de tramos desde un día hacia delante ============
+// === Generador de IDs únicos para los slices ===
+// PÉGALO FUERA DEL COMPONENTE, al mismo nivel que compactFrom, reflowFromWorkerWithOverrides, etc.
 function newId() {
-  // usa tu generador si tienes (por ejemplo nanoid/uuid). Esto vale en navegadores modernos:
-  return (crypto as any)?.randomUUID ? (crypto as any).randomUUID() : String(Math.random()).slice(2);
+  if (typeof crypto !== "undefined" && (crypto as any).randomUUID) {
+    return (crypto as any).randomUUID();
+  }
+  // Fallback por si randomUUID no existe
+  return "S" + Math.random().toString(36).slice(2, 10);
 }
+
 
 
 
