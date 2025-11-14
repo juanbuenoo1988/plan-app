@@ -862,56 +862,37 @@ async function saveAll(uid: string) {
     updated_by: uid,
   }));
 
-  // --- 1) UPSERT de todo ---
-  { const { error } = await supabase.from("workers").upsert(wRows, { onConflict: "tenant_id,id" }); if (error) throw error; }
-  { const { error } = await supabase.from("product_descs").upsert(dRows, { onConflict: "tenant_id,nombre" }); if (error) throw error; }
-  { const { error } = await supabase.from("task_slices").upsert(sRows, { onConflict: "tenant_id,id" }); if (error) throw error; }
-  { const { error } = await supabase.from("day_overrides").upsert(oRows, { onConflict: "tenant_id,worker_id,fecha" }); if (error) throw error; }
-
-  // --- 2) Borrado selectivo ---
-  // 2.a) task_slices
+  // --- 1) UPSERT de todo (SOLO escribir/actualizar, sin borrar nada de otros) ---
   {
-    const { data: existing, error } = await supabase
-      .from("task_slices").select("id").eq("tenant_id", TENANT_ID);
+    const { error } = await supabase
+      .from("workers")
+      .upsert(wRows, { onConflict: "tenant_id,id" });
     if (error) throw error;
-
-    const keepSet = new Set(sRows.map(r => r.id));
-    const toDelete = (existing ?? []).map((r: { id: string }) => r.id).filter(id => !keepSet.has(id));
-    if (toDelete.length > 0) {
-      const { error: delErr } = await supabase
-        .from("task_slices").delete().in("id", toDelete).eq("tenant_id", TENANT_ID);
-      if (delErr) throw delErr;
-    }
   }
 
-  // 2.b) day_overrides (si existe la RPC)
-  try {
-    const keepKeys = oRows.map(r => `${r.worker_id}|${r.fecha}`);
-    if (keepKeys.length > 0) {
-      const { error: rpcErr } = await supabase.rpc("delete_overrides_not_in", {
-        tenant: TENANT_ID,
-        keep_keys: keepKeys,
-      });
-      if (rpcErr) console.warn("[saveAll] Limpieza RPC omitida:", rpcErr.message || rpcErr);
-    }
-  } catch (e: any) {
-    console.warn("[saveAll] Limpieza RPC omitida (catch):", e?.message || e);
-  }
-
-  // 2.c) product_descs
   {
-    const { data: existing, error } = await supabase
-      .from("product_descs").select("nombre").eq("tenant_id", TENANT_ID);
+    const { error } = await supabase
+      .from("product_descs")
+      .upsert(dRows, { onConflict: "tenant_id,nombre" });
     if (error) throw error;
-
-    const keepSet = new Set(dRows.map(r => r.nombre));
-    const toDelete = (existing ?? []).map((r: { nombre: string }) => r.nombre).filter(n => !keepSet.has(n));
-    if (toDelete.length > 0) {
-      const { error: delErr } = await supabase
-        .from("product_descs").delete().in("nombre", toDelete).eq("tenant_id", TENANT_ID);
-      if (delErr) throw delErr;
-    }
   }
+
+  {
+    const { error } = await supabase
+      .from("task_slices")
+      .upsert(sRows, { onConflict: "tenant_id,id" });
+    if (error) throw error;
+  }
+
+  {
+    const { error } = await supabase
+      .from("day_overrides")
+      .upsert(oRows, { onConflict: "tenant_id,worker_id,fecha" });
+    if (error) throw error;
+  }
+
+  // ❌ IMPORTANTE: ya NO hay borrado masivo aquí.
+  // Si algo se borra, lo haremos de forma específica donde el usuario realmente lo elimine.
 
   return true;
 }
@@ -1434,25 +1415,73 @@ useEffect(() => {
     setWorkers((prev) => prev.map((w) => (w.id === id ? { ...w, ...patch } : w)));
   }
 // ——— Eliminar trabajador + limpiar sus datos ———
-function deleteWorker(id: string) {
+async function deleteWorker(id: string) {
   if (!canEdit) return;
+
   const w = workers.find(x => x.id === id);
   const name = w?.nombre || id;
-  if (!confirm(`¿Eliminar a "${name}" y todas sus asignaciones? Esta acción no se puede deshacer.`)) return;
 
-  // 1) Quita el trabajador de la lista
+  if (!confirm(`¿Eliminar a "${name}" y todas sus asignaciones? Esta acción no se puede deshacer.`)) {
+    return;
+  }
+
+  // 1) Estado local: lo quitamos de la pantalla
   setWorkers(prev => prev.filter(x => x.id !== id));
 
-  // 2) Elimina todos sus bloques/horas
+  // Quitar todos sus bloques/horas del estado
   setSlices(prev => prev.filter(s => s.trabajadorId !== id));
 
-  // 3) Borra overrides (extras/sábados) del trabajador
+  // Quitar overrides (extras, sábados, domingos, vacaciones) del estado
   setOverrides(prev => {
     const copy = { ...prev };
     delete copy[id];
     return copy;
   });
+
+  // 2) Base de datos: borrar de Supabase (si hay sesión)
+  if (!userId) {
+    // si no hay usuario logado, no intentamos borrar en la nube
+    return;
+  }
+
+  try {
+    // 2.a) Borrar todos sus tramos en task_slices
+    const { error: errSlices } = await supabase
+      .from("task_slices")
+      .delete()
+      .eq("tenant_id", TENANT_ID)
+      .eq("trabajador_id", id);
+
+    if (errSlices) {
+      console.error("deleteWorker: error borrando task_slices:", errSlices);
+    }
+
+    // 2.b) Borrar todos sus overrides en day_overrides
+    const { error: errOv } = await supabase
+      .from("day_overrides")
+      .delete()
+      .eq("tenant_id", TENANT_ID)
+      .eq("worker_id", id);
+
+    if (errOv) {
+      console.error("deleteWorker: error borrando day_overrides:", errOv);
+    }
+
+    // 2.c) Borrar al propio trabajador en workers
+    const { error: errW } = await supabase
+      .from("workers")
+      .delete()
+      .eq("tenant_id", TENANT_ID)
+      .eq("id", id);
+
+    if (errW) {
+      console.error("deleteWorker: error borrando worker:", errW);
+    }
+  } catch (e) {
+    console.error("deleteWorker: excepción al borrar en Supabase:", e);
+  }
 }
+
 
   // Drag & Drop
   const dragIdRef = useRef<string | null>(null);
@@ -1552,39 +1581,87 @@ function editOverrideForDay(worker: Worker, date: Date) {
 
 
   // Borrar tramo / bloque
-  function removeSlice(id: string) {
-    if (!canEdit) return;
-    const victim = slices.find((s) => s.id === id);
-    setSlices((prev) => {
-      const filtered = prev.filter((s) => s.id !== id);
-      if (!victim) return filtered;
+async function removeSlice(id: string) {
+  if (!canEdit) return;
 
-      const w = workers.find((x) => x.id === victim.trabajadorId);
-      if (!w) return filtered;
+  // 1) Local: quitamos el tramo del estado y recompactamos
+  const victim = slices.find((s) => s.id === id);
 
-      const newPlan = compactFrom(w, victim.fecha, overrides, filtered);
-      const others = filtered.filter((s) => s.trabajadorId !== w.id);
-      return [...others, ...newPlan];
-    });
+  setSlices((prev) => {
+    const filtered = prev.filter((s) => s.id !== id);
+    if (!victim) return filtered;
+
+    const w = workers.find((x) => x.id === victim.trabajadorId);
+    if (!w) return filtered;
+
+    const newPlan = compactFrom(w, victim.fecha, overrides, filtered);
+    const others = filtered.filter((s) => s.trabajadorId !== w.id);
+    return [...others, ...newPlan];
+  });
+
+  // 2) Remoto: borramos ese tramo en Supabase (si hay sesión)
+  if (userId && victim) {
+    try {
+      const { error } = await supabase
+        .from("task_slices")
+        .delete()
+        .eq("tenant_id", TENANT_ID)
+        .eq("id", id);
+
+      if (error) {
+        console.error("removeSlice supabase delete error:", error);
+      }
+    } catch (e) {
+      console.error("removeSlice supabase exception:", e);
+    }
   }
+}
 
-  function removeTask(taskId: string, workerId: string) {
-    if (!canEdit) return;
-    if (!confirm("¿Eliminar todo el bloque (producto) para este trabajador?")) return;
-    const w = workers.find((x) => x.id === workerId);
-    if (!w) return;
 
-    setSlices((prev) => {
-      const toRemove = prev.filter((s) => s.taskId === taskId && s.trabajadorId === workerId);
-      const filtered = prev.filter((s) => !(s.taskId === taskId && s.trabajadorId === workerId));
-      if (!toRemove.length) return filtered;
+  async function removeTask(taskId: string, workerId: string) {
+  if (!canEdit) return;
+  if (!confirm("¿Eliminar todo el bloque (producto) para este trabajador?")) return;
 
-      const startF = toRemove.reduce((m, s) => (s.fecha < m ? s.fecha : m), toRemove[0].fecha);
-      const newPlan = compactFrom(w, startF, overrides, filtered);
-      const others = filtered.filter((s) => s.trabajadorId !== w.id);
-      return [...others, ...newPlan];
-    });
+  const w = workers.find((x) => x.id === workerId);
+  if (!w) return;
+
+  // 1) Local: quitamos el bloque de ese trabajador y recompactamos
+  setSlices((prev) => {
+    const toRemove = prev.filter(
+      (s) => s.taskId === taskId && s.trabajadorId === workerId
+    );
+    const filtered = prev.filter(
+      (s) => !(s.taskId === taskId && s.trabajadorId === workerId)
+    );
+    if (!toRemove.length) return filtered;
+
+    const startF = toRemove.reduce(
+      (m, s) => (s.fecha < m ? s.fecha : m),
+      toRemove[0].fecha
+    );
+    const newPlan = compactFrom(w, startF, overrides, filtered);
+    const others = filtered.filter((s) => s.trabajadorId !== w.id);
+    return [...others, ...newPlan];
+  });
+
+  // 2) Remoto: borramos TODAS las filas de ese bloque para ese trabajador
+  if (userId) {
+    try {
+      const { error } = await supabase
+        .from("task_slices")
+        .delete()
+        .eq("tenant_id", TENANT_ID)
+        .eq("trabajador_id", workerId)
+        .eq("task_id", taskId);
+
+      if (error) {
+        console.error("removeTask supabase delete error:", error);
+      }
+    } catch (e) {
+      console.error("removeTask supabase exception:", e);
+    }
   }
+}
 
   // Urgencia
   function addManualHere(worker: Worker, date: Date) {
@@ -2176,64 +2253,129 @@ async function ensureSessionOrExplain(): Promise<boolean> {
 
 
 
-function borrarVacacionUnDia(workerId: string, iso: string) {
+async function borrarVacacionUnDia(workerId: string, iso: string) {
+  // Miramos cómo está AHORA el override para saber si, al quitar vacaciones, quedará vacío
+  const actual = overrides[workerId]?.[iso];
+  const quedaraVacio =
+    !!actual &&
+    !!actual.vacacion &&
+    !actual.extra &&
+    !actual.sabado &&
+    !actual.domingo;
+
+  // 1) Estado local: quitar la vacación en memoria
   setOverrides((prev: OverridesState) => {
     const byW = { ...(prev[workerId] || {}) };
     const cur = { ...(byW[iso] || {}) };
+
     delete cur.vacacion;
+
     if (!cur.extra && !cur.sabado && !cur.domingo && !cur.vacacion) {
+      // si no queda nada, eliminamos el override del estado
       delete byW[iso];
     } else {
       byW[iso] = cur;
     }
+
     return { ...prev, [workerId]: byW };
   });
+
+  // 2) Si queda vacío, borramos también la fila en Supabase
+  if (userId && quedaraVacio) {
+    try {
+      const { error } = await supabase
+        .from("day_overrides")
+        .delete()
+        .eq("tenant_id", TENANT_ID)
+        .eq("worker_id", workerId)
+        .eq("fecha", iso);
+
+      if (error) {
+        console.error("borrarVacacionUnDia supabase delete error:", error);
+      }
+    } catch (e) {
+      console.error("borrarVacacionUnDia supabase exception:", e);
+    }
+  }
 }
 
-function aplicarExtrasRango() {
+
+async function aplicarExtrasRango() {
   if (!gmWorker || !gmFrom || !gmTo) return;
 
   const dias = eachDayISO(gmFrom, gmTo);
 
-  // Calcula el NUEVO estado primero
-  const nextOverrides: OverridesState = (() => {
-    const prev = overrides;
-    const byW = { ...(prev[gmWorker] || {}) };
+  const prev = overrides;
+  const byW = { ...(prev[gmWorker] || {}) };
 
-    for (const iso of dias) {
-      const dow = getDay(fromLocalISO(iso)); // 0=domingo, 1=lunes,...,6=sábado
-      const cur = { ...(byW[iso] || {}) };
+  // días donde el override se queda completamente vacío
+  const toDelete: string[] = [];
 
-      if (gmExtra === 0) {
-        // ✅ Permitir BORRAR extras también en DOMINGOS (antes se saltaba)
-        if ("extra" in cur) {
-          delete cur.extra;
-        }
-        // Limpia el override si queda vacío
-        if (!cur.extra && !cur.sabado && !cur.domingo && !cur.vacacion) {
-          delete byW[iso];
-        } else {
-          byW[iso] = cur;
+  for (const iso of dias) {
+    const dow = getDay(fromLocalISO(iso));   // 0=domingo, 6=sábado
+    const curBefore = byW[iso];             // estado ANTES
+    const cur = { ...(curBefore || {}) };   // copia editable
+
+    if (gmExtra === 0) {
+      // Quitar extras
+      if ("extra" in cur) {
+        delete cur.extra;
+      }
+
+      if (!cur.extra && !cur.sabado && !cur.domingo && !cur.vacacion) {
+        // Override vacío → lo quitamos del estado
+        delete byW[iso];
+
+        // Si antes solo tenía EXTRA (y nada más), toca borrar fila en BD
+        if (
+          curBefore &&
+          curBefore.extra &&
+          !curBefore.sabado &&
+          !curBefore.domingo &&
+          !curBefore.vacacion
+        ) {
+          toDelete.push(iso);
         }
       } else {
-        // ➕ Añadir extras SOLO L–V (no sábados, no domingos)
-        if (dow === 0 || dow === 6) continue;
-        cur.extra = Math.round(gmExtra * 2) / 2;
         byW[iso] = cur;
       }
+    } else {
+      // Poner extras SOLO L–V (no sábados ni domingos)
+      if (dow === 0 || dow === 6) continue;
+      cur.extra = Math.round(gmExtra * 2) / 2;
+      byW[iso] = cur;
     }
+  }
 
-    return { ...prev, [gmWorker]: byW };
-  })();
+  const nextOverrides: OverridesState = { ...prev, [gmWorker]: byW };
 
-  // Aplica el estado…
+  // 1) Estado local
   setOverrides(nextOverrides);
 
-  // …y refluye con el ESTADO NUEVO
+  // 2) Reempacar horas con el estado nuevo
   const startISO = gmFrom <= gmTo ? gmFrom : gmTo;
   reflowFromWorkerWithOverrides(gmWorker, startISO, nextOverrides);
   compactarBloques(gmWorker);
+
+  // 3) Borrado en Supabase de los overrides que se han quedado vacíos
+  if (userId && toDelete.length > 0) {
+    try {
+      const { error } = await supabase
+        .from("day_overrides")
+        .delete()
+        .eq("tenant_id", TENANT_ID)
+        .eq("worker_id", gmWorker)
+        .in("fecha", toDelete);
+
+      if (error) {
+        console.error("aplicarExtrasRango supabase delete error:", error);
+      }
+    } catch (e) {
+      console.error("aplicarExtrasRango supabase exception:", e);
+    }
+  }
 }
+
 
 function marcarVacacionesRango() {
   if (!gmWorker || !gmFrom || !gmTo) return;
@@ -2254,27 +2396,68 @@ function marcarVacacionesRango() {
   compactarBloques(gmWorker);
 }
 
-
-function borrarVacacionesRango() {
+async function borrarVacacionesRango() {
   if (!gmWorker || !gmFrom || !gmTo) return;
   const dias = eachDayISO(gmFrom, gmTo);
 
-  const nextOverrides: OverridesState = (() => {
-    const prev = overrides;
-    const byW = { ...(prev[gmWorker] || {}) };
-    for (const iso of dias) {
-      const cur = { ...(byW[iso] || {}) };
-      delete cur.vacacion;
-      if (!cur.extra && !cur.sabado && !cur.domingo && !cur.vacacion) delete byW[iso];
-      else byW[iso] = cur;
-    }
-    return { ...prev, [gmWorker]: byW };
-  })();
+  const prev = overrides;
+  const byW = { ...(prev[gmWorker] || {}) };
 
+  // guardaremos aquí los días donde el override se queda totalmente vacío
+  const toDelete: string[] = [];
+
+  for (const iso of dias) {
+    const curBefore = byW[iso];             // cómo estaba antes
+    const cur = { ...(curBefore || {}) };   // copia que vamos a tocar
+
+    delete cur.vacacion;
+
+    if (!cur.extra && !cur.sabado && !cur.domingo && !cur.vacacion) {
+      // si no queda nada, quitamos el override de ese día
+      delete byW[iso];
+
+      // si antes SOLO tenía vacación (y nada más), borramos fila en BD
+      if (
+        curBefore &&
+        curBefore.vacacion &&
+        !curBefore.extra &&
+        !curBefore.sabado &&
+        !curBefore.domingo
+      ) {
+        toDelete.push(iso);
+      }
+    } else {
+      byW[iso] = cur;
+    }
+  }
+
+  const nextOverrides: OverridesState = { ...prev, [gmWorker]: byW };
+
+  // 1) Estado local
   setOverrides(nextOverrides);
+
+  // 2) Reempacar horas
   const startISO = gmFrom <= gmTo ? gmFrom : gmTo;
   reflowFromWorkerWithOverrides(gmWorker, startISO, nextOverrides);
   compactarBloques(gmWorker);
+
+  // 3) Borrado en Supabase de los días que han quedado vacíos
+  if (userId && toDelete.length > 0) {
+    try {
+      const { error } = await supabase
+        .from("day_overrides")
+        .delete()
+        .eq("tenant_id", TENANT_ID)
+        .eq("worker_id", gmWorker)
+        .in("fecha", toDelete);
+
+      if (error) {
+        console.error("borrarVacacionesRango supabase delete error:", error);
+      }
+    } catch (e) {
+      console.error("borrarVacacionesRango supabase exception:", e);
+    }
+  }
 }
 
 
