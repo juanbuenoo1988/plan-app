@@ -958,7 +958,7 @@ async function saveAll(uid: string) {
     updated_by: uid,
   }));
 
-  // --- 1) UPSERT de todo (SOLO escribir/actualizar, sin borrar nada de otros) ---
+  // --- 1) UPSERT de todo ---
   {
     const { error } = await supabase
       .from("workers")
@@ -987,11 +987,41 @@ async function saveAll(uid: string) {
     if (error) throw error;
   }
 
-  // ❌ IMPORTANTE: ya NO hay borrado masivo aquí.
-  // Si algo se borra, lo haremos de forma específica donde el usuario realmente lo elimine.
+  // --- 2) LIMPIEZA: borrar en BD los task_slices que ya no existen en el estado ---
+  try {
+    const { data: remoteIds, error: selErr } = await supabase
+      .from("task_slices")
+      .select("id")
+      .eq("tenant_id", TENANT_ID);
 
+    if (selErr) {
+      console.error("saveAll: error leyendo ids de task_slices:", selErr);
+    } else if (remoteIds) {
+      const localIds = new Set(sRows.map(r => r.id));
+      const toDelete = remoteIds
+        .map((r: any) => r.id as string)
+        .filter(id => !localIds.has(id));
+
+      if (toDelete.length > 0) {
+        const { error: delErr } = await supabase
+          .from("task_slices")
+          .delete()
+          .eq("tenant_id", TENANT_ID)
+          .in("id", toDelete);
+
+        if (delErr) {
+          console.error("saveAll: error limpiando task_slices huérfanos:", delErr);
+        }
+      }
+    }
+  } catch (e) {
+    console.error("saveAll: excepción limpiando task_slices huérfanos:", e);
+  }
+
+  // Ojo: workers/product_descs/day_overrides se siguen borrando SOLO cuando el usuario lo hace explícitamente.
   return true;
 }
+
 
 function isOwnChange(
   payload: RealtimePostgresChangesPayload<any>,
