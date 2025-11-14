@@ -434,16 +434,18 @@ function AppInner() {
 
   const [overrides, setOverrides] = useState<OverridesState>({});
   const [slices, setSlices] = useState<TaskSlice[]>([]);
+  
   // Para saber cuándo empieza cada bloque (taskId) por trabajador
 const taskStartByWorker = useMemo(() => {
   const map: Record<string, Record<string, string>> = {};
+  // { [workerId]: { [taskId]: "YYYY-MM-DD" } }
 
   for (const s of slices) {
-    const byW = map[s.trabajadorId] || (map[s.trabajadorId] = {});
-    const current = byW[s.taskId];
-    // nos quedamos con la fecha más antigua de ese bloque para ese trabajador
-    if (!current || s.fecha < current) {
-      byW[s.taskId] = s.fecha;
+    const byWorker = (map[s.trabajadorId] ||= {});
+    const prev = byWorker[s.taskId];
+    // Nos quedamos siempre con la fecha más antigua de ese bloque
+    if (!prev || s.fecha < prev) {
+      byWorker[s.taskId] = s.fecha;
     }
   }
 
@@ -2962,23 +2964,24 @@ function mergeOverrideRow(
                       const iso = f || toLocalISO(d);
                       // Bloques de este trabajador en este día, ordenados por
 // la fecha de inicio del bloque (para que el que empezó antes salga primero)
-const delDia = f
-  ? slices
-      .filter((s) => s.trabajadorId === w.id && s.fecha === f)
-      .sort((a, b) => {
-        const starts = taskStartByWorker[w.id] || {};
-        const sa = starts[a.taskId] ?? a.fecha;
-        const sb = starts[b.taskId] ?? b.fecha;
+      const delDia = f
+        ? slices
+            .filter((s) => s.trabajadorId === w.id && s.fecha === f)
+            .sort((a, b) => {
+              const starts = taskStartByWorker[w.id] || {};
+              const sa = starts[a.taskId] ?? a.fecha;
+              const sb = starts[b.taskId] ?? b.fecha;
 
-        if (sa < sb) return -1;
-        if (sa > sb) return 1;
+              if (sa < sb) return -1;
+              if (sa > sb) return 1;
 
-        // desempate estable por taskId (por si dos bloques empiezan el mismo día)
-        if (a.taskId < b.taskId) return -1;
-        if (a.taskId > b.taskId) return 1;
-        return 0;
-      })
-  : [];
+              // desempate estable por taskId (por si dos bloques empiezan el mismo día)
+              if (a.taskId < b.taskId) return -1;
+              if (a.taskId > b.taskId) return 1;
+              return 0;
+            })
+        : [];
+
 
                       const cap = capacidadDia(w, d, overrides);
                       const used = usadasEnDia(slices, w.id, d);
