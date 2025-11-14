@@ -20,6 +20,8 @@ import type { AuthChangeEvent, Session } from "@supabase/supabase-js";
 /* ===================== Configuración ===================== */
 const PASSWORD = "0000"; // ← cámbiala por la que quieras
 const STORAGE_KEY = "planificador:v1";
+const ENABLE_CLOUD_AUTOSAVE = false; // ⬅️ desactiva guardado automático en Supabase
+
 
 
 // Todos verán/editarán el mismo plan (tenant único)
@@ -95,11 +97,11 @@ type TaskSlice = {
   id: string;
   taskId: string;
   producto: string;
-  fecha: string;     // YYYY-MM-DD
+  fecha: string;        // ISO
   horas: number;
   trabajadorId: string;
   color: string;
-  validado?: boolean;
+  validado?: boolean;   // ⬅️ NUEVO
 };
 
 type NewTaskForm = {
@@ -172,6 +174,137 @@ function colorFromId(id: string) {
 // Capacidad real del día para un trabajador, teniendo en cuenta overrides
 const WEEKEND_BASE_HOURS = 8; // cuando se habilita sábado/domingo
 
+
+
+function usadasEnDia(slices: TaskSlice[], workerId: string, date: Date) {
+  const f = fmt(date);
+  if (!f) return 0;
+  return slices
+    .filter((s) => s.trabajadorId === workerId && s.fecha === f)
+    .reduce((a, s) => a + s.horas, 0);
+}
+
+/* ===================== Replanificación / colas ===================== */
+type QueueItem = {
+  taskId: string;
+  producto: string;
+  color: string;
+  horas: number;
+  validado?: boolean;   // ⬅️ NUEVO
+};
+
+
+function pushOrMergeSameDay(out: TaskSlice[], add: TaskSlice) {
+  const i = out.findIndex(
+    (s) => s.trabajadorId === add.trabajadorId && s.taskId === add.taskId && s.fecha === add.fecha
+  );
+  if (i >= 0) {
+    out[i] = { ...out[i], horas: Math.round((out[i].horas + add.horas) * 2) / 2 };
+  } else {
+    out.push(add);
+  }
+}
+
+function aggregateToQueue(items: TaskSlice[]): QueueItem[] {
+  const map = new Map<string, QueueItem>();
+  const order: string[] = [];
+  for (const t of items) {
+    if (!map.has(t.taskId)) {
+      map.set(t.taskId, { producto: t.producto, horas: 0, color: t.color, taskId: t.taskId });
+      order.push(t.taskId);
+    }
+    const cur = map.get(t.taskId)!;
+    cur.horas = Math.round((cur.horas + t.horas) * 2) / 2;
+  }
+  return order.map((id) => map.get(id)!);
+}
+
+
+function newId(): string {
+  if (typeof crypto !== "undefined" && (crypto as any).randomUUID) {
+    return (crypto as any).randomUUID();
+  }
+  // Fallback por si randomUUID no existe
+  return "S" + Math.random().toString(36).slice(2, 10);
+}
+/**
+ * Refluye TODOS los tramos (slices) del trabajador a partir de startISO inclusive,
+ * rellenando huecos en cada día según capacidadDia(w, date, overrides).
+ * - Respeta vacaciones (capacidad 0) y sab/domingo ON/OFF ya que capacidadDia lo decide.
+ * - Puede partir un bloque en varios días (crea nuevos slices con mismo taskId).
+ * - ⬅️ AHORA mantiene el estado "validado" de cada bloque.
+ */
+function compactFrom(
+  w: Worker,
+  startISO: string,
+  ov: OverridesState,
+  allSlices: TaskSlice[]
+): TaskSlice[] {
+  // 1) Slices de este trabajador, ordenados
+  const delTrabajador = allSlices
+    .filter(s => s.trabajadorId === w.id)
+    .sort((a, b) =>
+      a.fecha < b.fecha ? -1 :
+      a.fecha > b.fecha ? 1  :
+      (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+    );
+
+  const before  = delTrabajador.filter(s => s.fecha < startISO);
+  const fromHere = delTrabajador.filter(s => s.fecha >= startISO);
+
+  // 2) Cola con todos los bloques desde startISO,
+  //    arrastrando color y validado
+  const queue: QueueItem[] = fromHere.map(s => ({
+    taskId: s.taskId,
+    producto: s.producto,
+    color: s.color,
+    horas: s.horas,
+    validado: s.validado ?? false,
+  }));
+
+  const rebuilt: TaskSlice[] = [];
+  let dayISO = startISO;
+  let guard = 0;
+
+  while (queue.length > 0 && guard < 365) {
+    guard++;
+    let capLeft = Math.max(0, capacidadDia(w, fromLocalISO(dayISO), ov));
+
+    if (capLeft > 0) {
+      while (queue.length > 0 && capLeft > 1e-9) {
+        const head = queue[0];
+        const take = Math.min(head.horas, capLeft);
+
+        if (take > 1e-9) {
+          rebuilt.push({
+            id: newId(),
+            taskId: head.taskId,
+            producto: head.producto,
+            fecha: dayISO,
+            horas: Math.round(take * 2) / 2,
+            trabajadorId: w.id,
+            color: head.color,
+            validado: head.validado ?? false,   // ⬅️ mantenemos validación
+          });
+
+          head.horas = Math.round((head.horas - take) * 2) / 2;
+          capLeft    = Math.round((capLeft - take) * 2) / 2;
+        }
+
+        if (head.horas <= 1e-9) {
+          queue.shift();
+        }
+      }
+    }
+
+    const nextDay = addDays(fromLocalISO(dayISO), 1);
+    dayISO = toLocalISO(nextDay);
+  }
+
+  // Devolvemos solo los slices de este trabajador
+  return [...before, ...rebuilt];
+}
+
 function capacidadDia(w: Worker, d: Date, ov: OverridesState): number {
   const iso = toLocalISO(d as Date);
   const dow = getDay(d); // 0=domingo, 1=lunes,...,6=sábado
@@ -202,116 +335,6 @@ function capacidadDia(w: Worker, d: Date, ov: OverridesState): number {
 
   return Math.max(0, Math.round((base + extra) * 2) / 2);
 }
-
-
-function usadasEnDia(slices: TaskSlice[], workerId: string, date: Date) {
-  const f = fmt(date);
-  if (!f) return 0;
-  return slices
-    .filter((s) => s.trabajadorId === workerId && s.fecha === f)
-    .reduce((a, s) => a + s.horas, 0);
-}
-
-/* ===================== Replanificación / colas ===================== */
-type QueueItem = { producto: string; horas: number; color: string; taskId: string };
-
-function pushOrMergeSameDay(out: TaskSlice[], add: TaskSlice) {
-  const i = out.findIndex(
-    (s) => s.trabajadorId === add.trabajadorId && s.taskId === add.taskId && s.fecha === add.fecha
-  );
-  if (i >= 0) {
-    out[i] = { ...out[i], horas: Math.round((out[i].horas + add.horas) * 2) / 2 };
-  } else {
-    out.push(add);
-  }
-}
-
-function aggregateToQueue(items: TaskSlice[]): QueueItem[] {
-  const map = new Map<string, QueueItem>();
-  const order: string[] = [];
-  for (const t of items) {
-    if (!map.has(t.taskId)) {
-      map.set(t.taskId, { producto: t.producto, horas: 0, color: t.color, taskId: t.taskId });
-      order.push(t.taskId);
-    }
-    const cur = map.get(t.taskId)!;
-    cur.horas = Math.round((cur.horas + t.horas) * 2) / 2;
-  }
-  return order.map((id) => map.get(id)!);
-}
-
-function compactFrom(
-  worker: Worker,
-  startF: string,
-  overrides: OverridesState,
-  allSlices: TaskSlice[]
-): TaskSlice[] {
-  // 1) Partes del trabajador ANTES de startF (se conservan)
-  const keepBefore = allSlices
-    .filter((s) => s.trabajadorId === worker.id && s.fecha < startF)
-    .sort((a, b) => a.fecha.localeCompare(b.fecha));
-
-  // 2) Partes del trabajador DESDE startF (se reempacan)
-  const fromHere = allSlices
-    .filter((s) => s.trabajadorId === worker.id && s.fecha >= startF)
-    .sort((a, b) =>
-      a.fecha < b.fecha ? -1 :
-      a.fecha > b.fecha ?  1 :
-      (a.id   < b.id   ? -1 : a.id > b.id ? 1 : 0)
-    );
-
-  // 3) Separar URGENTES (no se mueven de su día) y movibles
-  const pinned  = fromHere.filter(isUrgentSlice);
-  const movable = fromHere.filter((s) => !isUrgentSlice(s));
-
-  // 4) Cola agregada por bloque (sólo lo movible)
-  const queue = aggregateToQueue(movable);
-
-  // 5) Reconstrucción día a día dejando primero URGENCIAS fijas
-  const rebuilt: TaskSlice[] = [];
-  let dayISO = startF;
-  let guard = 0;
-  while ((queue.length > 0 || pinned.length > 0) && guard < 365) {
-    guard++;
-
-    let capLeft = Math.max(0, capacidadDia(worker, fromLocalISO(dayISO), overrides));
-
-    // URGENCIAS de este día (no se tocan)
-    const todaysPinned = pinned.filter((p) => p.fecha === dayISO);
-    for (const p of todaysPinned) {
-      rebuilt.push({ ...p });
-      capLeft = Math.max(0, Math.round((capLeft - p.horas) * 2) / 2);
-    }
-
-    // Rellenar con la cola movible
-    while (queue.length > 0 && capLeft > 1e-9) {
-      const head = queue[0];
-      const take = Math.min(head.horas, capLeft);
-      if (take > 1e-9) {
-        rebuilt.push({
-          id: (crypto as any)?.randomUUID
-  ? (crypto as any).randomUUID()
-  : "S" + Math.random().toString(36).slice(2, 10),
-          taskId: head.taskId,
-          producto: head.producto,
-          fecha: dayISO,
-          horas: Math.round(take * 2) / 2,
-          trabajadorId: worker.id,
-          color: head.color,
-        });
-        head.horas = Math.round((head.horas - take) * 2) / 2;
-        capLeft    = Math.round((capLeft    - take) * 2) / 2;
-      }
-      if (head.horas <= 1e-9) queue.shift();
-    }
-
-    dayISO = toLocalISO(addDays(fromLocalISO(dayISO), 1));
-  }
-
-  // 6) Devuelve SOLO lo del trabajador (antes + reconstruido)
-  return [...keepBefore, ...rebuilt];
-}
-
 
 // Planificación de un bloque (crea taskId/color únicos por bloque)
 function planificarBloqueAuto(
@@ -411,6 +434,24 @@ function AppInner() {
 
   const [overrides, setOverrides] = useState<OverridesState>({});
   const [slices, setSlices] = useState<TaskSlice[]>([]);
+  
+  // Para saber cuándo empieza cada bloque (taskId) por trabajador
+const taskStartByWorker = useMemo(() => {
+  const map: Record<string, Record<string, string>> = {};
+  // { [workerId]: { [taskId]: "YYYY-MM-DD" } }
+
+  for (const s of slices) {
+    const byWorker = (map[s.trabajadorId] ||= {});
+    const prev = byWorker[s.taskId];
+    // Nos quedamos siempre con la fecha más antigua de ese bloque
+    if (!prev || s.fecha < prev) {
+      byWorker[s.taskId] = s.fecha;
+    }
+  }
+
+  return map;
+}, [slices]);
+
 
   const [descs, setDescs] = useState<ProductDescriptions>({});
   const [descNombre, setDescNombre] = useState("");
@@ -478,6 +519,89 @@ const updMatches = useMemo(() => {
   const [isWorkersOpen, setIsWorkersOpen] = useState(false);
   const saveEpoch = useRef(0);
   // === Realtime helpers ===
+  useEffect(() => {
+  let mounted = true;
+
+  async function init() {
+    // 🔒 Bloquea autosave: todavía NO hemos hidratado datos
+    hydratedRef.current = false;
+
+    // 1) ¿Hay sesión ya abierta?
+    const { data } = await supabase.auth.getSession();
+    const uid  = data.session?.user?.id    ?? null;
+    const mail = data.session?.user?.email ?? null;
+
+    if (!mounted) return;
+
+    setUserId(uid);
+    setUserEmail(mail);
+
+    // 2) Si hay usuario, carga todo desde Supabase
+    if (uid) {
+      try {
+        setLoadingCloud(true);
+        await seedIfEmpty(uid);
+        await loadAll(uid);   // ⬅️ carga inicial desde la nube
+      } finally {
+        if (mounted) setLoadingCloud(false);
+      }
+    } else {
+      // 2-b) Si NO hay sesión, intenta cargar del almacenamiento local
+      const snap = safeLocal<any>(STORAGE_KEY, null as any);
+      if (snap && mounted) {
+        setWorkers(snap.workers ?? []);
+        setSlices(snap.slices ?? []);
+        setOverrides(snap.overrides ?? {});
+        setDescs(snap.descs ?? {});
+      }
+    }
+
+    // ✅ Desbloquea autosave: YA estamos hidratados (nube o local)
+    hydratedRef.current = true;
+  }
+
+  init();
+
+  // 3) Suscripción a cambios de sesión (login / logout)
+  const { data: sub } = supabase.auth.onAuthStateChange(
+    async (_event: AuthChangeEvent, session: Session | null) => {
+      if (!mounted) return;
+
+      // 🔒 Bloquea autosave mientras cambiamos de sesión / recargamos datos
+      hydratedRef.current = false;
+
+      const uid  = session?.user?.id    ?? null;
+      const mail = session?.user?.email ?? null;
+      setUserId(uid);
+      setUserEmail(mail);
+
+      if (uid) {
+        try {
+          setLoadingCloud(true);
+          await seedIfEmpty(uid);
+          await loadAll(uid);   // ⬅️ recarga cuando haces login/logout
+        } finally {
+          setLoadingCloud(false);
+        }
+      } else {
+        const snap = safeLocal<any>(STORAGE_KEY, null as any);
+        setWorkers(snap?.workers ?? []);
+        setSlices(snap?.slices ?? []);
+        setOverrides(snap?.overrides ?? {});
+        setDescs(snap?.descs ?? {});
+      }
+
+      // ✅ Hemos rehidratado tras cambio de sesión
+      hydratedRef.current = true;
+    }
+  );
+
+  return () => {
+    mounted = false;
+    sub?.subscription?.unsubscribe();
+  };
+}, []);
+
 const applyingRemoteRef = useRef(false);       // marca: estoy aplicando un cambio que vino del servidor
 const rafFlushRef = useRef<number | null>(null); // para liberar la marca en el siguiente frame
 
@@ -491,12 +615,22 @@ const rtChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
 function applyRemote(run: () => void) {
   applyingRemoteRef.current = true;
   run();
+
+  // 1) intentamos liberar en el siguiente frame
   if (rafFlushRef.current) cancelAnimationFrame(rafFlushRef.current);
   rafFlushRef.current = requestAnimationFrame(() => {
     applyingRemoteRef.current = false;
     rafFlushRef.current = null;
   });
+
+  // 2) FALLO SEGURO: si por throttling de pestaña no entra el RAF, liberamos a los 2s
+  window.setTimeout(() => {
+    if (applyingRemoteRef.current) {
+      applyingRemoteRef.current = false;
+    }
+  }, 2000);
 }
+
 
 
   // === Copias de seguridad (localStorage)
@@ -567,12 +701,6 @@ function editBlockTotalFromSlice(slice: TaskSlice) {
   const validado = preguntarValidacionBloque(delBloque[0]?.validado);
   if (validado === null) return; // si ha cancelado o puesto algo raro, no hacemos nada
 
-  // Parser robusto YYYY-MM-DD → fecha local (evita desfaces de huso horario)
-  const fromLocalISO = (iso: string) => {
-    const [y, m, d] = iso.split("-").map(Number);
-    return new Date(y, (m ?? 1) - 1, d ?? 1);
-  };
-
   setSlices(prev => {
     // 1) Elimina el bloque antiguo de ese trabajador
     const restantes = prev.filter(s => !(s.taskId === slice.taskId && s.trabajadorId === w.id));
@@ -582,7 +710,7 @@ function editBlockTotalFromSlice(slice: TaskSlice) {
       slice.producto,
       nuevoTotal,
       w,
-      fromLocalISO(startF), // fecha local segura
+      fromLocalISO(startF), // usa el helper fromLocalISO que ya tienes arriba
       base,
       restantes,
       overrides
@@ -604,6 +732,7 @@ function editBlockTotalFromSlice(slice: TaskSlice) {
     );
   });
 }
+
 
 
 function preguntarValidacionBloque(actual?: boolean): boolean | null {
@@ -717,92 +846,103 @@ function editUrgentSlice(slice: TaskSlice) {
     }
   }
 
-  // CARGA TODO DE SUPABASE PARA ESTE USUARIO
-  async function loadAll(_uid: string) {
-    try {
-      // 1) Trabajadores
-      const { data: wData} = await supabase
-        .from("workers")
-        .select("*")
-        .eq("tenant_id", TENANT_ID)
-        .order("nombre", { ascending: true });
+async function loadAll(_uid: string) {
+  try {
+    // 1) Trabajadores
+    const { data: wData } = await supabase
+      .from("workers")
+      .select("*")
+      .eq("tenant_id", TENANT_ID)
+      .order("nombre", { ascending: true });
 
-      if (Array.isArray(wData) && wData.length > 0) {
-  setWorkers(
-    wData.map((r: any) => ({
-      id: r.id,
-      nombre: r.nombre,
-      jornada: {
-        lu: Number(r.lu_hours ?? 8.5),
-        ma: Number(r.ma_hours ?? 8.5),
-        mi: Number(r.mi_hours ?? 8.5),
-        ju: Number(r.ju_hours ?? 8.5),
-        vi: Number(r.vi_hours ?? 6),
-      },
-    }))
-  );
-}
-
-      // 2) Bloques / Slices
-      const { data: sData, error: sErr } = await supabase
-        .from("task_slices")
-        .select("*")
-        .eq("tenant_id", TENANT_ID);
-
-      if (sErr) console.error("task_slices error:", sErr);
-      if (sData) {
-        setSlices(
-          sData.map((r: any) => ({
-            id: r.id,
-            taskId: r.task_id,
-            producto: r.producto,
-            fecha: r.fecha,
-            horas: Number(r.horas),
-            trabajadorId: r.trabajador_id,
-            color: r.color,
-          }))
-        );
-      }
-
-      // 3) Overrides (extras/sábado)
-      const { data: oData, error: oErr } = await supabase
-        .from("day_overrides")
-        .select("*")
-        .eq("tenant_id", TENANT_ID);
-
-      if (oErr) console.error("day_overrides error:", oErr);
-      if (oData) {
-        const obj: Record<string, Record<string, { extra?: number; sabado?: boolean; domingo?: boolean; vacacion?: boolean }>> = {};
-for (const r of oData as any[]) {
-  if (!obj[r.worker_id]) obj[r.worker_id] = {};
-  obj[r.worker_id][r.fecha] = {
-    extra: Number(r.extra ?? 0),
-    sabado: !!r.sabado,
-    domingo: !!r.domingo,    // ⬅️ nuevo
-    vacacion: !!r.vacacion,  // ⬅️ nuevo
-  };
-}
-setOverrides(obj);
-
-      }
-
-      const { data: dData, error: dErr } = await supabase
-        .from("product_descs")
-        .select("*")
-        .eq("tenant_id", TENANT_ID);
-
-      if (dErr) console.error("product_descs error:", dErr);
-      if (dData) {
-        const map: Record<string, string> = {};
-        for (const r of dData as any[]) {
-          map[r.nombre] = r.texto ?? "";
-        }
-        setDescs(map);
-      }
-    } catch (e) {
-      console.error("loadAll() error:", e);
+    if (Array.isArray(wData) && wData.length > 0) {
+      setWorkers(
+        wData.map((r: any) => ({
+          id: r.id,
+          nombre: r.nombre,
+          jornada: {
+            lu: Number(r.lu_hours ?? 8.5),
+            ma: Number(r.ma_hours ?? 8.5),
+            mi: Number(r.mi_hours ?? 8.5),
+            ju: Number(r.ju_hours ?? 8.5),
+            vi: Number(r.vi_hours ?? 6),
+          },
+        }))
+      );
     }
+
+
+    // 2) Bloques / Slices
+// 2) Bloques / Slices
+    const { data: sData, error: sErr } = await supabase
+      .from("task_slices")
+      .select("*")
+      .eq("tenant_id", TENANT_ID);
+
+    if (sErr) console.error("task_slices error:", sErr);
+    if (sData) {
+      // Pasamos lo que viene de Supabase a TaskSlice[]
+      const rawSlices: TaskSlice[] = (sData as any[]).map((r: any) => ({
+        id: r.id,
+        taskId: r.task_id,
+        producto: r.producto,
+        fecha: r.fecha,
+        horas: Number(r.horas),
+        trabajadorId: r.trabajador_id,
+        color: r.color,
+        validado: !!r.validado,
+      }));
+
+      // ⬅️ AQUÍ compactamos para eliminar duplicados en el mismo día
+      const compacted = compactSlicesAll(rawSlices);
+      setSlices(compacted);
+    }
+
+
+    // 3) Overrides (extras/sábado/domingo/vacaciones)
+    const { data: oData, error: oErr } = await supabase
+      .from("day_overrides")
+      .select("*")
+      .eq("tenant_id", TENANT_ID);
+
+    if (oErr) console.error("day_overrides error:", oErr);
+    if (oData) {
+      const obj: Record<
+        string,
+        Record<string, { extra?: number; sabado?: boolean; domingo?: boolean; vacacion?: boolean }>
+      > = {};
+      for (const r of oData as any[]) {
+        if (!obj[r.worker_id]) obj[r.worker_id] = {};
+        obj[r.worker_id][r.fecha] = {
+          extra: Number(r.extra ?? 0),
+          sabado: !!r.sabado,
+          domingo: !!r.domingo,
+          vacacion: !!r.vacacion,
+        };
+      }
+      setOverrides(obj); // ⬅️ MUY IMPORTANTE: sustituye todo el estado
+    }
+
+    // 4) Descripciones
+    const { data: dData, error: dErr } = await supabase
+      .from("product_descs")
+      .select("*")
+      .eq("tenant_id", TENANT_ID);
+
+    if (dErr) console.error("product_descs error:", dErr);
+    if (dData) {
+      const map: Record<string, string> = {};
+      for (const r of dData as any[]) {
+        map[r.nombre] = r.texto ?? "";
+      }
+      setDescs(map);
+    }
+  } catch (e) {
+    console.error("loadAll() error:", e);
   }
+}
+
+
  
   /**
  * Guarda TODO el estado en Supabase de forma segura:
@@ -812,43 +952,47 @@ setOverrides(obj);
 async function saveAll(uid: string) {
   // --- 0) Preparar filas con tenant_id y user_id ---
   const wRows = workers.map(w => ({
-  id: w.id,
-  nombre: w.nombre,
-  lu_hours: w.jornada.lu,
-  ma_hours: w.jornada.ma,
-  mi_hours: w.jornada.mi,
-  ju_hours: w.jornada.ju,
-  vi_hours: w.jornada.vi,
-  user_id: uid,
-  tenant_id: TENANT_ID,
-  updated_by: uid,  
-}));
-
-  const sRows = slices.map(s => ({
-    id: s.id,
-    task_id: s.taskId,
-    producto: s.producto,
-    fecha: s.fecha,
-    horas: s.horas,
-    trabajador_id: s.trabajadorId,
-    color: s.color,
-    validado: !!s.validado,
+    id: w.id,
+    nombre: w.nombre,
+    lu_hours: w.jornada.lu,
+    ma_hours: w.jornada.ma,
+    mi_hours: w.jornada.mi,
+    ju_hours: w.jornada.ju,
+    vi_hours: w.jornada.vi,
     user_id: uid,
     tenant_id: TENANT_ID,
-    updated_by: uid, 
+    updated_by: uid,
   }));
 
-  const oRows = flattenOverrides(overrides).map((r) => ({
-  worker_id: r.worker_id,
-  fecha: r.fecha,
-  extra: r.extra ?? 0,
-  sabado: !!r.sabado,
-  domingo: !!r.domingo,     // NUEVO
-  vacacion: !!r.vacacion,   // NUEVO
+ // Antes de construir filas, normalizamos por si hubiera quedado algo raro en memoria
+const normalizedSlices = compactSlicesAll(slices);
+
+const sRows = normalizedSlices.map(s => ({
+  id: s.id,
+  task_id: s.taskId,
+  producto: s.producto,
+  fecha: s.fecha,
+  horas: s.horas,
+  trabajador_id: s.trabajadorId,
+  color: s.color,
   user_id: uid,
   tenant_id: TENANT_ID,
   updated_by: uid,
+  validado: s.validado ?? false,
 }));
+
+
+  const oRows = flattenOverrides(overrides).map(r => ({
+    worker_id: r.worker_id,
+    fecha: r.fecha,
+    extra: r.extra ?? 0,
+    sabado: !!r.sabado,
+    domingo: !!r.domingo,
+    vacacion: !!r.vacacion,
+    user_id: uid,
+    tenant_id: TENANT_ID,
+    updated_by: uid,
+  }));
 
   const dRows = Object.entries(descs).map(([nombre, texto]) => ({
     nombre,
@@ -865,18 +1009,21 @@ async function saveAll(uid: string) {
       .upsert(wRows, { onConflict: "tenant_id,id" });
     if (error) throw error;
   }
+
   {
     const { error } = await supabase
       .from("product_descs")
       .upsert(dRows, { onConflict: "tenant_id,nombre" });
     if (error) throw error;
   }
+
   {
     const { error } = await supabase
       .from("task_slices")
       .upsert(sRows, { onConflict: "tenant_id,id" });
     if (error) throw error;
   }
+
   {
     const { error } = await supabase
       .from("day_overrides")
@@ -884,157 +1031,40 @@ async function saveAll(uid: string) {
     if (error) throw error;
   }
 
-  // --- 2) Borrado selectivo ---
-
-  // 2.a) task_slices: borra los IDs que ya no existen en memoria
-  {
-    const { data: existing, error } = await supabase
+  // --- 2) LIMPIEZA: borrar en BD los task_slices que ya no existen en el estado ---
+  try {
+    const { data: remoteIds, error: selErr } = await supabase
       .from("task_slices")
       .select("id")
       .eq("tenant_id", TENANT_ID);
-    if (error) throw error;
 
-    const keepSet = new Set(sRows.map((r) => r.id));
-    const toDelete = (existing ?? [])
-      .map((r: { id: string }) => r.id)
-      .filter((id: string) => !keepSet.has(id));
+    if (selErr) {
+      console.error("saveAll: error leyendo ids de task_slices:", selErr);
+    } else if (remoteIds) {
+      const localIds = new Set(sRows.map(r => r.id));
+      const toDelete = remoteIds
+        .map((r: any) => r.id as string)
+        .filter(id => !localIds.has(id));
 
-    if (toDelete.length > 0) {
-      const { error: delErr } = await supabase
-        .from("task_slices")
-        .delete()
-        .in("id", toDelete)
-        .eq("tenant_id", TENANT_ID);
-      if (delErr) throw delErr;
-    }
-  }
+      if (toDelete.length > 0) {
+        const { error: delErr } = await supabase
+          .from("task_slices")
+          .delete()
+          .eq("tenant_id", TENANT_ID)
+          .in("id", toDelete);
 
-  // 2.b) day_overrides: limpieza atómica con RPC (borra lo que sobra)
-  {
-    const keepKeys = oRows.map((r) => `${r.worker_id}|${r.fecha}`);
-    if (keepKeys.length > 0) {
-      const { error: rpcErr } = await supabase.rpc("delete_overrides_not_in", {
-        tenant: TENANT_ID,
-        keep_keys: keepKeys,
-      });
-      if (rpcErr) throw rpcErr;
-    }
-  }
-
-  return true;
-}
-
-useEffect(() => {
-  let mounted = true;
-
-  async function init() {
-    // 🔒 Bloquea autosave: todavía NO hemos hidratado datos
-    hydratedRef.current = false;
-
-    // 1) ¿Hay sesión ya abierta?
-    const { data } = await supabase.auth.getSession();
-    const uid  = data.session?.user?.id    ?? null;
-    const mail = data.session?.user?.email ?? null;
-
-    if (!mounted) return;
-
-    setUserId(uid);
-    setUserEmail(mail);
-
-    // 2) Si hay usuario, carga todo desde Supabase
-    if (uid) {
-      try {
-        setLoadingCloud(true);
-        await seedIfEmpty(uid);
-        await loadAll(uid);   // ← tu carga desde la nube
-      } finally {
-        if (mounted) setLoadingCloud(false);
-      }
-    } else {
-      // 2-b) Si NO hay sesión, intenta cargar del almacenamiento local
-      const snap = safeLocal<any>(STORAGE_KEY, null as any);
-      if (snap && mounted) {
-        setWorkers(snap.workers ?? []);
-        setSlices(snap.slices ?? []);
-        setOverrides(snap.overrides ?? {});
-        setDescs(snap.descs ?? {});
-      }
-    }
-
-    // ✅ Desbloquea autosave: YA estamos hidratados (nube o local)
-    hydratedRef.current = true;
-  }
-
-  init();
-
-  // 3) Suscripción a cambios de sesión (login / logout)
-const { data: sub } = supabase.auth.onAuthStateChange(async (_event: AuthChangeEvent, session: Session | null) => {
-    if (!mounted) return;
-
-    // 🔒 Bloquea autosave mientras cambiamos de sesión / recargamos datos
-    hydratedRef.current = false;
-
-    const uid  = session?.user?.id    ?? null;
-    const mail = session?.user?.email ?? null;
-    setUserId(uid);
-    setUserEmail(mail);
-
-    if (uid) {
-      try {
-        setLoadingCloud(true);
-        await seedIfEmpty(uid);
-        await loadAll(uid);   // ← recarga desde la nube con el nuevo usuario
-      } finally {
-        setLoadingCloud(false);
-      }
-    } else {
-      // Logout: intenta cargar desde local (por si tenías algo guardado sin sesión)
-      const snap = safeLocal<any>(STORAGE_KEY, null as any);
-      setWorkers(snap?.workers ?? []);
-      setSlices(snap?.slices ?? []);
-      setOverrides(snap?.overrides ?? {});
-      setDescs(snap?.descs ?? {});
-    }
-
-    // ✅ Desbloquea autosave: ya hemos re-hidratado tras el cambio de sesión
-    hydratedRef.current = true;
-  });
-
-  return () => {
-    mounted = false;
-    sub?.subscription?.unsubscribe();
-  };
-}, []); // ← sin dependencias: solo al montar
-
-// 🔐 Heartbeat de sesión: mantiene viva la sesión y repara sesiones dormidas
-useEffect(() => {
-  async function ping() {
-    try {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-
-      if (!session) {
-        // si no hay sesión, intenta refrescar en silencio
-        await supabase.auth.refreshSession().catch(() => {});
-      } else {
-        // si al token le queda <60s, provocamos un refresh
-        const expMs = session.expires_at ? session.expires_at * 1000 : 0;
-        if (expMs && expMs - Date.now() < 60_000) {
-          await supabase.auth.getSession();
+        if (delErr) {
+          console.error("saveAll: error limpiando task_slices huérfanos:", delErr);
         }
       }
-    } catch {
-      // ignoramos errores puntuales; reintentará en el siguiente tick
     }
+  } catch (e) {
+    console.error("saveAll: excepción limpiando task_slices huérfanos:", e);
   }
 
-  // primer toque y luego cada 30 segundos
-  ping();
-  const id = setInterval(ping, 30_000);
-  return () => clearInterval(id);
-}, []);
-
+  // Ojo: workers/product_descs/day_overrides se siguen borrando SOLO cuando el usuario lo hace explícitamente.
+  return true;
+}
 
 
 function isOwnChange(
@@ -1044,53 +1074,7 @@ function isOwnChange(
   const updatedBy = (payload as any)?.new?.updated_by ?? null;
   return !!uid && !!updatedBy && updatedBy === uid;
 }
-
-
-  // AUTOSAVE: guarda en Supabase cuando cambian datos (con debounce)
-  
-  useEffect(() => {
-  if (!userId) return;               // sin sesión, no guardes nube
-  if (loadingCloud) return;          // si está cargando, espera
-  if (!hydratedRef.current) return;
-   if (applyingRemoteRef.current) return;  // no guardar hasta hidratar
-
-  const snapshot = JSON.stringify({ workers, slices, overrides, descs });
-  if (snapshot === lastSavedRef.current) return;
-
-  // Limpia cualquier temporizador anterior
-  if (saveTimer.current) window.clearTimeout(saveTimer.current);
-
-  // Flag para evitar setState tras cleanup
-  let active = true;
-
-  saveTimer.current = window.setTimeout(async () => {
-    if (!active) return;
-
-    setSavingCloud(true);
-    setSaveError(null);
-
-    try {
-      await guardedSaveAll(userId);
-      if (!active) return;
-      lastSavedRef.current = snapshot;
-    } catch (e: any) {
-      if (!active) return;
-      console.error("Autosave falló:", e);
-      setSaveError(e?.message ?? String(e));
-    } finally {
-      if (!active) return;
-      setSavingCloud(false);
-    }
-  }, 800);
-
-  return () => {
-    active = false;
-    if (saveTimer.current) {
-      window.clearTimeout(saveTimer.current);
-      saveTimer.current = null;
-    }
-  };
-}, [workers, slices, overrides, descs, userId, loadingCloud]);
+ 
 
 // 🔁 Realtime: un solo canal con handlers + estado del badge
 useEffect(() => {
@@ -1270,13 +1254,12 @@ useEffect(() => {
 }, [userId]);
 
   // === NUEVO: guardado local automático cuando NO hay sesión ===
-  useEffect(() => {
-  if (userId) return;               // con sesión, nube
-  if (!hydratedRef.current) return; // ⬅️ evita guardar antes de hidratar
+  // Guardado local SIEMPRE (como borrador inmediato)
+useEffect(() => {
+  if (!hydratedRef.current) return; // no guardes antes de hidratar
   const snapshot = JSON.stringify({ workers, slices, overrides, descs });
   try { localStorage.setItem(STORAGE_KEY, snapshot); } catch {}
-}, [workers, slices, overrides, descs, userId]);
-
+}, [workers, slices, overrides, descs]);
 
 
   // Copia automática inicial y cada 10 minutos
@@ -1333,6 +1316,32 @@ useEffect(() => {
       setSendingLink(false);
     }
   }
+
+async function manualSave() {
+  if (!userId) {
+    alert("No hay sesión activa. Inicia sesión para guardar en la nube.");
+    return;
+  }
+
+  setSavingCloud(true);
+  setSaveError(null);
+
+  const snapshot = JSON.stringify({ workers, slices, overrides, descs });
+
+  try {
+    await guardedSaveAll(userId);
+    lastSavedRef.current = snapshot;
+    alert("Guardado en la nube correctamente.");
+  } catch (e: any) {
+    console.error("Guardado manual falló:", e);
+    const msg = e?.message ?? String(e);
+    setSaveError(msg);
+    alert("Error al guardar en la nube:\n\n" + msg);
+  } finally {
+    setSavingCloud(false);
+  }
+}
+
 
   async function logout() {
     await supabase.auth.signOut();
@@ -1411,25 +1420,73 @@ useEffect(() => {
     setWorkers((prev) => prev.map((w) => (w.id === id ? { ...w, ...patch } : w)));
   }
 // ——— Eliminar trabajador + limpiar sus datos ———
-function deleteWorker(id: string) {
+async function deleteWorker(id: string) {
   if (!canEdit) return;
+
   const w = workers.find(x => x.id === id);
   const name = w?.nombre || id;
-  if (!confirm(`¿Eliminar a "${name}" y todas sus asignaciones? Esta acción no se puede deshacer.`)) return;
 
-  // 1) Quita el trabajador de la lista
+  if (!confirm(`¿Eliminar a "${name}" y todas sus asignaciones? Esta acción no se puede deshacer.`)) {
+    return;
+  }
+
+  // 1) Estado local: lo quitamos de la pantalla
   setWorkers(prev => prev.filter(x => x.id !== id));
 
-  // 2) Elimina todos sus bloques/horas
+  // Quitar todos sus bloques/horas del estado
   setSlices(prev => prev.filter(s => s.trabajadorId !== id));
 
-  // 3) Borra overrides (extras/sábados) del trabajador
+  // Quitar overrides (extras, sábados, domingos, vacaciones) del estado
   setOverrides(prev => {
     const copy = { ...prev };
     delete copy[id];
     return copy;
   });
+
+  // 2) Base de datos: borrar de Supabase (si hay sesión)
+  if (!userId) {
+    // si no hay usuario logado, no intentamos borrar en la nube
+    return;
+  }
+
+  try {
+    // 2.a) Borrar todos sus tramos en task_slices
+    const { error: errSlices } = await supabase
+      .from("task_slices")
+      .delete()
+      .eq("tenant_id", TENANT_ID)
+      .eq("trabajador_id", id);
+
+    if (errSlices) {
+      console.error("deleteWorker: error borrando task_slices:", errSlices);
+    }
+
+    // 2.b) Borrar todos sus overrides en day_overrides
+    const { error: errOv } = await supabase
+      .from("day_overrides")
+      .delete()
+      .eq("tenant_id", TENANT_ID)
+      .eq("worker_id", id);
+
+    if (errOv) {
+      console.error("deleteWorker: error borrando day_overrides:", errOv);
+    }
+
+    // 2.c) Borrar al propio trabajador en workers
+    const { error: errW } = await supabase
+      .from("workers")
+      .delete()
+      .eq("tenant_id", TENANT_ID)
+      .eq("id", id);
+
+    if (errW) {
+      console.error("deleteWorker: error borrando worker:", errW);
+    }
+  } catch (e) {
+    console.error("deleteWorker: excepción al borrar en Supabase:", e);
+  }
 }
+
 
   // Drag & Drop
   const dragIdRef = useRef<string | null>(null);
@@ -1516,55 +1573,97 @@ function editOverrideForDay(worker: Worker, date: Date) {
   })();
 
   setOverrides(nextOverrides);
-
-  // 5) Reempacar desde ese día con los overrides ya cambiados
-  setSlices(prev => {
-    const newPlan = compactFrom(worker, f, nextOverrides, prev);
-    const others = prev.filter(s => s.trabajadorId !== worker.id);
-    return [...others, ...newPlan];
-  });
   reflowFromWorkerWithOverrides(worker.id, f, nextOverrides);
   compactarBloques(worker.id);
 }
 
 
   // Borrar tramo / bloque
-  function removeSlice(id: string) {
-    if (!canEdit) return;
-    const victim = slices.find((s) => s.id === id);
-    setSlices((prev) => {
-      const filtered = prev.filter((s) => s.id !== id);
-      if (!victim) return filtered;
+async function removeSlice(id: string) {
+  if (!canEdit) return;
 
-      const w = workers.find((x) => x.id === victim.trabajadorId);
-      if (!w) return filtered;
+  // 1) Local: quitamos el tramo del estado y recompactamos
+  const victim = slices.find((s) => s.id === id);
 
-      const newPlan = compactFrom(w, victim.fecha, overrides, filtered);
-      const others = filtered.filter((s) => s.trabajadorId !== w.id);
-      return [...others, ...newPlan];
-    });
+  setSlices((prev) => {
+    const filtered = prev.filter((s) => s.id !== id);
+    if (!victim) return filtered;
+
+    const w = workers.find((x) => x.id === victim.trabajadorId);
+    if (!w) return filtered;
+
+    const newPlan = compactFrom(w, victim.fecha, overrides, filtered);
+    const others = filtered.filter((s) => s.trabajadorId !== w.id);
+    return [...others, ...newPlan];
+  });
+
+  // 2) Remoto: borramos ese tramo en Supabase (si hay sesión)
+  if (userId && victim) {
+    try {
+      const { error } = await supabase
+        .from("task_slices")
+        .delete()
+        .eq("tenant_id", TENANT_ID)
+        .eq("id", id);
+
+      if (error) {
+        console.error("removeSlice supabase delete error:", error);
+      }
+    } catch (e) {
+      console.error("removeSlice supabase exception:", e);
+    }
   }
+}
 
-  function removeTask(taskId: string, workerId: string) {
-    if (!canEdit) return;
-    if (!confirm("¿Eliminar todo el bloque (producto) para este trabajador?")) return;
-    const w = workers.find((x) => x.id === workerId);
-    if (!w) return;
 
-    setSlices((prev) => {
-      const toRemove = prev.filter((s) => s.taskId === taskId && s.trabajadorId === workerId);
-      const filtered = prev.filter((s) => !(s.taskId === taskId && s.trabajadorId === workerId));
-      if (!toRemove.length) return filtered;
+  async function removeTask(taskId: string, workerId: string) {
+  if (!canEdit) return;
+  if (!confirm("¿Eliminar todo el bloque (producto) para este trabajador?")) return;
 
-      const startF = toRemove.reduce((m, s) => (s.fecha < m ? s.fecha : m), toRemove[0].fecha);
-      const newPlan = compactFrom(w, startF, overrides, filtered);
-      const others = filtered.filter((s) => s.trabajadorId !== w.id);
-      return [...others, ...newPlan];
-    });
+  const w = workers.find((x) => x.id === workerId);
+  if (!w) return;
+
+  // 1) Local: quitamos el bloque de ese trabajador y recompactamos
+  setSlices((prev) => {
+    const toRemove = prev.filter(
+      (s) => s.taskId === taskId && s.trabajadorId === workerId
+    );
+    const filtered = prev.filter(
+      (s) => !(s.taskId === taskId && s.trabajadorId === workerId)
+    );
+    if (!toRemove.length) return filtered;
+
+    const startF = toRemove.reduce(
+      (m, s) => (s.fecha < m ? s.fecha : m),
+      toRemove[0].fecha
+    );
+    const newPlan = compactFrom(w, startF, overrides, filtered);
+    const others = filtered.filter((s) => s.trabajadorId !== w.id);
+    return [...others, ...newPlan];
+  });
+
+  // 2) Remoto: borramos TODAS las filas de ese bloque para ese trabajador
+  if (userId) {
+    try {
+      const { error } = await supabase
+        .from("task_slices")
+        .delete()
+        .eq("tenant_id", TENANT_ID)
+        .eq("trabajador_id", workerId)
+        .eq("task_id", taskId);
+
+      if (error) {
+        console.error("removeTask supabase delete error:", error);
+      }
+    } catch (e) {
+      console.error("removeTask supabase exception:", e);
+    }
   }
+}
 
   // Urgencia
-  function addManualHere(worker: Worker, date: Date) {
+// Urgencia
+function addManualHere(worker: Worker, date: Date) {
   if (!canEdit) return;
 
   // 1) Nombre de la urgencia (con ⚠️ automático)
@@ -1584,23 +1683,35 @@ function editOverrideForDay(worker: Worker, date: Date) {
   const startISO = toLocalISO(date);
 
   // 2) Bloques anteriores y los que van a refluírse desde startISO
-  const before = slices
-    .filter(s => s.trabajadorId === worker.id && s.fecha < startISO)
-    .sort((a,b) => a.fecha.localeCompare(b.fecha));
-
-  const fromHere = slices
-    .filter(s => s.trabajadorId === worker.id && s.fecha >= startISO)
-    .sort((a,b) =>
+  const delTrabajador = slices
+    .filter(s => s.trabajadorId === worker.id)
+    .sort((a, b) =>
       a.fecha < b.fecha ? -1 :
       a.fecha > b.fecha ? 1  :
       (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
     );
 
+  const before = delTrabajador.filter(s => s.fecha < startISO);
+  const fromHere = delTrabajador.filter(s => s.fecha >= startISO);
+
   // 3) Cola con la URGENCIA primero (prioridad máxima)
   const urgentTaskId = "T" + Math.random().toString(36).slice(2, 8);
+
   const queue: QueueItem[] = [
-    { taskId: urgentTaskId, producto: nombreFinal, color: URGENT_COLOR, horas: Math.round(h * 2) / 2 },
-    ...fromHere.map(s => ({ taskId: s.taskId, producto: s.producto, color: s.color, horas: s.horas })),
+    {
+      taskId: urgentTaskId,
+      producto: nombreFinal,
+      color: URGENT_COLOR,
+      horas: Math.round(h * 2) / 2,
+      validado: false,                // urgencia nueva → no validada
+    },
+    ...fromHere.map(s => ({
+      taskId: s.taskId,
+      producto: s.producto,
+      color: s.color,
+      horas: s.horas,
+      validado: s.validado ?? false,   // ⬅️ arrastramos la validación antigua
+    })),
   ];
 
   // 4) Reempacado de ese día en adelante
@@ -1608,18 +1719,17 @@ function editOverrideForDay(worker: Worker, date: Date) {
   let dayISO = startISO;
   let guard = 0;
 
-  function newId() {
-    return (crypto as any)?.randomUUID ? (crypto as any).randomUUID() : "S" + Math.random().toString(36).slice(2, 10);
-  }
+  
 
   while (queue.length > 0 && guard < 365) {
     guard++;
-    let capLeft = Math.max(0, capacidadDia(worker, new Date(dayISO), overrides));
+    let capLeft = Math.max(0, capacidadDia(worker, fromLocalISO(dayISO), overrides));
 
     if (capLeft > 0) {
       while (queue.length > 0 && capLeft > 1e-9) {
         const head = queue[0];
         const take = Math.min(head.horas, capLeft);
+
         if (take > 1e-9) {
           rebuilt.push({
             id: newId(),
@@ -1628,18 +1738,19 @@ function editOverrideForDay(worker: Worker, date: Date) {
             fecha: dayISO,
             horas: Math.round(take * 2) / 2,
             trabajadorId: worker.id,
-            color: head.color, // ⚠️ amarillo para urgencias
+            color: head.color,
+            validado: head.validado ?? false,   // ⬅️ MUY IMPORTANTE
           });
           head.horas = Math.round((head.horas - take) * 2) / 2;
           capLeft    = Math.round((capLeft - take) * 2) / 2;
         }
+
         if (head.horas <= 1e-9) queue.shift();
       }
     }
 
-    const d = fromLocalISO(dayISO);
-const nextDay = addDays(d, 1);
-dayISO = toLocalISO(nextDay);
+    const nextDay = addDays(fromLocalISO(dayISO), 1);
+    dayISO = toLocalISO(nextDay);
   }
 
   // 5) Actualizamos el estado global
@@ -1649,6 +1760,7 @@ dayISO = toLocalISO(nextDay);
   // 6) Compactamos por seguridad (combina tramos del mismo día)
   compactarBloques(worker.id);
 }
+
 
   // Descripciones CRUD
   function saveDesc() {
@@ -1666,17 +1778,43 @@ dayISO = toLocalISO(nextDay);
     setDescNombre(key);
     setDescTexto(descs[key] || "");
   }
-  function deleteDesc(key: string) {
-    if (!canEdit) return;
-    const d = { ...descs };
-    delete d[key];
-    setDescs(d);
-    if (editKey === key) {
-      setEditKey(null);
-      setDescNombre("");
-      setDescTexto("");
-    }
+  async function deleteDesc(key: string): Promise<void> {
+  if (!canEdit) return;
+  if (!confirm(`¿Eliminar la descripción de "${key}"?`)) return;
+
+  // 1) Quita del estado local (optimista)
+  const d = { ...descs };
+  delete d[key];
+  setDescs(d);
+
+  if (editKey === key) {
+    setEditKey(null);
+    setDescNombre("");
+    setDescTexto("");
   }
+
+  // 2) Si hay sesión, borra también en Supabase
+  try {
+    if (userId) {
+      const ok = await ensureSessionOrExplain();
+      if (!ok) return;
+
+      const { error } = await supabase
+        .from("product_descs")
+        .delete()
+        .eq("tenant_id", TENANT_ID)
+        .eq("nombre", key);
+
+      if (error) {
+        console.error("deleteDesc: supabase delete error:", error);
+        setSaveError(error.message ?? String(error));
+      }
+    }
+  } catch (e: any) {
+    console.error("deleteDesc: exception:", e);
+    setSaveError(e?.message ?? String(e));
+  }
+}
 
 // Lista todos los días (ISO: YYYY-MM-DD) entre dos fechas (incluidas)
 function eachDayISO(fromISO: string, toISO: string): string[] {
@@ -1761,7 +1899,12 @@ function dayKeyOf(d: Date) {
  * - Fija el tramo del día seleccionado a newHoras (mín 0.5 en pasos de 0.5)
  * - Recalcula el resto del bloque a partir del día siguiente, empujando/ajustando como siempre.
  */
-function updateBlockHoursForDay(taskId: string, trabajadorId: string, diaISO: string, newHoras: number) {
+function updateBlockHoursForDay(
+  taskId: string,
+  trabajadorId: string,
+  diaISO: string,
+  newHoras: number
+) {
   if (!canEdit) return;
 
   const w = workers.find(x => x.id === trabajadorId);
@@ -1772,7 +1915,9 @@ function updateBlockHoursForDay(taskId: string, trabajadorId: string, diaISO: st
 
   setSlices(prev => {
     // Todas las partes del bloque de ese trabajador
-    const parts = prev.filter(s => s.taskId === taskId && s.trabajadorId === trabajadorId);
+    const parts = prev.filter(
+      s => s.taskId === taskId && s.trabajadorId === trabajadorId
+    );
     if (parts.length === 0) return prev;
 
     // Slice del día elegido
@@ -1786,16 +1931,31 @@ function updateBlockHoursForDay(taskId: string, trabajadorId: string, diaISO: st
       .reduce((a, s) => a + s.horas, 0);
 
     // Horas restantes a partir del día siguiente:
-    const remaining = Math.max(0, Math.round((totalAntes - (sumPrevDays + safeHoras)) * 2) / 2);
+    const remaining = Math.max(
+      0,
+      Math.round((totalAntes - (sumPrevDays + safeHoras)) * 2) / 2
+    );
 
     // 1) Quitamos todas las slices del bloque desde "hoy" inclusive
-    const sinBloqueDesdeHoy = prev.filter(s => !(s.taskId === taskId && s.trabajadorId === trabajadorId && s.fecha >= diaISO));
+    const sinBloqueDesdeHoy = prev.filter(
+      s =>
+        !(
+          s.taskId === taskId &&
+          s.trabajadorId === trabajadorId &&
+          s.fecha >= diaISO
+        )
+    );
 
     // 2) Insertamos la slice fija de HOY con las horas reales
-    const fixedToday = { ...today, horas: safeHoras, fecha: diaISO };
+    const fixedToday: TaskSlice = {
+      ...today,
+      horas: safeHoras,
+      fecha: diaISO,
+    };
 
     // 3) Replanificar el resto desde el día siguiente
-    let nuevos: typeof prev = [fixedToday];
+    const nuevos: TaskSlice[] = [fixedToday];
+
     if (remaining > 0) {
       const nextDay = addDays(fromLocalISO(diaISO), 1);
 
@@ -1807,41 +1967,62 @@ function updateBlockHoursForDay(taskId: string, trabajadorId: string, diaISO: st
         base,
         sinBloqueDesdeHoy, // planificar contra el resto de slices
         overrides
-      ).map(s => ({ ...s, taskId: today.taskId, color: colorFromId(today.taskId) }));
+      ).map(s => ({
+        ...s,
+        taskId: today.taskId,
+        color: colorFromId(today.taskId),
+        // mantenemos el estado de validación del bloque
+        validado: today.validado ?? false,
+      }));
 
-      nuevos = [fixedToday, ...replan];
+      nuevos.push(...replan);
     }
 
-    // Resultado final de slices
-    const result = [...sinBloqueDesdeHoy, ...nuevos];
+    // Plan intermedio (antes de reordenar todo el trabajador)
+    const merged = [...sinBloqueDesdeHoy, ...nuevos];
 
-    // === NUEVO: sobreasignar horas extras automáticamente si hace falta ===
-    // 1) Total de horas usadas HOY por este trabajador (con el cambio aplicado)
-    // Total de horas usadas HOY (con el cambio aplicado)
-const totalHoy = Math.round(result
-  .filter(s => s.trabajadorId === w.id && s.fecha === diaISO)
-  .reduce((a, s) => a + s.horas, 0) * 2) / 2;
+    // === Sobreasignar horas extras automáticamente si hace falta ===
+    const totalHoy =
+      Math.round(
+        merged
+          .filter(s => s.trabajadorId === w.id && s.fecha === diaISO)
+          .reduce((a, s) => a + s.horas, 0) * 2
+      ) / 2;
 
-// Capacidad del día con overrides actuales
-const capacidadHoy = capacidadDia(w, fromLocalISO(diaISO), overrides);
-const exceso = Math.max(0, Math.round((totalHoy - capacidadHoy) * 2) / 2);
-
+    const capacidadHoy = capacidadDia(w, fromLocalISO(diaISO), overrides);
+    const exceso =
+      Math.max(0, Math.round((totalHoy - capacidadHoy) * 2) / 2);
 
     if (exceso > 0) {
-  setOverrides((prevOv: OverridesState) => {
-    const byWorker = { ...(prevOv[w.id] || {}) };
-    const cur = byWorker[diaISO] || { extra: 0, sabado: false };
-    byWorker[diaISO] = {
-      extra: Math.round((Number(cur.extra ?? 0) + exceso) * 2) / 2,
-      sabado: !!cur.sabado,
-    };
-    return { ...prevOv, [w.id]: byWorker };
+      setOverrides((prevOv: OverridesState) => {
+        const byWorker = { ...(prevOv[w.id] || {}) };
+        const cur = byWorker[diaISO] || {
+          extra: 0,
+          sabado: false,
+          domingo: false,
+          vacacion: false,
+        };
+        byWorker[diaISO] = {
+          ...cur,
+          extra:
+            Math.round((Number(cur.extra ?? 0) + exceso) * 2) / 2,
+        };
+        return { ...prevOv, [w.id]: byWorker };
+      });
+    }
+
+    // === MUY IMPORTANTE: reempacar TODO el trabajador desde ese día ===
+    const reflowedForWorker = compactFrom(w, diaISO, overrides, merged);
+    const others = merged.filter(s => s.trabajadorId !== w.id);
+
+    const final = [...others, ...reflowedForWorker];
+    return final;
   });
+
+  // Y por seguridad, unificamos tramos del mismo bloque/día
+  compactarBloques(trabajadorId);
 }
 
-    return result;
-  });
-}
 
 /**
  * Añade un bloque NUEVO (incidencia) para un trabajador empezando en un día concreto.
@@ -1860,44 +2041,54 @@ function addNewBlockFromDay(trabajadorId: string, diaISO: string, producto: stri
   const newTaskId = `t${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 
   setSlices(prev => {
-    // Planificar el nuevo bloque empezando en el día indicado, empujando como siempre
     const plan = planificarBloqueAuto(
       producto.trim(),
       safeHoras,
       w,
       fromLocalISO(diaISO),
       base,
-      prev,         // planificar contra lo que ya existe
+      prev,
       overrides
     ).map(s => ({ ...s, taskId: newTaskId, color: colorFromId(newTaskId) }));
 
     const result = [...prev, ...plan];
 
-    // === NUEVO: sobreasignar horas extras si ese mismo día se supera la capacidad ===
-    // 1) Total de horas usadas HOY por este trabajador (con el nuevo bloque ya añadido)
-    // === Sobreasignar horas extras si se supera la capacidad ===
-const totalHoy = Math.round(result
-  .filter(s => s.trabajadorId === w.id && s.fecha === diaISO)
-  .reduce((a, s) => a + s.horas, 0) * 2) / 2;
+    // === SOBREASIGNACIÓN DE ESE DÍA ===
+    const totalHoy =
+      Math.round(
+        result
+          .filter(s => s.trabajadorId === w.id && s.fecha === diaISO)
+          .reduce((a, s) => a + s.horas, 0) * 2
+      ) / 2;
 
-const capacidadHoy = capacidadDia(w, fromLocalISO(diaISO), overrides);
-const exceso = Math.max(0, Math.round((totalHoy - capacidadHoy) * 2) / 2);
+    const capacidadHoy = capacidadDia(w, fromLocalISO(diaISO), overrides);
+    const exceso =
+      Math.max(0, Math.round((totalHoy - capacidadHoy) * 2) / 2);
 
-if (exceso > 0) {
-  setOverrides((prevOv: OverridesState) => {
-    const byWorker = { ...(prevOv[w.id] || {}) };
-    const cur = byWorker[diaISO] || { extra: 0, sabado: false };
-    byWorker[diaISO] = {
-      extra: Math.round((Number(cur.extra ?? 0) + exceso) * 2) / 2,
-      sabado: !!cur.sabado,
-    };
-    return { ...prevOv, [w.id]: byWorker };
-  });
-}
+    if (exceso > 0) {
+      setOverrides((prevOv: OverridesState) => {
+        const byWorker = { ...(prevOv[w.id] || {}) };
+        const cur = byWorker[diaISO] || {
+          extra: 0,
+          sabado: false,
+          domingo: false,
+          vacacion: false,
+        };
+
+        byWorker[diaISO] = {
+          ...cur,
+          extra:
+            Math.round((Number(cur.extra ?? 0) + exceso) * 2) / 2,
+        };
+
+        return { ...prevOv, [w.id]: byWorker };
+      });
+    }
 
     return result;
   });
 }
+
 
 // === Funciones de copias de seguridad ===
 function makeSnapshot(): PlannerSnapshot {
@@ -2052,63 +2243,36 @@ function downloadLastBackup() {
   }
   
 async function ensureSessionOrExplain(): Promise<boolean> {
-  // 1) Conectividad
+  // 1) Comprobamos SOLO la conexión básica
   if (typeof navigator !== "undefined" && navigator.onLine === false) {
-    setSaveError("Sin conexión. No se puede guardar.");
+    setSaveError("Sin conexión. No se puede guardar en la nube.");
     return false;
   }
 
-  // 2) Sesión válida
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session) {
-    setSaveError("Sesión caducada. Inicia sesión para seguir guardando.");
-    setAuthMsg("Sesión caducada. Introduce tu email y pulsa «Enviarme enlace».");
-    return false;
-  }
-
-  // 3) Si al token le queda <60s, deja que Supabase lo refresque
-  const exp = session.expires_at ? session.expires_at * 1000 : 0;
-  if (exp && exp - Date.now() < 60_000) {
-    const { data, error } = await supabase.auth.getSession(); // refresca solo
-    if (error || !data.session) {
-      setSaveError("No se pudo refrescar la sesión. Vuelve a entrar.");
-      return false;
-    }
-  }
-
+  // No tocamos la sesión ni llamamos a refreshSession aquí.
+  // Supabase se encarga de refrescar el token automáticamente.
   return true;
 }
 
-
-
-  async function guardedSaveAll(uid: string) {
-  // 1) Antes de guardar, comprobamos conexión y sesión
+async function guardedSaveAll(uid: string) {
+  // 1) Antes de guardar, comprobamos solo conexión
   const ok = await ensureSessionOrExplain();
   if (!ok) {
-    // ensureSessionOrExplain ya ha puesto el mensaje de error en pantalla,
-    // así que simplemente NO intentamos guardar nada.
+    // Ya hay mensaje de error de conexión, no intentamos guardar.
     return;
   }
 
-  // 2) Si la sesión está bien, seguimos con el guardado normal
+  // 2) Si la conexión está bien, seguimos con el guardado normal
   const myTurn = ++saveEpoch.current;
 
-  async function attempt(max = 3, delay = 700) {
+  async function attempt(max = 3, delay = 700): Promise<void> {
     try {
       await saveAll(uid);
-      return;
     } catch (e: any) {
-      const msg = e?.message || "";
-      const code = e?.status || e?.code;
-
-      // Si la sesión está caída (401/403), refresca y reintenta
-      if (code === 401 || code === 403 || /JWT|auth|session/i.test(msg)) {
-        try {
-          await supabase.auth.refreshSession();
-        } catch {}
+      // Si algo falla (timeout, error puntual, etc.), reintentamos unas cuantas veces
+      if (max <= 1) {
+        throw e;
       }
-
-      if (max <= 1) throw e;
       await new Promise((r) => setTimeout(r, delay));
       return attempt(max - 1, Math.floor(delay * 1.8));
     }
@@ -2118,7 +2282,8 @@ async function ensureSessionOrExplain(): Promise<boolean> {
     await attempt();
   } finally {
     if (myTurn !== saveEpoch.current) {
-      // había un guardado más nuevo en marcha; si quieres, fuerza uno final:
+      // Había un guardado más nuevo en marcha; si quisieras, podrías forzar otro aquí.
+      // De momento lo dejamos comentado para no añadir más complejidad:
       // await saveAll(uid);
     }
   }
@@ -2127,64 +2292,130 @@ async function ensureSessionOrExplain(): Promise<boolean> {
 
 
 
-function borrarVacacionUnDia(workerId: string, iso: string) {
+
+async function borrarVacacionUnDia(workerId: string, iso: string) {
+  // Miramos cómo está AHORA el override para saber si, al quitar vacaciones, quedará vacío
+  const actual = overrides[workerId]?.[iso];
+  const quedaraVacio =
+    !!actual &&
+    !!actual.vacacion &&
+    !actual.extra &&
+    !actual.sabado &&
+    !actual.domingo;
+
+  // 1) Estado local: quitar la vacación en memoria
   setOverrides((prev: OverridesState) => {
     const byW = { ...(prev[workerId] || {}) };
     const cur = { ...(byW[iso] || {}) };
+
     delete cur.vacacion;
+
     if (!cur.extra && !cur.sabado && !cur.domingo && !cur.vacacion) {
+      // si no queda nada, eliminamos el override del estado
       delete byW[iso];
     } else {
       byW[iso] = cur;
     }
+
     return { ...prev, [workerId]: byW };
   });
+
+  // 2) Si queda vacío, borramos también la fila en Supabase
+  if (userId && quedaraVacio) {
+    try {
+      const { error } = await supabase
+        .from("day_overrides")
+        .delete()
+        .eq("tenant_id", TENANT_ID)
+        .eq("worker_id", workerId)
+        .eq("fecha", iso);
+
+      if (error) {
+        console.error("borrarVacacionUnDia supabase delete error:", error);
+      }
+    } catch (e) {
+      console.error("borrarVacacionUnDia supabase exception:", e);
+    }
+  }
 }
 
-function aplicarExtrasRango() {
+
+async function aplicarExtrasRango() {
   if (!gmWorker || !gmFrom || !gmTo) return;
 
   const dias = eachDayISO(gmFrom, gmTo);
 
-  // Calcula el NUEVO estado primero
-  const nextOverrides: OverridesState = (() => {
-    const prev = overrides;
-    const byW = { ...(prev[gmWorker] || {}) };
+  const prev = overrides;
+  const byW = { ...(prev[gmWorker] || {}) };
 
-    for (const iso of dias) {
-      const dow = getDay(fromLocalISO(iso)); // 0=domingo, 1=lunes,...,6=sábado
-      const cur = { ...(byW[iso] || {}) };
+  // días donde el override se queda completamente vacío
+  const toDelete: string[] = [];
 
-      if (gmExtra === 0) {
-        // ✅ Permitir BORRAR extras también en DOMINGOS (antes se saltaba)
-        if ("extra" in cur) {
-          delete cur.extra;
-        }
-        // Limpia el override si queda vacío
-        if (!cur.extra && !cur.sabado && !cur.domingo && !cur.vacacion) {
-          delete byW[iso];
-        } else {
-          byW[iso] = cur;
+  for (const iso of dias) {
+    const dow = getDay(fromLocalISO(iso));   // 0=domingo, 6=sábado
+    const curBefore = byW[iso];             // estado ANTES
+    const cur = { ...(curBefore || {}) };   // copia editable
+
+    if (gmExtra === 0) {
+      // Quitar extras
+      if ("extra" in cur) {
+        delete cur.extra;
+      }
+
+      if (!cur.extra && !cur.sabado && !cur.domingo && !cur.vacacion) {
+        // Override vacío → lo quitamos del estado
+        delete byW[iso];
+
+        // Si antes solo tenía EXTRA (y nada más), toca borrar fila en BD
+        if (
+          curBefore &&
+          curBefore.extra &&
+          !curBefore.sabado &&
+          !curBefore.domingo &&
+          !curBefore.vacacion
+        ) {
+          toDelete.push(iso);
         }
       } else {
-        // ➕ Añadir extras SOLO L–V (no sábados, no domingos)
-        if (dow === 0 || dow === 6) continue;
-        cur.extra = Math.round(gmExtra * 2) / 2;
         byW[iso] = cur;
       }
+    } else {
+      // Poner extras SOLO L–V (no sábados ni domingos)
+      if (dow === 0 || dow === 6) continue;
+      cur.extra = Math.round(gmExtra * 2) / 2;
+      byW[iso] = cur;
     }
+  }
 
-    return { ...prev, [gmWorker]: byW };
-  })();
+  const nextOverrides: OverridesState = { ...prev, [gmWorker]: byW };
 
-  // Aplica el estado…
+  // 1) Estado local
   setOverrides(nextOverrides);
 
-  // …y refluye con el ESTADO NUEVO
+  // 2) Reempacar horas con el estado nuevo
   const startISO = gmFrom <= gmTo ? gmFrom : gmTo;
   reflowFromWorkerWithOverrides(gmWorker, startISO, nextOverrides);
   compactarBloques(gmWorker);
+
+  // 3) Borrado en Supabase de los overrides que se han quedado vacíos
+  if (userId && toDelete.length > 0) {
+    try {
+      const { error } = await supabase
+        .from("day_overrides")
+        .delete()
+        .eq("tenant_id", TENANT_ID)
+        .eq("worker_id", gmWorker)
+        .in("fecha", toDelete);
+
+      if (error) {
+        console.error("aplicarExtrasRango supabase delete error:", error);
+      }
+    } catch (e) {
+      console.error("aplicarExtrasRango supabase exception:", e);
+    }
+  }
 }
+
 
 function marcarVacacionesRango() {
   if (!gmWorker || !gmFrom || !gmTo) return;
@@ -2205,34 +2436,68 @@ function marcarVacacionesRango() {
   compactarBloques(gmWorker);
 }
 
-
-function borrarVacacionesRango() {
+async function borrarVacacionesRango() {
   if (!gmWorker || !gmFrom || !gmTo) return;
   const dias = eachDayISO(gmFrom, gmTo);
 
-  const nextOverrides: OverridesState = (() => {
-    const prev = overrides;
-    const byW = { ...(prev[gmWorker] || {}) };
-    for (const iso of dias) {
-      const cur = { ...(byW[iso] || {}) };
-      delete cur.vacacion;
-      if (!cur.extra && !cur.sabado && !cur.domingo && !cur.vacacion) delete byW[iso];
-      else byW[iso] = cur;
-    }
-    return { ...prev, [gmWorker]: byW };
-  })();
+  const prev = overrides;
+  const byW = { ...(prev[gmWorker] || {}) };
 
+  // guardaremos aquí los días donde el override se queda totalmente vacío
+  const toDelete: string[] = [];
+
+  for (const iso of dias) {
+    const curBefore = byW[iso];             // cómo estaba antes
+    const cur = { ...(curBefore || {}) };   // copia que vamos a tocar
+
+    delete cur.vacacion;
+
+    if (!cur.extra && !cur.sabado && !cur.domingo && !cur.vacacion) {
+      // si no queda nada, quitamos el override de ese día
+      delete byW[iso];
+
+      // si antes SOLO tenía vacación (y nada más), borramos fila en BD
+      if (
+        curBefore &&
+        curBefore.vacacion &&
+        !curBefore.extra &&
+        !curBefore.sabado &&
+        !curBefore.domingo
+      ) {
+        toDelete.push(iso);
+      }
+    } else {
+      byW[iso] = cur;
+    }
+  }
+
+  const nextOverrides: OverridesState = { ...prev, [gmWorker]: byW };
+
+  // 1) Estado local
   setOverrides(nextOverrides);
+
+  // 2) Reempacar horas
   const startISO = gmFrom <= gmTo ? gmFrom : gmTo;
   reflowFromWorkerWithOverrides(gmWorker, startISO, nextOverrides);
   compactarBloques(gmWorker);
-}
 
+  // 3) Borrado en Supabase de los días que han quedado vacíos
+  if (userId && toDelete.length > 0) {
+    try {
+      const { error } = await supabase
+        .from("day_overrides")
+        .delete()
+        .eq("tenant_id", TENANT_ID)
+        .eq("worker_id", gmWorker)
+        .in("fecha", toDelete);
 
-// ============ Re-empacado de tramos desde un día hacia delante ============
-function newId() {
-  // usa tu generador si tienes (por ejemplo nanoid/uuid). Esto vale en navegadores modernos:
-  return (crypto as any)?.randomUUID ? (crypto as any).randomUUID() : String(Math.random()).slice(2);
+      if (error) {
+        console.error("borrarVacacionesRango supabase delete error:", error);
+      }
+    } catch (e) {
+      console.error("borrarVacacionesRango supabase exception:", e);
+    }
+  }
 }
 
 
@@ -2255,6 +2520,11 @@ function reflowFromWorkerWithOverrides(workerId: string, startISO: string, ov: O
     return [...others, ...reflowedForWorker];
   });
 }
+
+// ============ Re-empacado de tramos desde un día hacia delante ============
+
+// Generador global de IDs para los TaskSlice
+
 
 function compactarBloques(workerId: string) {
   setSlices((prev) => {
@@ -2289,6 +2559,46 @@ function compactarBloques(workerId: string) {
     return [...otros, ...compactados];
   });
 }
+
+// Compacta TODOS los slices de TODOS los trabajadores
+// Evita que, si en Supabase hay varias filas iguales (mismo trabajador, día y taskId),
+// en memoria aparezcan como 2-3 bloques sumados (25.5h, etc.).
+function compactSlicesAll(input: TaskSlice[]): TaskSlice[] {
+  // Ordenamos para agrupar por trabajador + fecha + taskId
+  const sorted = [...input].sort((a, b) => {
+    if (a.trabajadorId < b.trabajadorId) return -1;
+    if (a.trabajadorId > b.trabajadorId) return 1;
+    if (a.fecha < b.fecha) return -1;
+    if (a.fecha > b.fecha) return 1;
+    if (a.taskId < b.taskId) return -1;
+    if (a.taskId > b.taskId) return 1;
+    return 0;
+  });
+
+  const out: TaskSlice[] = [];
+
+  for (const s of sorted) {
+    const last = out.at(-1);
+    if (
+      last &&
+      last.trabajadorId === s.trabajadorId &&
+      last.fecha === s.fecha &&
+      last.taskId === s.taskId
+    ) {
+      // ⚠️ AQUÍ YA NO SUMAMOS HORAS.
+      // Simplemente nos quedamos con la "última versión" del tramo.
+      last.horas    = s.horas;
+      last.color    = s.color;
+      last.validado = s.validado ?? false;
+    } else {
+      out.push({ ...s });
+    }
+  }
+
+  return out;
+}
+
+
 // === Mappers fila -> estado local ===
 function mapRowToSlice(r: any): TaskSlice {
   return {
@@ -2299,7 +2609,7 @@ function mapRowToSlice(r: any): TaskSlice {
     horas: Number(r.horas),
     trabajadorId: r.trabajador_id,
     color: r.color,
-    validado: !!r.validado,
+    validado: r.validado ?? false,   // ⬅️ aquí lo leemos
   };
 }
 
@@ -2383,6 +2693,19 @@ function mergeOverrideRow(
       {savingCloud && <span style={{ color: "#a7f3d0" }}>Guardando…</span>}
       {saveError && <span style={{ color: "#fecaca" }} title={saveError}>⚠ Error al guardar</span>}
     </div>
+
+{/* Botón de guardado manual */}
+{userId && (
+  <button
+    style={btnLabeled}
+    className="no-print"
+    onClick={manualSave}
+    title="Forzar guardado inmediato en la nube"
+  >
+    💾 Guardar ahora
+  </button>
+)}
+
 
     {/* ——— separador visual ——— */}
     <div style={{ width: 1, height: 22, background: "rgba(255,255,255,.25)", margin: "0 6px" }} />
@@ -2634,7 +2957,27 @@ function mergeOverrideRow(
                     {week.map((d) => {
                       const f = fmt(d);
                       const iso = f || toLocalISO(d);
-                      const delDia = f ? slices.filter((s) => s.trabajadorId === w.id && s.fecha === f) : [];
+                      // Bloques de este trabajador en este día, ordenados por
+// la fecha de inicio del bloque (para que el que empezó antes salga primero)
+      const delDia = f
+        ? slices
+            .filter((s) => s.trabajadorId === w.id && s.fecha === f)
+            .sort((a, b) => {
+              const starts = taskStartByWorker[w.id] || {};
+              const sa = starts[a.taskId] ?? a.fecha;
+              const sb = starts[b.taskId] ?? b.fecha;
+
+              if (sa < sb) return -1;
+              if (sa > sb) return 1;
+
+              // desempate estable por taskId (por si dos bloques empiezan el mismo día)
+              if (a.taskId < b.taskId) return -1;
+              if (a.taskId > b.taskId) return 1;
+              return 0;
+            })
+        : [];
+
+
                       const cap = capacidadDia(w, d, overrides);
                       const used = usadasEnDia(slices, w.id, d);
                       const over = used > cap + 1e-9; // "over" significa "se pasó"
@@ -2777,12 +3120,12 @@ const handleDayHeaderDblClick = () => {
         /^⚠️/.test(s.producto) ||
         /urgenc/i.test(s.producto);
 
-      return (
-        <div
-          key={s.id}
-          draggable={canEdit}
-          onDragStart={(e) => onDragStart(e, s.id)}
-          onDoubleClick={(e) => {
+     return (
+  <div
+    key={s.id}
+    draggable={canEdit}
+    onDragStart={(e) => onDragStart(e, s.id)}
+    onDoubleClick={(e) => {
   e.stopPropagation();
   if (!canEdit) return;
 
@@ -2792,54 +3135,51 @@ const handleDayHeaderDblClick = () => {
     /urgenc/i.test(s.producto);
 
   if (isUrgent) {
-    editUrgentSlice(s);   // ← no replanifica ni cambia de día
+    editUrgentSlice(s);   // ← urgencias: solo ese día
   } else {
-    editBlockTotalFromSlice(s); // comportamiento normal
+    editBlockTotalFromSlice(s); // ← bloques normales: replanifica TODO el bloque
   }
 }}
-
-          title={`${s.producto} — ${s.horas}h${desc ? "\n" + desc : ""}`}
-          style={{
-            ...blockStyle,
-            background: isUrgent ? URGENT_COLOR : s.color,
-            width: Math.max(18, s.horas * PX_PER_HOUR),
-            position: "relative",
-          }}
+    title={`${s.producto} — ${s.horas}h${desc ? "\n" + desc : ""}`}
+    style={{
+      ...blockStyle,
+      background: isUrgent ? URGENT_COLOR : s.color,
+      width: Math.max(18, s.horas * PX_PER_HOUR),
+      position: "relative",
+    }}
+  >
+        {canEdit && (
+      <>
+        <button
+          onClick={(e) => { e.stopPropagation(); removeSlice(s.id); }}
+          title="Eliminar tramo"
+          style={deleteBtn}
         >
-          {canEdit && (
-            <>
-              <button
-                onClick={(e) => { e.stopPropagation(); removeSlice(s.id); }}
-                title="Eliminar tramo"
-                style={deleteBtn}
-              >
-                ✖
-              </button>
-              <button
-                onClick={(e) => { e.stopPropagation(); removeTask(s.taskId, s.trabajadorId); }}
-                title="Eliminar bloque completo"
-                style={deleteBtnAlt}
-              >
-                🗑
-              </button>
-            </>
-          )}
+          ✖
+        </button>
+        <button
+          onClick={(e) => { e.stopPropagation(); removeTask(s.taskId, s.trabajadorId); }}
+          title="Eliminar bloque completo"
+          style={deleteBtnAlt}
+        >
+          🗑
+        </button>
+      </>
+    )}
 
-                  <div style={blockTop}>
-            {/* Izquierda: nombre + icono de validado */}
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 4 }}>
-              <span style={productFull}>{s.producto}</span>
-              <ValidIcon validado={s.validado} />
-            </div>
+   <ValidIcon validado={s.validado} />
 
-            {/* Derecha: horas */}
-            <span>{s.horas}h</span>
-          </div>
-  
+    <div style={blockTop}>
+  <span style={productFull}>
+        {s.producto}
+  </span>
+  <span>{s.horas}h</span>
+    </div>
 
-          {desc ? <div style={miniHint}>ⓘ</div> : null}
-        </div>
-      );
+    {desc ? <div style={miniHint}>ⓘ</div> : null}
+  </div>
+);
+
     })
   )}
 </div>
@@ -3010,76 +3350,75 @@ const handleDayHeaderDblClick = () => {
             </div>
           </div>
 
-                    <div style={{ marginTop: 12, fontWeight: 700 }}>Listado</div>
-          <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 6 }}>
-            {Object.keys(descs).length === 0 && (
-              <div style={{ color: "#6b7280", fontSize: 13 }}>No hay descripciones todavía.</div>
-            )}
+          <div style={{ marginTop: 12, fontWeight: 700 }}>Listado</div>
 
-            {Object.entries(descs).map(([prod, texto]) => {
-              // buscamos todos los bloques que usan este producto
-              const prodSlices = slices.filter(s => s.producto === prod);
+<div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 6 }}>
+  {Object.keys(descs).length === 0 && (
+    <div style={{ color: "#6b7280", fontSize: 13 }}>No hay descripciones todavía.</div>
+  )}
 
-              // estado:
-              //   true  → todos validados
-              //   false → ninguno validado
-              //   undefined → mezcla (no mostramos icono)
-              let estado: boolean | undefined;
-              if (prodSlices.length > 0) {
-                const allValid = prodSlices.every(s => s.validado === true);
-                const noneValid = prodSlices.every(s => s.validado !== true);
-                if (allValid) estado = true;
-                else if (noneValid) estado = false;
-              }
+  {Object.entries(descs).map(([prod, texto]) => {
+    // ✓ si TODOS los tramos de ese producto están validados; en otro caso ✗
+    const prodSlices = slices.filter(s => s.producto === prod);
+    const estado: boolean = prodSlices.length > 0 && prodSlices.every(s => s.validado === true);
 
-              return (
-                <div key={`desc-${prod}`} style={descItem}>
-                  {/* Cabecera: nombre + icono */}
-                  <div
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "space-between",
-                    }}
-                  >
-                    <div style={{ display: "flex", alignItems: "center" }}>
-                      <span style={{ fontWeight: 700 }}>{prod}</span>
-                      <ValidIcon validado={estado} />
-                    </div>
-                  </div>
+    return (
+      <div key={`desc-${prod}`} style={descItem}>
+        {/* Cabecera: nombre + icono + botones */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span style={{ fontWeight: 700 }}>{prod}</span>
+            <ValidIcon validado={estado} inline />
+          </div>
 
-                  {/* Texto de descripción */}
-                  <div
-                    style={{
-                      fontSize: 12,
-                      color: "#374151",
-                      whiteSpace: "pre-wrap",
-                      marginTop: 4,
-                    }}
-                  >
-                    {texto}
-                  </div>
+          <div style={{ display: "flex", gap: 6 }}>
+            <button
+              style={disabledIf(btnTiny, locked)}
+              disabled={locked}
+              onClick={() => {
+                // reutilizamos tu flujo de edición
+                setEditKey(prod);
+                setDescNombre(prod);
+                setDescTexto(texto || "");
+              }}
+              title="Editar este producto"
+            >
+              ✏️ Editar
+            </button>
 
-                  {/* Botones */}
-                  <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
-                    <button
-                      style={disabledIf(btnTiny, locked)}
-                      disabled={locked}
-                      onClick={() => editDesc(prod)}
-                    >
-                      ✏️ Editar
-                    </button>
-                    <button
-                      style={disabledIf(btnTinyDanger, locked)}
-                      disabled={locked}
-                      onClick={() => deleteDesc(prod)}
-                    >
-                      🗑 Eliminar
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
+            <button
+  style={disabledIf(btnTinyDanger, locked)}
+  disabled={locked}
+  onClick={() => deleteDesc(prod)}     // deleteDesc ya hace confirm y borra en Supabase + estado
+  title="Eliminar la descripción"
+>
+  🗑 Eliminar
+</button>
+            
+          </div>
+        </div>
+
+        {/* Texto */}
+        <div
+          style={{
+            fontSize: 12,
+            color: "#374151",
+            whiteSpace: "pre-wrap",
+            marginTop: 4,
+          }}
+        >
+          {texto}
+        </div>
+      </div>
+    );
+  })}
+
           </div>
 
           {/* Editor de bloques por producto */}
@@ -3297,23 +3636,34 @@ function DayCapacityBadge({ capacidad, usado }: { capacidad: number; usado: numb
   );
 }
 
-function ValidIcon({ validado }: { validado?: boolean }) {
-  // Si aún no se ha marcado nada, no mostramos icono
-  if (typeof validado !== "boolean") return null;
+function ValidIcon({
+  validado,
+  inline = false, // inline = para la columna derecha
+}: {
+  validado?: boolean;
+  inline?: boolean;
+}) {
+  // si viene undefined/null mostramos "no validado"
+  const isOk = validado === true;
 
-  const symbol = validado ? "✓" : "✗";
-  const color = validado ? "#16a34a" : "#b91c1c";
+  const base: React.CSSProperties = {
+    ...validIconBox,
+    color: isOk ? "#16a34a" : "#dc2626",
+  };
 
-  return (
-    <span
-      style={{
-        ...validIconBox,
-        color,
-      }}
-    >
-      {symbol}
-    </span>
-  );
+  const style: React.CSSProperties = inline
+    ? base // en línea (sidebar)
+    : {
+        // flotante dentro del bloque, pegado a la esquina sup. izquierda
+        ...base,
+        position: "absolute",
+        top: 4,
+        left: 4,
+        marginLeft: 0,
+        zIndex: 30,
+      };
+
+  return <span style={style}>{isOk ? "✓" : "✗"}</span>;
 }
 
 
@@ -3365,14 +3715,15 @@ const validIconBox: React.CSSProperties = {
   display: "inline-flex",
   alignItems: "center",
   justifyContent: "center",
-  minWidth: 18,
-  height: 18,
-  padding: "0 4px",
+  minWidth: 16,
+  height: 16,
+  lineHeight: "16px",
+  padding: "0 3px",
   borderRadius: 6,
   background: "#ffffff",
   border: "1px solid rgba(0,0,0,.2)",
-  marginLeft: 6,
-  fontSize: 12,
+  marginLeft: 6,           // se ignora en modo flotante
+  fontSize: 11,
   fontWeight: 700,
 };
 
@@ -3481,10 +3832,11 @@ const weekCol: React.CSSProperties = {
 };
 
 const horizontalLane: React.CSSProperties = { display: "flex", gap: 6, overflowX: "auto", alignItems: "flex-start" };
+
 const blockStyle: React.CSSProperties = {
   color: "#fff",
   borderRadius: 8,
-  padding: "6px 8px",
+  padding: "6px 8px 6px 26px", // 👈 antes era "6px 8px"; reservamos 26px a la izquierda
   fontSize: 12,
   minHeight: 34,
   display: "flex",
@@ -3493,18 +3845,27 @@ const blockStyle: React.CSSProperties = {
   cursor: "grab",
   boxShadow: "0 1px 2px rgba(0,0,0,.15)",
 };
+
 const blockTop: React.CSSProperties = { display: "flex", justifyContent: "space-between", gap: 8, alignItems: "flex-start" };
 
+const validIconWrapper: React.CSSProperties = {
+  position: "absolute",
+  bottom: 4,
+  left: 4,
+  zIndex: 20,          // por encima del resto
+};
+
 const statusBadge: React.CSSProperties = {
-  marginLeft: 6,
-  padding: "1px 4px",
+  minWidth: 22,
+  height: 22,
+  padding: "0 4px",
   borderRadius: 6,
-  background: "#ffffff", // fondo blanco para destacar
-  fontSize: 11,
-  fontWeight: 700,
+  background: "#ffffff",
   display: "inline-flex",
   alignItems: "center",
   justifyContent: "center",
+  fontSize: 12,
+  fontWeight: 700,
 };
 
 const productFull: React.CSSProperties = {
@@ -3516,6 +3877,9 @@ const productFull: React.CSSProperties = {
   lineHeight: 1.1,
   marginRight: 8,
   maxWidth: "100%",
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 6,
 };
 // === Botones ===
 const btnBase: React.CSSProperties = {
