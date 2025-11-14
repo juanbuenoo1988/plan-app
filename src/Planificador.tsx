@@ -174,36 +174,6 @@ function colorFromId(id: string) {
 // Capacidad real del día para un trabajador, teniendo en cuenta overrides
 const WEEKEND_BASE_HOURS = 8; // cuando se habilita sábado/domingo
 
-function capacidadDia(w: Worker, d: Date, ov: OverridesState): number {
-  const iso = toLocalISO(d as Date);
-  const dow = getDay(d); // 0=domingo, 1=lunes,...,6=sábado
-  const byW = ov[w.id] || {};
-  const o: DayOverride = byW[iso] || {};
-
-  // Vacaciones = 0
-  if (o.vacacion) return 0;
-
-  // ¿Es laborable?
-  let esLaborable = false;
-  if (dow >= 1 && dow <= 5) esLaborable = true;          // L–V siempre
-  else if (dow === 6) esLaborable = !!o.sabado;          // sábado si override
-  else if (dow === 0) esLaborable = !!o.domingo;         // domingo si override
-  if (!esLaborable) return 0;
-
-  // Base según jornada del trabajador (L–V) o fin de semana
-  let base =
-    dow === 1 ? w.jornada.lu :
-    dow === 2 ? w.jornada.ma :
-    dow === 3 ? w.jornada.mi :
-    dow === 4 ? w.jornada.ju :
-    dow === 5 ? w.jornada.vi :
-    WEEKEND_BASE_HOURS;
-
-  // Extra del override (solo lo sumamos; ya no existe “extra por defecto”)
-  const extra = Number(o.extra ?? 0);
-
-  return Math.max(0, Math.round((base + extra) * 2) / 2);
-}
 
 
 function usadasEnDia(slices: TaskSlice[], workerId: string, date: Date) {
@@ -249,6 +219,14 @@ function aggregateToQueue(items: TaskSlice[]): QueueItem[] {
   return order.map((id) => map.get(id)!);
 }
 
+
+function newId(): string {
+  if (typeof crypto !== "undefined" && (crypto as any).randomUUID) {
+    return (crypto as any).randomUUID();
+  }
+  // Fallback por si randomUUID no existe
+  return "S" + Math.random().toString(36).slice(2, 10);
+}
 /**
  * Refluye TODOS los tramos (slices) del trabajador a partir de startISO inclusive,
  * rellenando huecos en cada día según capacidadDia(w, date, overrides).
@@ -327,7 +305,36 @@ function compactFrom(
   return [...before, ...rebuilt];
 }
 
+function capacidadDia(w: Worker, d: Date, ov: OverridesState): number {
+  const iso = toLocalISO(d as Date);
+  const dow = getDay(d); // 0=domingo, 1=lunes,...,6=sábado
+  const byW = ov[w.id] || {};
+  const o: DayOverride = byW[iso] || {};
 
+  // Vacaciones = 0
+  if (o.vacacion) return 0;
+
+  // ¿Es laborable?
+  let esLaborable = false;
+  if (dow >= 1 && dow <= 5) esLaborable = true;          // L–V siempre
+  else if (dow === 6) esLaborable = !!o.sabado;          // sábado si override
+  else if (dow === 0) esLaborable = !!o.domingo;         // domingo si override
+  if (!esLaborable) return 0;
+
+  // Base según jornada del trabajador (L–V) o fin de semana
+  let base =
+    dow === 1 ? w.jornada.lu :
+    dow === 2 ? w.jornada.ma :
+    dow === 3 ? w.jornada.mi :
+    dow === 4 ? w.jornada.ju :
+    dow === 5 ? w.jornada.vi :
+    WEEKEND_BASE_HOURS;
+
+  // Extra del override (solo lo sumamos; ya no existe “extra por defecto”)
+  const extra = Number(o.extra ?? 0);
+
+  return Math.max(0, Math.round((base + extra) * 2) / 2);
+}
 
 // Planificación de un bloque (crea taskId/color únicos por bloque)
 function planificarBloqueAuto(
@@ -2448,19 +2455,6 @@ async function borrarVacacionesRango() {
 }
 
 
-// ============ Re-empacado de tramos desde un día hacia delante ============
-// === Generador de IDs únicos para los slices ===
-// PÉGALO FUERA DEL COMPONENTE, al mismo nivel que compactFrom, reflowFromWorkerWithOverrides, etc.
-function newId() {
-  if (typeof crypto !== "undefined" && (crypto as any).randomUUID) {
-    return (crypto as any).randomUUID();
-  }
-  // Fallback por si randomUUID no existe
-  return "S" + Math.random().toString(36).slice(2, 10);
-}
-
-
-
 
 /**
  * Refluye TODOS los tramos (slices) del trabajador a partir de startISO inclusive,
@@ -2480,6 +2474,11 @@ function reflowFromWorkerWithOverrides(workerId: string, startISO: string, ov: O
     return [...others, ...reflowedForWorker];
   });
 }
+
+// ============ Re-empacado de tramos desde un día hacia delante ============
+
+// Generador global de IDs para los TaskSlice
+
 
 function compactarBloques(workerId: string) {
   setSlices((prev) => {
