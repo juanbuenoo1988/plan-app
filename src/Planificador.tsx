@@ -2044,44 +2044,54 @@ function addNewBlockFromDay(trabajadorId: string, diaISO: string, producto: stri
   const newTaskId = `t${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 
   setSlices(prev => {
-    // Planificar el nuevo bloque empezando en el día indicado, empujando como siempre
     const plan = planificarBloqueAuto(
       producto.trim(),
       safeHoras,
       w,
       fromLocalISO(diaISO),
       base,
-      prev,         // planificar contra lo que ya existe
+      prev,
       overrides
     ).map(s => ({ ...s, taskId: newTaskId, color: colorFromId(newTaskId) }));
 
     const result = [...prev, ...plan];
 
-    // === NUEVO: sobreasignar horas extras si ese mismo día se supera la capacidad ===
-    // 1) Total de horas usadas HOY por este trabajador (con el nuevo bloque ya añadido)
-    // === Sobreasignar horas extras si se supera la capacidad ===
-const totalHoy = Math.round(result
-  .filter(s => s.trabajadorId === w.id && s.fecha === diaISO)
-  .reduce((a, s) => a + s.horas, 0) * 2) / 2;
+    // === SOBREASIGNACIÓN DE ESE DÍA ===
+    const totalHoy =
+      Math.round(
+        result
+          .filter(s => s.trabajadorId === w.id && s.fecha === diaISO)
+          .reduce((a, s) => a + s.horas, 0) * 2
+      ) / 2;
 
-const capacidadHoy = capacidadDia(w, fromLocalISO(diaISO), overrides);
-const exceso = Math.max(0, Math.round((totalHoy - capacidadHoy) * 2) / 2);
+    const capacidadHoy = capacidadDia(w, fromLocalISO(diaISO), overrides);
+    const exceso =
+      Math.max(0, Math.round((totalHoy - capacidadHoy) * 2) / 2);
 
-if (exceso > 0) {
-  setOverrides((prevOv: OverridesState) => {
-    const byWorker = { ...(prevOv[w.id] || {}) };
-    const cur = byWorker[diaISO] || { extra: 0, sabado: false };
-    byWorker[diaISO] = {
-      extra: Math.round((Number(cur.extra ?? 0) + exceso) * 2) / 2,
-      sabado: !!cur.sabado,
-    };
-    return { ...prevOv, [w.id]: byWorker };
-  });
-}
+    if (exceso > 0) {
+      setOverrides((prevOv: OverridesState) => {
+        const byWorker = { ...(prevOv[w.id] || {}) };
+        const cur = byWorker[diaISO] || {
+          extra: 0,
+          sabado: false,
+          domingo: false,
+          vacacion: false,
+        };
+
+        byWorker[diaISO] = {
+          ...cur,
+          extra:
+            Math.round((Number(cur.extra ?? 0) + exceso) * 2) / 2,
+        };
+
+        return { ...prevOv, [w.id]: byWorker };
+      });
+    }
 
     return result;
   });
 }
+
 
 // === Funciones de copias de seguridad ===
 function makeSnapshot(): PlannerSnapshot {
