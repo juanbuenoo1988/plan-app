@@ -761,12 +761,39 @@ const { data: sData, error: sErr } = await supabase
   .eq("tenant_id", TENANT_ID);
 
 if (sErr) console.error("task_slices error:", sErr);
-if (sData) {
-  setSlices(
-    sData.map((r: any) => mapRowToSlice(r))   // ⬅️ usamos el mapper de abajo
-  );
-}
+    if (sData) {
+      // 2.1 Pasamos filas de BD a TaskSlice
+      const rawSlices = (sData as any[]).map((r) => mapRowToSlice(r));
 
+      // 2.2 Agrupamos por (trabajadorId, taskId, fecha)
+      const byKey = new Map<string, TaskSlice>();
+
+      for (const s of rawSlices) {
+        const key = `${s.trabajadorId}__${s.taskId}__${s.fecha}`;
+        const existing = byKey.get(key);
+
+        if (!existing) {
+          // Primera vez que vemos esa combinación → la guardamos tal cual
+          byKey.set(key, { ...s });
+        } else {
+          // Si ya hay una, nos quedamos con la que tenga MÁS horas (por si has editado).
+          if (s.horas > existing.horas) {
+            byKey.set(key, { ...s });
+          }
+
+          // Si cualquiera de las dos está validada, marcamos validado = true
+          const cur = byKey.get(key)!;
+          cur.validado = (cur.validado || s.validado) as boolean;
+        }
+      }
+
+      // 2.3 Convertimos a array y ordenamos un poco por fecha
+      const deduped = Array.from(byKey.values()).sort((a, b) =>
+        a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : 0
+      );
+
+      setSlices(deduped);
+    }
 
       // 3) Overrides (extras/sábado)
       const { data: oData, error: oErr } = await supabase
@@ -948,45 +975,59 @@ async function init() {
 
   init();
 
-  // 3) Suscripción a cambios de sesión (login / logout)
+// 3) Suscripción a cambios de sesión (login / logout)
+// IMPORTANTE: no usar async aquí ni llamar a supabase.* directamente.
+// Si hace falta tocar Supabase, lo hacemos dentro de un setTimeout.
 const { data: sub } = supabase.auth.onAuthStateChange(
-  async (_event: AuthChangeEvent, session: Session | null) => {
+  (event: AuthChangeEvent, session: Session | null) => {
     if (!mounted) return;
-
-    hydratedRef.current = false;
 
     const uid  = session?.user?.id    ?? null;
     const mail = session?.user?.email ?? null;
+
     setUserId(uid);
     setUserEmail(mail);
 
-    if (uid) {
-      try {
-        setLoadingCloud(true);
-        await seedIfEmpty(uid);
-        await loadAll(uid);
-      } catch (e) {
-        console.error("onAuthStateChange(): nube falló; uso copia local ->", e);
-        const snap = safeLocal<any>(STORAGE_KEY, null as any);
-        setWorkers(snap?.workers ?? []);
-        setSlices(snap?.slices ?? []);
-        setOverrides(snap?.overrides ?? {});
-        setDescs(snap?.descs ?? {});
-      } finally {
-        setLoadingCloud(false);
-        hydratedRef.current = true;
-      }
-    } else {
-      // logout → intenta local
+    // Si el usuario se ha desconectado (o ya no hay sesión),
+    // volvemos a la copia local.
+    if (event === "SIGNED_OUT" || !uid) {
       const snap = safeLocal<any>(STORAGE_KEY, null as any);
       setWorkers(snap?.workers ?? []);
       setSlices(snap?.slices ?? []);
       setOverrides(snap?.overrides ?? {});
       setDescs(snap?.descs ?? {});
       hydratedRef.current = true;
+      setLoadingCloud(false);
+      return;
+    }
+
+    // Si en otra pestaña se ha hecho login / recuperado sesión,
+    // recargamos desde la nube, pero OJO: fuera del callback.
+    if (event === "SIGNED_IN" || event === "INITIAL_SESSION") {
+      hydratedRef.current = false;
+      setLoadingCloud(true);
+
+      setTimeout(async () => {
+        try {
+          await seedIfEmpty(uid);
+          await loadAll(uid);
+        } catch (e) {
+          console.error("onAuthStateChange(): nube falló; uso copia local ->", e);
+          const snap = safeLocal<any>(STORAGE_KEY, null as any);
+          setWorkers(snap?.workers ?? []);
+          setSlices(snap?.slices ?? []);
+          setOverrides(snap?.overrides ?? {});
+          setDescs(snap?.descs ?? {});
+        } finally {
+          if (!mounted) return;
+          setLoadingCloud(false);
+          hydratedRef.current = true;
+        }
+      }, 0);
     }
   }
 );
+
 
   return () => {
     mounted = false;
