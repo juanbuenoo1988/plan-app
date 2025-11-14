@@ -2799,8 +2799,7 @@ const handleDayHeaderDblClick = () => {
       position: "relative",
     }}
   >
-    <ValidIcon validado={s.validado} />
-    {canEdit && (
+        {canEdit && (
       <>
         <button
           onClick={(e) => { e.stopPropagation(); removeSlice(s.id); }}
@@ -2819,7 +2818,7 @@ const handleDayHeaderDblClick = () => {
       </>
     )}
 
-   
+   <ValidIcon validado={s.validado} />
 
     <div style={blockTop}>
   <span style={productFull}>
@@ -3009,68 +3008,28 @@ const handleDayHeaderDblClick = () => {
             )}
 
             {Object.entries(descs).map(([prod, texto]) => {
-              // buscamos todos los bloques que usan este producto
-              const prodSlices = slices.filter(s => s.producto === prod);
+  const prodSlices = slices.filter(s => s.producto === prod);
+  // ✓ solo si TODOS los tramos de ese producto están validados; en cualquier otro caso ✗
+  const estado: boolean = prodSlices.length > 0 && prodSlices.every(s => s.validado === true);
 
-              // estado:
-              //   true  → todos validados
-              //   false → ninguno validado
-              //   undefined → mezcla (no mostramos icono)
-              let estado: boolean | undefined = undefined;
-if (prodSlices.length > 0) {
-  const allValid = prodSlices.every(s => s.validado === true);
-  // si no están todos validados, mostramos X (false)
-  estado = allValid ? true : false;
-}
+  return (
+    <div key={`desc-${prod}`} style={descItem}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ fontWeight: 700 }}>{prod}</span>
+          <ValidIcon validado={estado} inline /> {/* 👈 en línea */}
+        </div>
+      </div>
 
-              return (
-                <div key={`desc-${prod}`} style={descItem}>
-                  {/* Cabecera: nombre + icono */}
-                  <div
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "space-between",
-                    }}
-                  >
-                    <div style={{ display: "flex", alignItems: "center" }}>
-                      <span style={{ fontWeight: 700 }}>{prod}</span>
-                      <ValidIcon validado={estado} />
-                    </div>
-                  </div>
+      <div style={{ fontSize: 12, color: "#374151", whiteSpace: "pre-wrap", marginTop: 4 }}>
+        {texto}
+      </div>
 
-                  {/* Texto de descripción */}
-                  <div
-                    style={{
-                      fontSize: 12,
-                      color: "#374151",
-                      whiteSpace: "pre-wrap",
-                      marginTop: 4,
-                    }}
-                  >
-                    {texto}
-                  </div>
+      {/* ...botones... */}
+    </div>
+  );
+})}
 
-                  {/* Botones */}
-                  <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
-                    <button
-                      style={disabledIf(btnTiny, locked)}
-                      disabled={locked}
-                      onClick={() => editDesc(prod)}
-                    >
-                      ✏️ Editar
-                    </button>
-                    <button
-                      style={disabledIf(btnTinyDanger, locked)}
-                      disabled={locked}
-                      onClick={() => deleteDesc(prod)}
-                    >
-                      🗑 Eliminar
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
           </div>
 
           {/* Editor de bloques por producto */}
@@ -3288,25 +3247,36 @@ function DayCapacityBadge({ capacidad, usado }: { capacidad: number; usado: numb
   );
 }
 
-function ValidIcon({ validado, inline = false }: { validado?: boolean; inline?: boolean }) {
-  if (validado == null) return null;
+function ValidIcon({
+  validado,
+  inline = false, // inline = para la columna derecha
+}: {
+  validado?: boolean;
+  inline?: boolean;
+}) {
+  // si viene undefined/null mostramos "no validado"
+  const isOk = validado === true;
+
+  const base: React.CSSProperties = {
+    ...validIconBox,
+    color: isOk ? "#16a34a" : "#dc2626",
+  };
 
   const style: React.CSSProperties = inline
-    ? validIconBox // en línea (sidebar)
-    : {            // flotando dentro del bloque
-        ...validIconBox,
+    ? base // en línea (sidebar)
+    : {
+        // flotante dentro del bloque, pegado a la esquina sup. izquierda
+        ...base,
         position: "absolute",
-        left: 6,
-        top: 22,     // debajo de los botoncitos de borrar
-        zIndex: 20,
+        top: 4,
+        left: 4,
+        marginLeft: 0,
+        zIndex: 30,
       };
 
-  return (
-    <span style={{ ...style, color: validado ? "#16a34a" : "#dc2626" }}>
-      {validado ? "✓" : "✗"}
-    </span>
-  );
+  return <span style={style}>{isOk ? "✓" : "✗"}</span>;
 }
+
 
 /* ===================== Estilos ===================== */
 const appShell: React.CSSProperties = {
@@ -3356,16 +3326,16 @@ const validIconBox: React.CSSProperties = {
   display: "inline-flex",
   alignItems: "center",
   justifyContent: "center",
-  minWidth: 18,
-  height: 18,
-  padding: "0 4px",
+  minWidth: 16,
+  height: 16,
+  lineHeight: "16px",
+  padding: "0 3px",
   borderRadius: 6,
   background: "#ffffff",
   border: "1px solid rgba(0,0,0,.2)",
-  marginRight: 6,        // ← separa el icono del texto
-  fontSize: 12,
+  marginLeft: 6,           // se ignora en modo flotante
+  fontSize: 11,
   fontWeight: 700,
-  verticalAlign: "text-top"
 };
 
 
@@ -3477,8 +3447,7 @@ const horizontalLane: React.CSSProperties = { display: "flex", gap: 6, overflowX
 const blockStyle: React.CSSProperties = {
   color: "#fff",
   borderRadius: 8,
-  // 👇 reserva 30px a la izquierda para el icono flotante
-  padding: "6px 8px 6px 30px",
+  padding: "6px 8px 6px 26px", // 👈 antes era "6px 8px"; reservamos 26px a la izquierda
   fontSize: 12,
   minHeight: 34,
   display: "flex",
