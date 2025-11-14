@@ -984,19 +984,35 @@ useEffect(() => {
 }, []);
 
 
-
-
-// Guardado al volver a la pestaña (si hay sesión activa)
+// Al volver a la pestaña: RECARGO desde la nube en vez de guardar mi copia local
 useEffect(() => {
+  if (!userId) return;
+
   function onVisible() {
     if (document.visibilityState !== "visible") return;
-    if (!userId) return;
     if (!hydratedRef.current) return;
 
     (async () => {
-      const ok = await ensureSessionOrExplain();
-      if (ok) {
-        try { await saveAll(userId); } catch {}
+      try {
+        // mientras recargo, desactivo el autosave para no mezclar cosas
+        hydratedRef.current = false;
+        setLoadingCloud(true);
+
+      // por si acaso, asegura datos base (no pasa nada si ya existen)
+if (!userId) {
+  console.warn("[visibilitychange] No hay userId todavía, no recargo desde Supabase.");
+  return; // salimos para no llamar a las funciones con null
+}
+
+await seedIfEmpty(userId);
+
+// carga el estado REAL desde Supabase
+await loadAll(userId);
+      } catch (e) {
+        console.error("Error recargando al volver a la pestaña:", e);
+      } finally {
+        setLoadingCloud(false);
+        hydratedRef.current = true;
       }
     })();
   }
