@@ -838,26 +838,30 @@ async function loadAll(_uid: string) {
     }
 
     // 2) Bloques / Slices
-    const { data: sData, error: sErr } = await supabase
-      .from("task_slices")
-      .select("*")
-      .eq("tenant_id", TENANT_ID);
+    // 2) Bloques / Slices
+const { data: sData, error: sErr } = await supabase
+  .from("task_slices")
+  .select("*")
+  .eq("tenant_id", TENANT_ID);
 
-    if (sErr) console.error("task_slices error:", sErr);
-    if (sData) {
-      setSlices(
-        sData.map((r: any) => ({
-          id: r.id,
-          taskId: r.task_id,
-          producto: r.producto,
-          fecha: r.fecha,
-          horas: Number(r.horas),
-          trabajadorId: r.trabajador_id,
-          color: r.color,
-          validado: !!r.validado,
-        }))
-      );
-    }
+if (sErr) console.error("task_slices error:", sErr);
+if (sData) {
+  const rawSlices: TaskSlice[] = sData.map((r: any) => ({
+    id: r.id,
+    taskId: r.task_id,
+    producto: r.producto,
+    fecha: r.fecha,
+    horas: Number(r.horas),
+    trabajadorId: r.trabajador_id,
+    color: r.color,
+    validado: !!r.validado,
+  }));
+
+  // 🔴 Aquí compactamos TODO lo que venga de BD
+  const compacted = compactSlicesAll(rawSlices);
+  setSlices(compacted);
+}
+
 
     // 3) Overrides (extras/sábado/domingo/vacaciones)
     const { data: oData, error: oErr } = await supabase
@@ -924,19 +928,23 @@ async function saveAll(uid: string) {
     updated_by: uid,
   }));
 
-  const sRows = slices.map(s => ({
-    id: s.id,
-    task_id: s.taskId,
-    producto: s.producto,
-    fecha: s.fecha,
-    horas: s.horas,
-    trabajador_id: s.trabajadorId,
-    color: s.color,
-    user_id: uid,
-    tenant_id: TENANT_ID,
-    updated_by: uid,
-    validado: s.validado ?? false,
-  }));
+ // Antes de construir filas, normalizamos por si hubiera quedado algo raro en memoria
+const normalizedSlices = compactSlicesAll(slices);
+
+const sRows = normalizedSlices.map(s => ({
+  id: s.id,
+  task_id: s.taskId,
+  producto: s.producto,
+  fecha: s.fecha,
+  horas: s.horas,
+  trabajador_id: s.trabajadorId,
+  color: s.color,
+  user_id: uid,
+  tenant_id: TENANT_ID,
+  updated_by: uid,
+  validado: s.validado ?? false,
+}));
+
 
   const oRows = flattenOverrides(overrides).map(r => ({
     worker_id: r.worker_id,
@@ -2450,6 +2458,47 @@ function compactarBloques(workerId: string) {
     return [...otros, ...compactados];
   });
 }
+
+function compactSlicesAll(input: TaskSlice[]): TaskSlice[] {
+  // Ordenamos por trabajador, fecha y taskId
+  const sorted = [...input].sort((a, b) => {
+    if (a.trabajadorId < b.trabajadorId) return -1;
+    if (a.trabajadorId > b.trabajadorId) return 1;
+    if (a.fecha < b.fecha) return -1;
+    if (a.fecha > b.fecha) return 1;
+    if (a.taskId < b.taskId) return -1;
+    if (a.taskId > b.taskId) return 1;
+    return 0;
+  });
+
+  const out: TaskSlice[] = [];
+
+  for (const s of sorted) {
+    const last = out.at(-1);
+    if (
+      last &&
+      last.trabajadorId === s.trabajadorId &&
+      last.fecha === s.fecha &&
+      last.taskId === s.taskId
+    ) {
+      // Mismo bloque, mismo día, mismo trabajador → fusionamos horas
+      last.horas = Math.round((last.horas + s.horas) * 2) / 2;
+
+      // Si alguno va marcado urgente, dejamos el color urgente
+      if (s.color === URGENT_COLOR) {
+        last.color = URGENT_COLOR;
+      }
+
+      // Validación: si cualquiera está NO validado, marcar como no validado
+      last.validado = (last.validado ?? false) && (s.validado ?? false);
+    } else {
+      out.push({ ...s });
+    }
+  }
+
+  return out;
+}
+
 // === Mappers fila -> estado local ===
 function mapRowToSlice(r: any): TaskSlice {
   return {
