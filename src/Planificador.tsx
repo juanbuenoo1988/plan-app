@@ -3001,34 +3001,78 @@ const handleDayHeaderDblClick = () => {
             </div>
           </div>
 
-                    <div style={{ marginTop: 12, fontWeight: 700 }}>Listado</div>
-          <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 6 }}>
-            {Object.keys(descs).length === 0 && (
-              <div style={{ color: "#6b7280", fontSize: 13 }}>No hay descripciones todavía.</div>
-            )}
+          <div style={{ marginTop: 12, fontWeight: 700 }}>Listado</div>
 
-            {Object.entries(descs).map(([prod, texto]) => {
-  const prodSlices = slices.filter(s => s.producto === prod);
-  // ✓ solo si TODOS los tramos de ese producto están validados; en cualquier otro caso ✗
-  const estado: boolean = prodSlices.length > 0 && prodSlices.every(s => s.validado === true);
+<div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 6 }}>
+  {Object.keys(descs).length === 0 && (
+    <div style={{ color: "#6b7280", fontSize: 13 }}>No hay descripciones todavía.</div>
+  )}
 
-  return (
-    <div key={`desc-${prod}`} style={descItem}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <span style={{ fontWeight: 700 }}>{prod}</span>
-          <ValidIcon validado={estado} inline /> {/* 👈 en línea */}
+  {Object.entries(descs).map(([prod, texto]) => {
+    // ✓ si TODOS los tramos de ese producto están validados; en otro caso ✗
+    const prodSlices = slices.filter(s => s.producto === prod);
+    const estado: boolean = prodSlices.length > 0 && prodSlices.every(s => s.validado === true);
+
+    return (
+      <div key={`desc-${prod}`} style={descItem}>
+        {/* Cabecera: nombre + icono + botones */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span style={{ fontWeight: 700 }}>{prod}</span>
+            <ValidIcon validado={estado} inline />
+          </div>
+
+          <div style={{ display: "flex", gap: 6 }}>
+            <button
+              style={disabledIf(btnTiny, locked)}
+              disabled={locked}
+              onClick={() => {
+                // reutilizamos tu flujo de edición
+                setEditKey(prod);
+                setDescNombre(prod);
+                setDescTexto(texto || "");
+              }}
+              title="Editar este producto"
+            >
+              ✏️ Editar
+            </button>
+
+            <button
+              style={disabledIf(btnTinyDanger, locked)}
+              disabled={locked}
+              onClick={() => {
+                if (!confirm(`¿Eliminar la descripción de "${prod}"?`)) return;
+                const d = { ...descs };
+                delete d[prod];
+                setDescs(d);
+              }}
+              title="Eliminar la descripción"
+            >
+              🗑 Eliminar
+            </button>
+          </div>
+        </div>
+
+        {/* Texto */}
+        <div
+          style={{
+            fontSize: 12,
+            color: "#374151",
+            whiteSpace: "pre-wrap",
+            marginTop: 4,
+          }}
+        >
+          {texto}
         </div>
       </div>
-
-      <div style={{ fontSize: 12, color: "#374151", whiteSpace: "pre-wrap", marginTop: 4 }}>
-        {texto}
-      </div>
-
-      {/* ...botones... */}
-    </div>
-  );
-})}
+    );
+  })}
 
           </div>
 
