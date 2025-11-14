@@ -775,48 +775,39 @@ function editUrgentSlice(slice: TaskSlice) {
   const h = Math.max(0.5, Math.round(Number(nuevoStr) * 2) / 2);
   if (!isFinite(h)) return;
 
-  // Pregunta de validación (igual que en los bloques normales)
+  // Pregunta de validación
   const validado = preguntarValidacionBloque(slice.validado);
   if (validado === null) return;
 
   const w = workers.find(x => x.id === slice.trabajadorId);
   if (!w) return;
 
-  const startISO = slice.fecha;
-
+  // 1) Refluye fijando la urgencia y recolocando el resto
   setSlices(prev => {
-    // 1) Actualizar TODO el bloque urgente de ese trabajador:
-    //    - este día: nuevas horas
-    //    - todas sus partes: color urgente + estado validado
-    const updated = prev.map(s => {
-      if (s.taskId === slice.taskId && s.trabajadorId === w.id) {
-        const base = {
-          ...s,
-          color: URGENT_COLOR, // aseguramos amarillo
-          validado,
-        };
-        if (s.id === slice.id) {
-          // tramo editado hoy
-          return { ...base, horas: h };
-        }
-        return base;
-      }
-      return s;
-    });
+    // Fijamos SOLO ese tramo (amarillo) con sus nuevas horas
+    const fixed = prev.map(s =>
+      s.id === slice.id
+        ? { ...s, horas: h, color: URGENT_COLOR }
+        : s
+    );
 
-    // 2) Re-empacar al trabajador desde ese día:
-    //    - compactFrom respeta isUrgentSlice → las urgencias quedan clavadas
-    const reflowedForWorker = compactFrom(w, startISO, overrides, updated);
-    const others = updated.filter(s => s.trabajadorId !== w.id);
+    // 2) Re-empaquetar desde ese día, respetando urgencias como "pinned"
+    const reflowedForWorker = compactFrom(w, slice.fecha, overrides, fixed);
+    const others = fixed.filter(s => s.trabajadorId !== w.id);
+    const final = [...others, ...reflowedForWorker];
 
-    return [...others, ...reflowedForWorker];
+    // 3) Marca validación en TODO el bloque al que pertenece esta urgencia
+    return final.map(s =>
+      s.taskId === slice.taskId && s.trabajadorId === w.id
+        ? { ...s, validado }
+        : s
+    );
   });
 
-  // 3) Compactar bloques de ese trabajador (combina trocitos del mismo día)
+  // 4) MUY IMPORTANTE: después de refluír, fusionamos trocitos del mismo
+  // bloque en el mismo día para que se vea como un solo bloque.
   compactarBloques(w.id);
 }
-
-
 
   // === NUEVO: helper seguro para leer del almacenamiento local ===
   function safeLocal<T>(k: string, fallback: T) {
@@ -1599,22 +1590,25 @@ function editOverrideForDay(worker: Worker, date: Date) {
 async function removeSlice(id: string) {
   if (!canEdit) return;
 
-  // 1) Local: quitamos el tramo del estado y recompactamos
+  // Tramo a eliminar
   const victim = slices.find((s) => s.id === id);
+  const w = victim ? workers.find((x) => x.id === victim.trabajadorId) : null;
 
+  // 1) LOCAL: quitamos el tramo del estado y recompactamos
   setSlices((prev) => {
     const filtered = prev.filter((s) => s.id !== id);
-    if (!victim) return filtered;
+    if (!victim || !w) return filtered;
 
-    const w = workers.find((x) => x.id === victim.trabajadorId);
-    if (!w) return filtered;
-
+    // Reempacamos desde el día del tramo eliminado
     const newPlan = compactFrom(w, victim.fecha, overrides, filtered);
     const others = filtered.filter((s) => s.trabajadorId !== w.id);
     return [...others, ...newPlan];
   });
 
-  // 2) Remoto: borramos ese tramo en Supabase (si hay sesión)
+  // 1.b) MUY IMPORTANTE: fusionar trocitos del mismo bloque en el mismo día
+  if (w) compactarBloques(w.id);
+
+  // 2) REMOTO: borramos ese tramo en Supabase (si hay sesión)
   if (userId && victim) {
     try {
       const { error } = await supabase
@@ -1633,7 +1627,7 @@ async function removeSlice(id: string) {
 }
 
 
-  async function removeTask(taskId: string, workerId: string) {
+async function removeTask(taskId: string, workerId: string) {
   if (!canEdit) return;
   if (!confirm("¿Eliminar todo el bloque (producto) para este trabajador?")) return;
 
@@ -1654,10 +1648,14 @@ async function removeSlice(id: string) {
       (m, s) => (s.fecha < m ? s.fecha : m),
       toRemove[0].fecha
     );
+
     const newPlan = compactFrom(w, startF, overrides, filtered);
     const others = filtered.filter((s) => s.trabajadorId !== w.id);
     return [...others, ...newPlan];
   });
+
+  // 1.b) Junta trocitos del mismo bloque en cada día para ese trabajador
+  compactarBloques(workerId);
 
   // 2) Remoto: borramos TODAS las filas de ese bloque para ese trabajador
   if (userId) {
