@@ -816,36 +816,17 @@ setOverrides(obj);
 async function saveAll(uid: string) {
   // --- 0) Preparar filas con tenant_id y user_id ---
   const wRows = workers.map(w => ({
-  id: w.id,
-  nombre: w.nombre,
-  lu_hours: w.jornada.lu,
-  ma_hours: w.jornada.ma,
-  mi_hours: w.jornada.mi,
-  ju_hours: w.jornada.ju,
-  vi_hours: w.jornada.vi,
-  user_id: uid,
-  tenant_id: TENANT_ID,
-  updated_by: uid,  
-}));
-
-useEffect(() => {
-  function onVisible() {
-    if (document.visibilityState !== "visible") return;
-    if (!userId) return;
-    if (!hydratedRef.current) return;
-
-    (async () => {
-      const ok = await ensureSessionOrExplain();
-      if (ok) {
-        try { await saveAll(userId); } catch {}
-      }
-    })();
-  }
-
-  document.addEventListener("visibilitychange", onVisible);
-  return () => document.removeEventListener("visibilitychange", onVisible);
-}, [userId]);
-
+    id: w.id,
+    nombre: w.nombre,
+    lu_hours: w.jornada.lu,
+    ma_hours: w.jornada.ma,
+    mi_hours: w.jornada.mi,
+    ju_hours: w.jornada.ju,
+    vi_hours: w.jornada.vi,
+    user_id: uid,
+    tenant_id: TENANT_ID,
+    updated_by: uid,
+  }));
 
   const sRows = slices.map(s => ({
     id: s.id,
@@ -857,21 +838,21 @@ useEffect(() => {
     color: s.color,
     user_id: uid,
     tenant_id: TENANT_ID,
-    updated_by: uid, 
+    updated_by: uid,
     validado: s.validado ?? false,
   }));
 
-  const oRows = flattenOverrides(overrides).map((r) => ({
-  worker_id: r.worker_id,
-  fecha: r.fecha,
-  extra: r.extra ?? 0,
-  sabado: !!r.sabado,
-  domingo: !!r.domingo,     // NUEVO
-  vacacion: !!r.vacacion,   // NUEVO
-  user_id: uid,
-  tenant_id: TENANT_ID,
-  updated_by: uid,
-}));
+  const oRows = flattenOverrides(overrides).map(r => ({
+    worker_id: r.worker_id,
+    fecha: r.fecha,
+    extra: r.extra ?? 0,
+    sabado: !!r.sabado,
+    domingo: !!r.domingo,
+    vacacion: !!r.vacacion,
+    user_id: uid,
+    tenant_id: TENANT_ID,
+    updated_by: uid,
+  }));
 
   const dRows = Object.entries(descs).map(([nombre, texto]) => ({
     nombre,
@@ -882,101 +863,59 @@ useEffect(() => {
   }));
 
   // --- 1) UPSERT de todo ---
-  {
-    const { error } = await supabase
-      .from("workers")
-      .upsert(wRows, { onConflict: "tenant_id,id" });
-    if (error) throw error;
-  }
-  {
-    const { error } = await supabase
-      .from("product_descs")
-      .upsert(dRows, { onConflict: "tenant_id,nombre" });
-    if (error) throw error;
-  }
-  {
-    const { error } = await supabase
-      .from("task_slices")
-      .upsert(sRows, { onConflict: "tenant_id,id" });
-    if (error) throw error;
-  }
-  {
-    const { error } = await supabase
-      .from("day_overrides")
-      .upsert(oRows, { onConflict: "tenant_id,worker_id,fecha" });
-    if (error) throw error;
-  }
+  { const { error } = await supabase.from("workers").upsert(wRows, { onConflict: "tenant_id,id" }); if (error) throw error; }
+  { const { error } = await supabase.from("product_descs").upsert(dRows, { onConflict: "tenant_id,nombre" }); if (error) throw error; }
+  { const { error } = await supabase.from("task_slices").upsert(sRows, { onConflict: "tenant_id,id" }); if (error) throw error; }
+  { const { error } = await supabase.from("day_overrides").upsert(oRows, { onConflict: "tenant_id,worker_id,fecha" }); if (error) throw error; }
 
   // --- 2) Borrado selectivo ---
-
-  // 2.a) task_slices: borra los IDs que ya no existen en memoria
+  // 2.a) task_slices
   {
     const { data: existing, error } = await supabase
-      .from("task_slices")
-      .select("id")
-      .eq("tenant_id", TENANT_ID);
+      .from("task_slices").select("id").eq("tenant_id", TENANT_ID);
     if (error) throw error;
 
-    const keepSet = new Set(sRows.map((r) => r.id));
-    const toDelete = (existing ?? [])
-      .map((r: { id: string }) => r.id)
-      .filter((id: string) => !keepSet.has(id));
-
+    const keepSet = new Set(sRows.map(r => r.id));
+    const toDelete = (existing ?? []).map((r: { id: string }) => r.id).filter(id => !keepSet.has(id));
     if (toDelete.length > 0) {
       const { error: delErr } = await supabase
-        .from("task_slices")
-        .delete()
-        .in("id", toDelete)
-        .eq("tenant_id", TENANT_ID);
+        .from("task_slices").delete().in("id", toDelete).eq("tenant_id", TENANT_ID);
       if (delErr) throw delErr;
     }
   }
 
-  // 2.b) day_overrides: limpieza atómica con RPC (borra lo que sobra)
-// 2.b) day_overrides: limpieza atómica (si la RPC existe)
-try {
-  const keepKeys = oRows.map((r) => `${r.worker_id}|${r.fecha}`);
-  if (keepKeys.length > 0) {
-    const { error: rpcErr } = await supabase.rpc("delete_overrides_not_in", {
-      tenant: TENANT_ID,
-      keep_keys: keepKeys,
-    });
-    // Si la función no existe o está sin permisos, no reventamos el guardado
-    if (rpcErr) {
-      console.warn("[saveAll] Limpieza RPC omitida:", rpcErr.message || rpcErr);
+  // 2.b) day_overrides (si existe la RPC)
+  try {
+    const keepKeys = oRows.map(r => `${r.worker_id}|${r.fecha}`);
+    if (keepKeys.length > 0) {
+      const { error: rpcErr } = await supabase.rpc("delete_overrides_not_in", {
+        tenant: TENANT_ID,
+        keep_keys: keepKeys,
+      });
+      if (rpcErr) console.warn("[saveAll] Limpieza RPC omitida:", rpcErr.message || rpcErr);
+    }
+  } catch (e: any) {
+    console.warn("[saveAll] Limpieza RPC omitida (catch):", e?.message || e);
+  }
+
+  // 2.c) product_descs
+  {
+    const { data: existing, error } = await supabase
+      .from("product_descs").select("nombre").eq("tenant_id", TENANT_ID);
+    if (error) throw error;
+
+    const keepSet = new Set(dRows.map(r => r.nombre));
+    const toDelete = (existing ?? []).map((r: { nombre: string }) => r.nombre).filter(n => !keepSet.has(n));
+    if (toDelete.length > 0) {
+      const { error: delErr } = await supabase
+        .from("product_descs").delete().in("nombre", toDelete).eq("tenant_id", TENANT_ID);
+      if (delErr) throw delErr;
     }
   }
-} catch (e: any) {
-  console.warn("[saveAll] Limpieza RPC omitida (catch):", e?.message || e);
-}
-
-// 2.c) product_descs: borra los nombres que ya no existen en memoria
-{
-  const { data: existing, error } = await supabase
-    .from("product_descs")
-    .select("nombre")
-    .eq("tenant_id", TENANT_ID);
-
-  if (error) throw error;
-
-  // dRows ya fue construido arriba a partir de 'descs'
-  const keepSet = new Set(dRows.map((r) => r.nombre));
-  const toDelete = (existing ?? [])
-    .map((r: { nombre: string }) => r.nombre)
-    .filter((nombre: string) => !keepSet.has(nombre));
-
-  if (toDelete.length > 0) {
-    const { error: delErr } = await supabase
-      .from("product_descs")
-      .delete()
-      .in("nombre", toDelete)
-      .eq("tenant_id", TENANT_ID);
-    if (delErr) throw delErr;
-  }
-}
 
   return true;
 }
+
 
 useEffect(() => {
   let mounted = true;
@@ -1102,6 +1041,24 @@ useEffect(() => {
   return () => clearInterval(id);
 }, []);
 
+// Guardado al volver a la pestaña (si hay sesión activa)
+useEffect(() => {
+  function onVisible() {
+    if (document.visibilityState !== "visible") return;
+    if (!userId) return;
+    if (!hydratedRef.current) return;
+
+    (async () => {
+      const ok = await ensureSessionOrExplain();
+      if (ok) {
+        try { await saveAll(userId); } catch {}
+      }
+    })();
+  }
+
+  document.addEventListener("visibilitychange", onVisible);
+  return () => document.removeEventListener("visibilitychange", onVisible);
+}, [userId]);
 
 
 function isOwnChange(
@@ -3142,18 +3099,14 @@ const handleDayHeaderDblClick = () => {
             </button>
 
             <button
-              style={disabledIf(btnTinyDanger, locked)}
-              disabled={locked}
-              onClick={() => {
-                if (!confirm(`¿Eliminar la descripción de "${prod}"?`)) return;
-                const d = { ...descs };
-                delete d[prod];
-                setDescs(d);
-              }}
-              title="Eliminar la descripción"
-            >
-              🗑 Eliminar
-            </button>
+  style={disabledIf(btnTinyDanger, locked)}
+  disabled={locked}
+  onClick={() => deleteDesc(prod)}     // deleteDesc ya hace confirm y borra en Supabase + estado
+  title="Eliminar la descripción"
+>
+  🗑 Eliminar
+</button>
+            
           </div>
         </div>
 
