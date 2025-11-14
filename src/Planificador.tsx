@@ -95,11 +95,11 @@ type TaskSlice = {
   id: string;
   taskId: string;
   producto: string;
-  fecha: string;        // ISO
+  fecha: string;     // YYYY-MM-DD
   horas: number;
   trabajadorId: string;
   color: string;
-  validado?: boolean;   // ⬅️ NUEVO
+  validado?: boolean;
 };
 
 type NewTaskForm = {
@@ -744,19 +744,25 @@ function editUrgentSlice(slice: TaskSlice) {
 }
 
       // 2) Bloques / Slices
-      // 2) Bloques / Slices
-const { data: sData, error: sErr } = await supabase
-  .from("task_slices")
-  .select("*")
-  .eq("tenant_id", TENANT_ID);
+      const { data: sData, error: sErr } = await supabase
+        .from("task_slices")
+        .select("*")
+        .eq("tenant_id", TENANT_ID);
 
-if (sErr) console.error("task_slices error:", sErr);
-if (sData) {
-  setSlices(
-    sData.map((r: any) => mapRowToSlice(r))   // ⬅️ usamos el mapper de abajo
-  );
-}
-
+      if (sErr) console.error("task_slices error:", sErr);
+      if (sData) {
+        setSlices(
+          sData.map((r: any) => ({
+            id: r.id,
+            taskId: r.task_id,
+            producto: r.producto,
+            fecha: r.fecha,
+            horas: Number(r.horas),
+            trabajadorId: r.trabajador_id,
+            color: r.color,
+          }))
+        );
+      }
 
       // 3) Overrides (extras/sábado)
       const { data: oData, error: oErr } = await supabase
@@ -826,10 +832,10 @@ async function saveAll(uid: string) {
     horas: s.horas,
     trabajador_id: s.trabajadorId,
     color: s.color,
+    validado: !!s.validado,
     user_id: uid,
     tenant_id: TENANT_ID,
     updated_by: uid, 
-    validado: s.validado ?? false,
   }));
 
   const oRows = flattenOverrides(overrides).map((r) => ({
@@ -2293,7 +2299,7 @@ function mapRowToSlice(r: any): TaskSlice {
     horas: Number(r.horas),
     trabajadorId: r.trabajador_id,
     color: r.color,
-    validado: r.validado ?? false,   // ⬅️ aquí lo leemos
+    validado: !!r.validado,
   };
 }
 
@@ -2771,66 +2777,69 @@ const handleDayHeaderDblClick = () => {
         /^⚠️/.test(s.producto) ||
         /urgenc/i.test(s.producto);
 
-     return (
-  <div
-    key={s.id}
-    draggable={canEdit}
-    onDragStart={(e) => onDragStart(e, s.id)}
-    onDoubleClick={(e) => {
-      e.stopPropagation();
-      if (!canEdit) return;
+      return (
+        <div
+          key={s.id}
+          draggable={canEdit}
+          onDragStart={(e) => onDragStart(e, s.id)}
+          onDoubleClick={(e) => {
+  e.stopPropagation();
+  if (!canEdit) return;
 
-      const isUrgent =
-        s.color === URGENT_COLOR ||
-        /^⚠️/.test(s.producto) ||
-        /urgenc/i.test(s.producto);
+  const isUrgent =
+    s.color === URGENT_COLOR ||
+    /^⚠️/.test(s.producto) ||
+    /urgenc/i.test(s.producto);
 
-      if (isUrgent) {
-        editUrgentSlice(s);
-      } else {
-        editBlockTotalFromSlice(s);
-      }
-    }}
-    title={`${s.producto} — ${s.horas}h${desc ? "\n" + desc : ""}`}
-    style={{
-      ...blockStyle,
-      background: isUrgent ? URGENT_COLOR : s.color,
-      width: Math.max(18, s.horas * PX_PER_HOUR),
-      position: "relative",
-    }}
-  >
-        {canEdit && (
-      <>
-        <button
-          onClick={(e) => { e.stopPropagation(); removeSlice(s.id); }}
-          title="Eliminar tramo"
-          style={deleteBtn}
+  if (isUrgent) {
+    editUrgentSlice(s);   // ← no replanifica ni cambia de día
+  } else {
+    editBlockTotalFromSlice(s); // comportamiento normal
+  }
+}}
+
+          title={`${s.producto} — ${s.horas}h${desc ? "\n" + desc : ""}`}
+          style={{
+            ...blockStyle,
+            background: isUrgent ? URGENT_COLOR : s.color,
+            width: Math.max(18, s.horas * PX_PER_HOUR),
+            position: "relative",
+          }}
         >
-          ✖
-        </button>
-        <button
-          onClick={(e) => { e.stopPropagation(); removeTask(s.taskId, s.trabajadorId); }}
-          title="Eliminar bloque completo"
-          style={deleteBtnAlt}
-        >
-          🗑
-        </button>
-      </>
-    )}
+          {canEdit && (
+            <>
+              <button
+                onClick={(e) => { e.stopPropagation(); removeSlice(s.id); }}
+                title="Eliminar tramo"
+                style={deleteBtn}
+              >
+                ✖
+              </button>
+              <button
+                onClick={(e) => { e.stopPropagation(); removeTask(s.taskId, s.trabajadorId); }}
+                title="Eliminar bloque completo"
+                style={deleteBtnAlt}
+              >
+                🗑
+              </button>
+            </>
+          )}
 
-   <ValidIcon validado={s.validado} />
+                  <div style={blockTop}>
+            {/* Izquierda: nombre + icono de validado */}
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 4 }}>
+              <span style={productFull}>{s.producto}</span>
+              <ValidIcon validado={s.validado} />
+            </div>
 
-    <div style={blockTop}>
-  <span style={productFull}>
-        {s.producto}
-  </span>
-  <span>{s.horas}h</span>
-    </div>
+            {/* Derecha: horas */}
+            <span>{s.horas}h</span>
+          </div>
+  
 
-    {desc ? <div style={miniHint}>ⓘ</div> : null}
-  </div>
-);
-
+          {desc ? <div style={miniHint}>ⓘ</div> : null}
+        </div>
+      );
     })
   )}
 </div>
@@ -3008,28 +3017,69 @@ const handleDayHeaderDblClick = () => {
             )}
 
             {Object.entries(descs).map(([prod, texto]) => {
-  const prodSlices = slices.filter(s => s.producto === prod);
-  // ✓ solo si TODOS los tramos de ese producto están validados; en cualquier otro caso ✗
-  const estado: boolean = prodSlices.length > 0 && prodSlices.every(s => s.validado === true);
+              // buscamos todos los bloques que usan este producto
+              const prodSlices = slices.filter(s => s.producto === prod);
 
-  return (
-    <div key={`desc-${prod}`} style={descItem}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <span style={{ fontWeight: 700 }}>{prod}</span>
-          <ValidIcon validado={estado} inline /> {/* 👈 en línea */}
-        </div>
-      </div>
+              // estado:
+              //   true  → todos validados
+              //   false → ninguno validado
+              //   undefined → mezcla (no mostramos icono)
+              let estado: boolean | undefined;
+              if (prodSlices.length > 0) {
+                const allValid = prodSlices.every(s => s.validado === true);
+                const noneValid = prodSlices.every(s => s.validado !== true);
+                if (allValid) estado = true;
+                else if (noneValid) estado = false;
+              }
 
-      <div style={{ fontSize: 12, color: "#374151", whiteSpace: "pre-wrap", marginTop: 4 }}>
-        {texto}
-      </div>
+              return (
+                <div key={`desc-${prod}`} style={descItem}>
+                  {/* Cabecera: nombre + icono */}
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center" }}>
+                      <span style={{ fontWeight: 700 }}>{prod}</span>
+                      <ValidIcon validado={estado} />
+                    </div>
+                  </div>
 
-      {/* ...botones... */}
-    </div>
-  );
-})}
+                  {/* Texto de descripción */}
+                  <div
+                    style={{
+                      fontSize: 12,
+                      color: "#374151",
+                      whiteSpace: "pre-wrap",
+                      marginTop: 4,
+                    }}
+                  >
+                    {texto}
+                  </div>
 
+                  {/* Botones */}
+                  <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+                    <button
+                      style={disabledIf(btnTiny, locked)}
+                      disabled={locked}
+                      onClick={() => editDesc(prod)}
+                    >
+                      ✏️ Editar
+                    </button>
+                    <button
+                      style={disabledIf(btnTinyDanger, locked)}
+                      disabled={locked}
+                      onClick={() => deleteDesc(prod)}
+                    >
+                      🗑 Eliminar
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
           </div>
 
           {/* Editor de bloques por producto */}
@@ -3247,34 +3297,23 @@ function DayCapacityBadge({ capacidad, usado }: { capacidad: number; usado: numb
   );
 }
 
-function ValidIcon({
-  validado,
-  inline = false, // inline = para la columna derecha
-}: {
-  validado?: boolean;
-  inline?: boolean;
-}) {
-  // si viene undefined/null mostramos "no validado"
-  const isOk = validado === true;
+function ValidIcon({ validado }: { validado?: boolean }) {
+  // Si aún no se ha marcado nada, no mostramos icono
+  if (typeof validado !== "boolean") return null;
 
-  const base: React.CSSProperties = {
-    ...validIconBox,
-    color: isOk ? "#16a34a" : "#dc2626",
-  };
+  const symbol = validado ? "✓" : "✗";
+  const color = validado ? "#16a34a" : "#b91c1c";
 
-  const style: React.CSSProperties = inline
-    ? base // en línea (sidebar)
-    : {
-        // flotante dentro del bloque, pegado a la esquina sup. izquierda
-        ...base,
-        position: "absolute",
-        top: 4,
-        left: 4,
-        marginLeft: 0,
-        zIndex: 30,
-      };
-
-  return <span style={style}>{isOk ? "✓" : "✗"}</span>;
+  return (
+    <span
+      style={{
+        ...validIconBox,
+        color,
+      }}
+    >
+      {symbol}
+    </span>
+  );
 }
 
 
@@ -3326,15 +3365,14 @@ const validIconBox: React.CSSProperties = {
   display: "inline-flex",
   alignItems: "center",
   justifyContent: "center",
-  minWidth: 16,
-  height: 16,
-  lineHeight: "16px",
-  padding: "0 3px",
+  minWidth: 18,
+  height: 18,
+  padding: "0 4px",
   borderRadius: 6,
   background: "#ffffff",
   border: "1px solid rgba(0,0,0,.2)",
-  marginLeft: 6,           // se ignora en modo flotante
-  fontSize: 11,
+  marginLeft: 6,
+  fontSize: 12,
   fontWeight: 700,
 };
 
@@ -3443,11 +3481,10 @@ const weekCol: React.CSSProperties = {
 };
 
 const horizontalLane: React.CSSProperties = { display: "flex", gap: 6, overflowX: "auto", alignItems: "flex-start" };
-
 const blockStyle: React.CSSProperties = {
   color: "#fff",
   borderRadius: 8,
-  padding: "6px 8px 6px 26px", // 👈 antes era "6px 8px"; reservamos 26px a la izquierda
+  padding: "6px 8px",
   fontSize: 12,
   minHeight: 34,
   display: "flex",
@@ -3456,27 +3493,18 @@ const blockStyle: React.CSSProperties = {
   cursor: "grab",
   boxShadow: "0 1px 2px rgba(0,0,0,.15)",
 };
-
 const blockTop: React.CSSProperties = { display: "flex", justifyContent: "space-between", gap: 8, alignItems: "flex-start" };
 
-const validIconWrapper: React.CSSProperties = {
-  position: "absolute",
-  bottom: 4,
-  left: 4,
-  zIndex: 20,          // por encima del resto
-};
-
 const statusBadge: React.CSSProperties = {
-  minWidth: 22,
-  height: 22,
-  padding: "0 4px",
+  marginLeft: 6,
+  padding: "1px 4px",
   borderRadius: 6,
-  background: "#ffffff",
+  background: "#ffffff", // fondo blanco para destacar
+  fontSize: 11,
+  fontWeight: 700,
   display: "inline-flex",
   alignItems: "center",
   justifyContent: "center",
-  fontSize: 12,
-  fontWeight: 700,
 };
 
 const productFull: React.CSSProperties = {
@@ -3488,9 +3516,6 @@ const productFull: React.CSSProperties = {
   lineHeight: 1.1,
   marginRight: 8,
   maxWidth: "100%",
-  display: "inline-flex",
-  alignItems: "center",
-  gap: 6,
 };
 // === Botones ===
 const btnBase: React.CSSProperties = {
