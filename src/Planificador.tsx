@@ -728,44 +728,38 @@ function editUrgentSlice(slice: TaskSlice) {
   }
 
   // CARGA TODO DE SUPABASE PARA ESTE USUARIO
-  async function loadAll(_uid: string) {
-    try {
-      // 1) Trabajadores
-      const { data: wData} = await supabase
-        .from("workers")
-        .select("*")
-        .eq("tenant_id", TENANT_ID)
-        .order("nombre", { ascending: true });
+// CARGA TODO DE SUPABASE PARA ESTE USUARIO
+async function loadAll(_uid: string) {
+  try {
+    /* 1) Trabajadores */
+    const { data: wData, error: wErr } = await supabase
+      .from("workers")
+      .select("*")
+      .eq("tenant_id", TENANT_ID)
+      .order("nombre", { ascending: true });
 
-      if (Array.isArray(wData) && wData.length > 0) {
-  setWorkers(
-    wData.map((r: any) => ({
-      id: r.id,
-      nombre: r.nombre,
-      jornada: {
-        lu: Number(r.lu_hours ?? 8.5),
-        ma: Number(r.ma_hours ?? 8.5),
-        mi: Number(r.mi_hours ?? 8.5),
-        ju: Number(r.ju_hours ?? 8.5),
-        vi: Number(r.vi_hours ?? 6),
-      },
-    }))
-  );
-}
+    if (wErr) {
+      console.error("workers error:", wErr);
+    }
 
-      // 2) Bloques / Slices
-      // 2) Bloques / Slices
-const { data: sData, error: sErr } = await supabase
-  .from("task_slices")
-  .select("*")
-  .eq("tenant_id", TENANT_ID);
+    if (Array.isArray(wData) && wData.length > 0) {
+      setWorkers(
+        wData.map((r: any) => mapRowToWorker(r))
+      );
+    }
 
-if (sErr) console.error("task_slices error:", sErr);
+    /* 2) Slices / bloques */
+    const { data: sData, error: sErr } = await supabase
+      .from("task_slices")
+      .select("*")
+      .eq("tenant_id", TENANT_ID);
+
+    if (sErr) console.error("task_slices error:", sErr);
+
     if (sData) {
-      // 2.1 Pasamos filas de BD a TaskSlice
-      const rawSlices = (sData as any[]).map((r) => mapRowToSlice(r));
+      const rawSlices: TaskSlice[] = (sData as any[]).map((r) => mapRowToSlice(r));
 
-      // 2.2 Agrupamos por (trabajadorId, taskId, fecha)
+      // 🔧 IMPORTANTE: deduplicar por (trabajadorId, taskId, fecha)
       const byKey = new Map<string, TaskSlice>();
 
       for (const s of rawSlices) {
@@ -773,21 +767,18 @@ if (sErr) console.error("task_slices error:", sErr);
         const existing = byKey.get(key);
 
         if (!existing) {
-          // Primera vez que vemos esa combinación → la guardamos tal cual
           byKey.set(key, { ...s });
         } else {
-          // Si ya hay una, nos quedamos con la que tenga MÁS horas (por si has editado).
+          // Nos quedamos con el que tenga MÁS horas
           if (s.horas > existing.horas) {
             byKey.set(key, { ...s });
           }
-
-          // Si cualquiera de las dos está validada, marcamos validado = true
+          // Si cualquiera está validado, el resultado está validado
           const cur = byKey.get(key)!;
           cur.validado = (cur.validado || s.validado) as boolean;
         }
       }
 
-      // 2.3 Convertimos a array y ordenamos un poco por fecha
       const deduped = Array.from(byKey.values()).sort((a, b) =>
         a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : 0
       );
@@ -795,45 +786,46 @@ if (sErr) console.error("task_slices error:", sErr);
       setSlices(deduped);
     }
 
-      // 3) Overrides (extras/sábado)
-      const { data: oData, error: oErr } = await supabase
-        .from("day_overrides")
-        .select("*")
-        .eq("tenant_id", TENANT_ID);
+    /* 3) Overrides */
+    const { data: oData, error: oErr } = await supabase
+      .from("day_overrides")
+      .select("*")
+      .eq("tenant_id", TENANT_ID);
 
-      if (oErr) console.error("day_overrides error:", oErr);
-      if (oData) {
-        const obj: Record<string, Record<string, { extra?: number; sabado?: boolean; domingo?: boolean; vacacion?: boolean }>> = {};
-for (const r of oData as any[]) {
-  if (!obj[r.worker_id]) obj[r.worker_id] = {};
-  obj[r.worker_id][r.fecha] = {
-    extra: Number(r.extra ?? 0),
-    sabado: !!r.sabado,
-    domingo: !!r.domingo,    // ⬅️ nuevo
-    vacacion: !!r.vacacion,  // ⬅️ nuevo
-  };
-}
-setOverrides(obj);
-
+    if (oErr) console.error("day_overrides error:", oErr);
+    if (oData) {
+      const obj: OverridesState = {};
+      for (const r of oData as any[]) {
+        if (!obj[r.worker_id]) obj[r.worker_id] = {};
+        obj[r.worker_id][r.fecha] = {
+          extra: Number(r.extra ?? 0),
+          sabado: !!r.sabado,
+          domingo: !!r.domingo,
+          vacacion: !!r.vacacion,
+        };
       }
-
-      const { data: dData, error: dErr } = await supabase
-        .from("product_descs")
-        .select("*")
-        .eq("tenant_id", TENANT_ID);
-
-      if (dErr) console.error("product_descs error:", dErr);
-      if (dData) {
-        const map: Record<string, string> = {};
-        for (const r of dData as any[]) {
-          map[r.nombre] = r.texto ?? "";
-        }
-        setDescs(map);
-      }
-    } catch (e) {
-      console.error("loadAll() error:", e);
+      setOverrides(obj);
     }
+
+    /* 4) Descripciones */
+    const { data: dData, error: dErr } = await supabase
+      .from("product_descs")
+      .select("*")
+      .eq("tenant_id", TENANT_ID);
+
+    if (dErr) console.error("product_descs error:", dErr);
+    if (dData) {
+      const map: Record<string, string> = {};
+      for (const r of dData as any[]) {
+        map[r.nombre] = r.texto ?? "";
+      }
+      setDescs(map);
+    }
+  } catch (e) {
+    console.error("loadAll() error:", e);
   }
+}
+
  
   /**
  * Guarda TODO el estado en Supabase de forma segura:
@@ -925,62 +917,12 @@ async function saveAll(uid: string) {
 }
 
 
+// Carga inicial + reacción a login/logout
 useEffect(() => {
-  let mounted = true;
+  let active = true;
 
-async function init() {
-  hydratedRef.current = false;
-
-  try {
-    const { data } = await supabase.auth.getSession();
-    const uid  = data.session?.user?.id    ?? null;
-    const mail = data.session?.user?.email ?? null;
-
-    if (!mounted) return;
-
-    setUserId(uid);
-    setUserEmail(mail);
-
-    if (uid) {
-      setLoadingCloud(true);
-      try {
-        await seedIfEmpty(uid);
-        await loadAll(uid);
-      } catch (e) {
-        console.error("init(): carga desde nube falló; uso copia local ->", e);
-        const snap = safeLocal<any>(STORAGE_KEY, null as any);
-        if (snap && mounted) {
-          setWorkers(snap.workers ?? []);
-          setSlices(snap.slices ?? []);
-          setOverrides(snap.overrides ?? {});
-          setDescs(snap.descs ?? {});
-        }
-      } finally {
-        if (mounted) setLoadingCloud(false);
-      }
-    } else {
-      const snap = safeLocal<any>(STORAGE_KEY, null as any);
-      if (snap && mounted) {
-        setWorkers(snap.workers ?? []);
-        setSlices(snap.slices ?? []);
-        setOverrides(snap.overrides ?? {});
-        setDescs(snap.descs ?? {});
-      }
-    }
-  } finally {
-    hydratedRef.current = true;
-  }
-}
-
-
-  init();
-
-// 3) Suscripción a cambios de sesión (login / logout)
-// IMPORTANTE: no usar async aquí ni llamar a supabase.* directamente.
-// Si hace falta tocar Supabase, lo hacemos dentro de un setTimeout.
-const { data: sub } = supabase.auth.onAuthStateChange(
-  (event: AuthChangeEvent, session: Session | null) => {
-    if (!mounted) return;
+  async function loadForSession(session: Session | null) {
+    hydratedRef.current = false;
 
     const uid  = session?.user?.id    ?? null;
     const mail = session?.user?.email ?? null;
@@ -988,10 +930,10 @@ const { data: sub } = supabase.auth.onAuthStateChange(
     setUserId(uid);
     setUserEmail(mail);
 
-    // Si el usuario se ha desconectado (o ya no hay sesión),
-    // volvemos a la copia local.
-    if (event === "SIGNED_OUT" || !uid) {
+    // Sin sesión → trabajar sólo con copia local
+    if (!uid) {
       const snap = safeLocal<any>(STORAGE_KEY, null as any);
+      if (!active) return;
       setWorkers(snap?.workers ?? []);
       setSlices(snap?.slices ?? []);
       setOverrides(snap?.overrides ?? {});
@@ -1001,39 +943,46 @@ const { data: sub } = supabase.auth.onAuthStateChange(
       return;
     }
 
-    // Si en otra pestaña se ha hecho login / recuperado sesión,
-    // recargamos desde la nube, pero OJO: fuera del callback.
-    if (event === "SIGNED_IN" || event === "INITIAL_SESSION") {
-      hydratedRef.current = false;
-      setLoadingCloud(true);
-
-      setTimeout(async () => {
-        try {
-          await seedIfEmpty(uid);
-          await loadAll(uid);
-        } catch (e) {
-          console.error("onAuthStateChange(): nube falló; uso copia local ->", e);
-          const snap = safeLocal<any>(STORAGE_KEY, null as any);
-          setWorkers(snap?.workers ?? []);
-          setSlices(snap?.slices ?? []);
-          setOverrides(snap?.overrides ?? {});
-          setDescs(snap?.descs ?? {});
-        } finally {
-          if (!mounted) return;
-          setLoadingCloud(false);
-          hydratedRef.current = true;
-        }
-      }, 0);
+    // Con sesión → intentamos nube, si falla usamos local
+    setLoadingCloud(true);
+    try {
+      await seedIfEmpty(uid);
+      await loadAll(uid);
+    } catch (e) {
+      console.error("Carga desde nube falló; uso copia local ->", e);
+      const snap = safeLocal<any>(STORAGE_KEY, null as any);
+      if (!active) return;
+      setWorkers(snap?.workers ?? []);
+      setSlices(snap?.slices ?? []);
+      setOverrides(snap?.overrides ?? {});
+      setDescs(snap?.descs ?? {});
+    } finally {
+      if (!active) return;
+      setLoadingCloud(false);
+      hydratedRef.current = true;
     }
   }
-);
 
+  // 1) Primera carga
+  supabase.auth.getSession().then(({ data }) => {
+    if (!active) return;
+    loadForSession(data.session ?? null);
+  });
+
+  // 2) Reaccionar a login/logout desde otras pestañas, etc.
+  const { data: sub } = supabase.auth.onAuthStateChange(
+    (_event: AuthChangeEvent, session: Session | null) => {
+      if (!active) return;
+      loadForSession(session);
+    }
+  );
 
   return () => {
-    mounted = false;
+    active = false;
     sub?.subscription?.unsubscribe();
   };
-}, []); // ← sin dependencias: solo al montar
+}, []);
+
 
 
 
@@ -1352,6 +1301,32 @@ useEffect(() => {
       setSendingLink(false);
     }
   }
+
+async function manualSave() {
+  if (!userId) {
+    alert("No hay sesión activa. Inicia sesión para guardar en la nube.");
+    return;
+  }
+
+  setSavingCloud(true);
+  setSaveError(null);
+
+  const snapshot = JSON.stringify({ workers, slices, overrides, descs });
+
+  try {
+    await guardedSaveAll(userId);
+    lastSavedRef.current = snapshot;
+    alert("Guardado en la nube correctamente.");
+  } catch (e: any) {
+    console.error("Guardado manual falló:", e);
+    const msg = e?.message ?? String(e);
+    setSaveError(msg);
+    alert("Error al guardar en la nube:\n\n" + msg);
+  } finally {
+    setSavingCloud(false);
+  }
+}
+
 
   async function logout() {
     await supabase.auth.signOut();
@@ -2605,6 +2580,19 @@ function mergeOverrideRow(
       {savingCloud && <span style={{ color: "#a7f3d0" }}>Guardando…</span>}
       {saveError && <span style={{ color: "#fecaca" }} title={saveError}>⚠ Error al guardar</span>}
     </div>
+
+{/* Botón de guardado manual */}
+{userId && (
+  <button
+    style={btnLabeled}
+    className="no-print"
+    onClick={manualSave}
+    title="Forzar guardado inmediato en la nube"
+  >
+    💾 Guardar ahora
+  </button>
+)}
+
 
     {/* ——— separador visual ——— */}
     <div style={{ width: 1, height: 22, background: "rgba(255,255,255,.25)", margin: "0 6px" }} />
