@@ -983,42 +983,10 @@ useEffect(() => {
   };
 }, []);
 
-
-// Al volver a la pestaña: RECARGO desde la nube en vez de guardar mi copia local
+// 🔕 Desactivado: ya NO recargamos automáticamente al volver a la pestaña
 useEffect(() => {
-  if (!userId) return;
-
-  function onVisible() {
-    if (document.visibilityState !== "visible") return;
-    if (!hydratedRef.current) return;
-
-    (async () => {
-      try {
-        // mientras recargo, desactivo el autosave para no mezclar cosas
-        hydratedRef.current = false;
-        setLoadingCloud(true);
-
-      // por si acaso, asegura datos base (no pasa nada si ya existen)
-if (!userId) {
-  console.warn("[visibilitychange] No hay userId todavía, no recargo desde Supabase.");
-  return; // salimos para no llamar a las funciones con null
-}
-
-await seedIfEmpty(userId);
-
-// carga el estado REAL desde Supabase
-await loadAll(userId);
-      } catch (e) {
-        console.error("Error recargando al volver a la pestaña:", e);
-      } finally {
-        setLoadingCloud(false);
-        hydratedRef.current = true;
-      }
-    })();
-  }
-
-  document.addEventListener("visibilitychange", onVisible);
-  return () => document.removeEventListener("visibilitychange", onVisible);
+  // Lo dejamos vacío a propósito para que el calendario
+  // no se reseteé solo al cambiar de pestaña.
 }, [userId]);
 
 
@@ -1033,19 +1001,18 @@ function isOwnChange(
 
   // AUTOSAVE: guarda en Supabase cuando cambian datos (con debounce)
   
-  useEffect(() => {
+// AUTOSAVE A SUPABASE DESACTIVADO: solo guardamos cuando pulses el botón "Guardar ahora"
+/*
+useEffect(() => {
   if (!userId) return;               // sin sesión, no guardes nube
   if (loadingCloud) return;          // si está cargando, espera
   if (!hydratedRef.current) return;
-   if (applyingRemoteRef.current) return;  // no guardar hasta hidratar
+  if (applyingRemoteRef.current) return;  // no guardar hasta hidratar
 
   const snapshot = JSON.stringify({ workers, slices, overrides, descs });
   if (snapshot === lastSavedRef.current) return;
 
-  // Limpia cualquier temporizador anterior
   if (saveTimer.current) window.clearTimeout(saveTimer.current);
-
-  // Flag para evitar setState tras cleanup
   let active = true;
 
   saveTimer.current = window.setTimeout(async () => {
@@ -1076,6 +1043,8 @@ function isOwnChange(
     }
   };
 }, [workers, slices, overrides, descs, userId, loadingCloud]);
+*/
+
 
 // 🔁 Realtime: un solo canal con handlers + estado del badge
 useEffect(() => {
