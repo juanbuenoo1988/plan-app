@@ -2799,6 +2799,7 @@ const handleDayHeaderDblClick = () => {
       position: "relative",
     }}
   >
+    <ValidIcon validado={s.validado} />
     {canEdit && (
       <>
         <button
@@ -2822,8 +2823,7 @@ const handleDayHeaderDblClick = () => {
 
     <div style={blockTop}>
   <span style={productFull}>
-    <ValidIcon validado={s.validado} />
-    {s.producto}
+        {s.producto}
   </span>
   <span>{s.horas}h</span>
     </div>
@@ -3288,10 +3288,21 @@ function DayCapacityBadge({ capacidad, usado }: { capacidad: number; usado: numb
   );
 }
 
-function ValidIcon({ validado }: { validado?: boolean }) {
+function ValidIcon({ validado, inline = false }: { validado?: boolean; inline?: boolean }) {
   if (validado == null) return null;
+
+  const style: React.CSSProperties = inline
+    ? validIconBox // en línea (sidebar)
+    : {            // flotando dentro del bloque
+        ...validIconBox,
+        position: "absolute",
+        left: 6,
+        top: 22,     // debajo de los botoncitos de borrar
+        zIndex: 20,
+      };
+
   return (
-    <span style={{ ...validIconBox, color: validado ? "#16a34a" : "#dc2626" }}>
+    <span style={{ ...style, color: validado ? "#16a34a" : "#dc2626" }}>
       {validado ? "✓" : "✗"}
     </span>
   );
@@ -3466,7 +3477,8 @@ const horizontalLane: React.CSSProperties = { display: "flex", gap: 6, overflowX
 const blockStyle: React.CSSProperties = {
   color: "#fff",
   borderRadius: 8,
-  padding: "6px 8px",
+  // 👇 reserva 30px a la izquierda para el icono flotante
+  padding: "6px 8px 6px 30px",
   fontSize: 12,
   minHeight: 34,
   display: "flex",
@@ -3475,6 +3487,7 @@ const blockStyle: React.CSSProperties = {
   cursor: "grab",
   boxShadow: "0 1px 2px rgba(0,0,0,.15)",
 };
+
 const blockTop: React.CSSProperties = { display: "flex", justifyContent: "space-between", gap: 8, alignItems: "flex-start" };
 
 const validIconWrapper: React.CSSProperties = {
