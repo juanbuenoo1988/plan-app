@@ -1722,11 +1722,7 @@ function addManualHere(worker: Worker, date: Date) {
   let dayISO = startISO;
   let guard = 0;
 
-  function localNewId() {
-    return (crypto as any)?.randomUUID
-      ? (crypto as any).randomUUID()
-      : "S" + Math.random().toString(36).slice(2, 10);
-  }
+  
 
   while (queue.length > 0 && guard < 365) {
     guard++;
@@ -1739,7 +1735,7 @@ function addManualHere(worker: Worker, date: Date) {
 
         if (take > 1e-9) {
           rebuilt.push({
-            id: localNewId(),
+            id: newId(),
             taskId: head.taskId,
             producto: head.producto,
             fecha: dayISO,
@@ -1906,7 +1902,12 @@ function dayKeyOf(d: Date) {
  * - Fija el tramo del día seleccionado a newHoras (mín 0.5 en pasos de 0.5)
  * - Recalcula el resto del bloque a partir del día siguiente, empujando/ajustando como siempre.
  */
-function updateBlockHoursForDay(taskId: string, trabajadorId: string, diaISO: string, newHoras: number) {
+function updateBlockHoursForDay(
+  taskId: string,
+  trabajadorId: string,
+  diaISO: string,
+  newHoras: number
+) {
   if (!canEdit) return;
 
   const w = workers.find(x => x.id === trabajadorId);
@@ -1917,7 +1918,9 @@ function updateBlockHoursForDay(taskId: string, trabajadorId: string, diaISO: st
 
   setSlices(prev => {
     // Todas las partes del bloque de ese trabajador
-    const parts = prev.filter(s => s.taskId === taskId && s.trabajadorId === trabajadorId);
+    const parts = prev.filter(
+      s => s.taskId === taskId && s.trabajadorId === trabajadorId
+    );
     if (parts.length === 0) return prev;
 
     // Slice del día elegido
@@ -1931,16 +1934,31 @@ function updateBlockHoursForDay(taskId: string, trabajadorId: string, diaISO: st
       .reduce((a, s) => a + s.horas, 0);
 
     // Horas restantes a partir del día siguiente:
-    const remaining = Math.max(0, Math.round((totalAntes - (sumPrevDays + safeHoras)) * 2) / 2);
+    const remaining = Math.max(
+      0,
+      Math.round((totalAntes - (sumPrevDays + safeHoras)) * 2) / 2
+    );
 
     // 1) Quitamos todas las slices del bloque desde "hoy" inclusive
-    const sinBloqueDesdeHoy = prev.filter(s => !(s.taskId === taskId && s.trabajadorId === trabajadorId && s.fecha >= diaISO));
+    const sinBloqueDesdeHoy = prev.filter(
+      s =>
+        !(
+          s.taskId === taskId &&
+          s.trabajadorId === trabajadorId &&
+          s.fecha >= diaISO
+        )
+    );
 
     // 2) Insertamos la slice fija de HOY con las horas reales
-    const fixedToday = { ...today, horas: safeHoras, fecha: diaISO };
+    const fixedToday: TaskSlice = {
+      ...today,
+      horas: safeHoras,
+      fecha: diaISO,
+    };
 
     // 3) Replanificar el resto desde el día siguiente
-    let nuevos: typeof prev = [fixedToday];
+    const nuevos: TaskSlice[] = [fixedToday];
+
     if (remaining > 0) {
       const nextDay = addDays(fromLocalISO(diaISO), 1);
 
@@ -1952,41 +1970,62 @@ function updateBlockHoursForDay(taskId: string, trabajadorId: string, diaISO: st
         base,
         sinBloqueDesdeHoy, // planificar contra el resto de slices
         overrides
-      ).map(s => ({ ...s, taskId: today.taskId, color: colorFromId(today.taskId) }));
+      ).map(s => ({
+        ...s,
+        taskId: today.taskId,
+        color: colorFromId(today.taskId),
+        // mantenemos el estado de validación del bloque
+        validado: today.validado ?? false,
+      }));
 
-      nuevos = [fixedToday, ...replan];
+      nuevos.push(...replan);
     }
 
-    // Resultado final de slices
-    const result = [...sinBloqueDesdeHoy, ...nuevos];
+    // Plan intermedio (antes de reordenar todo el trabajador)
+    const merged = [...sinBloqueDesdeHoy, ...nuevos];
 
-    // === NUEVO: sobreasignar horas extras automáticamente si hace falta ===
-    // 1) Total de horas usadas HOY por este trabajador (con el cambio aplicado)
-    // Total de horas usadas HOY (con el cambio aplicado)
-const totalHoy = Math.round(result
-  .filter(s => s.trabajadorId === w.id && s.fecha === diaISO)
-  .reduce((a, s) => a + s.horas, 0) * 2) / 2;
+    // === Sobreasignar horas extras automáticamente si hace falta ===
+    const totalHoy =
+      Math.round(
+        merged
+          .filter(s => s.trabajadorId === w.id && s.fecha === diaISO)
+          .reduce((a, s) => a + s.horas, 0) * 2
+      ) / 2;
 
-// Capacidad del día con overrides actuales
-const capacidadHoy = capacidadDia(w, fromLocalISO(diaISO), overrides);
-const exceso = Math.max(0, Math.round((totalHoy - capacidadHoy) * 2) / 2);
-
+    const capacidadHoy = capacidadDia(w, fromLocalISO(diaISO), overrides);
+    const exceso =
+      Math.max(0, Math.round((totalHoy - capacidadHoy) * 2) / 2);
 
     if (exceso > 0) {
-  setOverrides((prevOv: OverridesState) => {
-    const byWorker = { ...(prevOv[w.id] || {}) };
-    const cur = byWorker[diaISO] || { extra: 0, sabado: false };
-    byWorker[diaISO] = {
-      extra: Math.round((Number(cur.extra ?? 0) + exceso) * 2) / 2,
-      sabado: !!cur.sabado,
-    };
-    return { ...prevOv, [w.id]: byWorker };
+      setOverrides((prevOv: OverridesState) => {
+        const byWorker = { ...(prevOv[w.id] || {}) };
+        const cur = byWorker[diaISO] || {
+          extra: 0,
+          sabado: false,
+          domingo: false,
+          vacacion: false,
+        };
+        byWorker[diaISO] = {
+          ...cur,
+          extra:
+            Math.round((Number(cur.extra ?? 0) + exceso) * 2) / 2,
+        };
+        return { ...prevOv, [w.id]: byWorker };
+      });
+    }
+
+    // === MUY IMPORTANTE: reempacar TODO el trabajador desde ese día ===
+    const reflowedForWorker = compactFrom(w, diaISO, overrides, merged);
+    const others = merged.filter(s => s.trabajadorId !== w.id);
+
+    const final = [...others, ...reflowedForWorker];
+    return final;
   });
+
+  // Y por seguridad, unificamos tramos del mismo bloque/día
+  compactarBloques(trabajadorId);
 }
 
-    return result;
-  });
-}
 
 /**
  * Añade un bloque NUEVO (incidencia) para un trabajador empezando en un día concreto.
