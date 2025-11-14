@@ -994,33 +994,7 @@ const { data: sub } = supabase.auth.onAuthStateChange(
   };
 }, []); // ← sin dependencias: solo al montar
 
-// 🔐 Heartbeat de sesión: mantiene viva la sesión y repara sesiones dormidas
-useEffect(() => {
-  async function ping() {
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
 
-      if (!session) {
-        // si no hay sesión, intenta refrescar en silencio
-        await supabase.auth.refreshSession().catch(() => {});
-        return;
-      }
-
-      // si al token le queda <90s, FUERZA refresh
-      const expMs = session.expires_at ? session.expires_at * 1000 : 0;
-      if (expMs && expMs - Date.now() < 90_000) {
-        await supabase.auth.refreshSession().catch(() => {});
-      }
-    } catch {
-      // ignoramos; se reintentará en el siguiente tick
-    }
-  }
-
-  // primer toque y luego cada 30s
-  ping();
-  const id = setInterval(ping, 30_000);
-  return () => clearInterval(id);
-}, []);
 
 // Guardado al volver a la pestaña (si hay sesión activa)
 useEffect(() => {
@@ -2178,63 +2152,36 @@ function downloadLastBackup() {
   }
   
 async function ensureSessionOrExplain(): Promise<boolean> {
-  // 1) Conectividad
+  // 1) Comprobamos SOLO la conexión básica
   if (typeof navigator !== "undefined" && navigator.onLine === false) {
-    setSaveError("Sin conexión. No se puede guardar.");
+    setSaveError("Sin conexión. No se puede guardar en la nube.");
     return false;
   }
 
-  // 2) Sesión válida
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session) {
-    setSaveError("Sesión caducada. Inicia sesión para seguir guardando.");
-    setAuthMsg("Sesión caducada. Introduce tu email y pulsa «Enviarme enlace».");
-    return false;
-  }
-
-  // 3) Si al token le queda <60s, deja que Supabase lo refresque
-  const exp = session.expires_at ? session.expires_at * 1000 : 0;
-  if (exp && exp - Date.now() < 60_000) {
-  const { data, error } = await supabase.auth.refreshSession();
-  if (error || !data.session) {
-    setSaveError("No se pudo refrescar la sesión. Vuelve a entrar.");
-    return false;
-  }
-}
-
+  // No tocamos la sesión ni llamamos a refreshSession aquí.
+  // Supabase se encarga de refrescar el token automáticamente.
   return true;
 }
 
-
-
-  async function guardedSaveAll(uid: string) {
-  // 1) Antes de guardar, comprobamos conexión y sesión
+async function guardedSaveAll(uid: string) {
+  // 1) Antes de guardar, comprobamos solo conexión
   const ok = await ensureSessionOrExplain();
   if (!ok) {
-    // ensureSessionOrExplain ya ha puesto el mensaje de error en pantalla,
-    // así que simplemente NO intentamos guardar nada.
+    // Ya hay mensaje de error de conexión, no intentamos guardar.
     return;
   }
 
-  // 2) Si la sesión está bien, seguimos con el guardado normal
+  // 2) Si la conexión está bien, seguimos con el guardado normal
   const myTurn = ++saveEpoch.current;
 
-  async function attempt(max = 3, delay = 700) {
+  async function attempt(max = 3, delay = 700): Promise<void> {
     try {
       await saveAll(uid);
-      return;
     } catch (e: any) {
-      const msg = e?.message || "";
-      const code = e?.status || e?.code;
-
-      // Si la sesión está caída (401/403), refresca y reintenta
-      if (code === 401 || code === 403 || /JWT|auth|session/i.test(msg)) {
-        try {
-          await supabase.auth.refreshSession();
-        } catch {}
+      // Si algo falla (timeout, error puntual, etc.), reintentamos unas cuantas veces
+      if (max <= 1) {
+        throw e;
       }
-
-      if (max <= 1) throw e;
       await new Promise((r) => setTimeout(r, delay));
       return attempt(max - 1, Math.floor(delay * 1.8));
     }
@@ -2244,11 +2191,13 @@ async function ensureSessionOrExplain(): Promise<boolean> {
     await attempt();
   } finally {
     if (myTurn !== saveEpoch.current) {
-      // había un guardado más nuevo en marcha; si quieres, fuerza uno final:
+      // Había un guardado más nuevo en marcha; si quisieras, podrías forzar otro aquí.
+      // De momento lo dejamos comentado para no añadir más complejidad:
       // await saveAll(uid);
     }
   }
 }
+
 
 
 
