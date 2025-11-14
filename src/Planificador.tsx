@@ -20,6 +20,8 @@ import type { AuthChangeEvent, Session } from "@supabase/supabase-js";
 /* ===================== Configuración ===================== */
 const PASSWORD = "0000"; // ← cámbiala por la que quieras
 const STORAGE_KEY = "planificador:v1";
+const ENABLE_CLOUD_AUTOSAVE = false; // ⬅️ desactiva guardado automático en Supabase
+
 
 
 // Todos verán/editarán el mismo plan (tenant único)
@@ -971,11 +973,16 @@ useEffect(() => {
 
   // 2) Reaccionar a login/logout desde otras pestañas, etc.
   const { data: sub } = supabase.auth.onAuthStateChange(
-    (_event: AuthChangeEvent, session: Session | null) => {
-      if (!active) return;
+  (event: AuthChangeEvent, session: Session | null) => {
+    if (!active) return;
+
+    // Solo reaccionamos a login/logout reales
+    if (event === "SIGNED_IN" || event === "SIGNED_OUT") {
       loadForSession(session);
     }
-  );
+  }
+);
+
 
   return () => {
     active = false;
@@ -997,10 +1004,7 @@ function isOwnChange(
   const updatedBy = (payload as any)?.new?.updated_by ?? null;
   return !!uid && !!updatedBy && updatedBy === uid;
 }
-
-
-  // AUTOSAVE: guarda en Supabase cuando cambian datos (con debounce)
-  
+ 
 // AUTOSAVE A SUPABASE DESACTIVADO: solo guardamos cuando pulses el botón "Guardar ahora"
 /*
 useEffect(() => {
