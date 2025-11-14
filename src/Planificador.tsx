@@ -782,50 +782,38 @@ function editUrgentSlice(slice: TaskSlice) {
   const w = workers.find(x => x.id === slice.trabajadorId);
   if (!w) return;
 
-  const diaISO = slice.fecha;
+  const startISO = slice.fecha;
 
   setSlices(prev => {
-    // 1) Actualiza SOLO ese tramo urgente (mismo día, misma tarea)
-    const updated = prev.map(s =>
-      s.id === slice.id
-        ? { ...s, horas: h, color: URGENT_COLOR } // aseguramos color de urgencia
-        : s
-    );
-
-    // 2) Marca validación en TODO el bloque de esa urgencia
-    const withValid = updated.map(s =>
-      s.taskId === slice.taskId && s.trabajadorId === w.id
-        ? { ...s, validado }
-        : s
-    );
-
-    // 3) (opcional) ajusta horas extra si ese día se pasa de capacidad
-    const totalHoy = Math.round(
-      withValid
-        .filter(s => s.trabajadorId === w.id && s.fecha === diaISO)
-        .reduce((a, s) => a + s.horas, 0) * 2
-    ) / 2;
-
-    const capacidadHoy = capacidadDia(w, fromLocalISO(diaISO), overrides);
-    const exceso = Math.max(
-      0,
-      Math.round((totalHoy - capacidadHoy) * 2) / 2
-    );
-
-    if (exceso > 0) {
-      setOverrides(prevOv => {
-        const byWorker = { ...(prevOv[w.id] || {}) };
-        const cur = byWorker[diaISO] || { extra: 0, sabado: false, domingo: false, vacacion: false };
-        byWorker[diaISO] = {
-          ...cur,
-          extra: Math.round((Number(cur.extra ?? 0) + exceso) * 2) / 2,
+    // 1) Actualizar TODO el bloque urgente de ese trabajador:
+    //    - este día: nuevas horas
+    //    - todas sus partes: color urgente + estado validado
+    const updated = prev.map(s => {
+      if (s.taskId === slice.taskId && s.trabajadorId === w.id) {
+        const base = {
+          ...s,
+          color: URGENT_COLOR, // aseguramos amarillo
+          validado,
         };
-        return { ...prevOv, [w.id]: byWorker };
-      });
-    }
+        if (s.id === slice.id) {
+          // tramo editado hoy
+          return { ...base, horas: h };
+        }
+        return base;
+      }
+      return s;
+    });
 
-    return withValid;
+    // 2) Re-empacar al trabajador desde ese día:
+    //    - compactFrom respeta isUrgentSlice → las urgencias quedan clavadas
+    const reflowedForWorker = compactFrom(w, startISO, overrides, updated);
+    const others = updated.filter(s => s.trabajadorId !== w.id);
+
+    return [...others, ...reflowedForWorker];
   });
+
+  // 3) Compactar bloques de ese trabajador (combina trocitos del mismo día)
+  compactarBloques(w.id);
 }
 
 
@@ -2984,27 +2972,39 @@ function mergeOverrideRow(
                   <div key={`${w.id}-wk-${week[0].toISOString()}`} style={weekRow}>
                     <div style={weekCol}>{format(week[0], "I")}</div>
                     {week.map((d) => {
-                      const f = fmt(d);
-                      const iso = f || toLocalISO(d);
-                      // Bloques de este trabajador en este día, ordenados por
-// la fecha de inicio del bloque (para que el que empezó antes salga primero)
-      const delDia = f
-        ? slices
-            .filter((s) => s.trabajadorId === w.id && s.fecha === f)
-            .sort((a, b) => {
-              const starts = taskStartByWorker[w.id] || {};
-              const sa = starts[a.taskId] ?? a.fecha;
-              const sb = starts[b.taskId] ?? b.fecha;
+  const f = fmt(d);
+  const iso = f || toLocalISO(d);
 
-              if (sa < sb) return -1;
-              if (sa > sb) return 1;
+  // Bloques de este trabajador en este día
+  // 1) URGENCIAS SIEMPRE A LA IZQUIERDA
+  // 2) Dentro de cada grupo (urgentes / normales), orden por fecha de inicio del bloque
+  const delDia = f
+    ? slices
+        .filter((s) => s.trabajadorId === w.id && s.fecha === f)
+        .sort((a, b) => {
+          const au = isUrgentSlice(a);
+          const bu = isUrgentSlice(b);
 
-              // desempate estable por taskId (por si dos bloques empiezan el mismo día)
-              if (a.taskId < b.taskId) return -1;
-              if (a.taskId > b.taskId) return 1;
-              return 0;
-            })
-        : [];
+          // --- PRIMERO URGENCIAS ---
+          if (au && !bu) return -1;
+          if (!au && bu) return 1;
+
+          // --- MISMO TIPO (los dos urgentes o los dos normales) ---
+          const starts = taskStartByWorker[w.id] || {};
+          const sa = starts[a.taskId] ?? a.fecha;
+          const sb = starts[b.taskId] ?? b.fecha;
+
+          if (sa < sb) return -1;
+          if (sa > sb) return 1;
+
+          // Desempate estable
+          if (a.taskId < b.taskId) return -1;
+          if (a.taskId > b.taskId) return 1;
+
+          return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+        })
+    : [];
+
 
 
                       const cap = capacidadDia(w, d, overrides);
