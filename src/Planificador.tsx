@@ -764,6 +764,8 @@ function marcarValidacionBloque(taskId: string, trabajadorId: string, validado: 
 }
 
 function editUrgentSlice(slice: TaskSlice) {
+  if (!canEdit) return;
+
   const nuevoStr = prompt(
     `Horas reales para "${slice.producto}" el ${slice.fecha}:`,
     String(slice.horas)
@@ -773,32 +775,59 @@ function editUrgentSlice(slice: TaskSlice) {
   const h = Math.max(0.5, Math.round(Number(nuevoStr) * 2) / 2);
   if (!isFinite(h)) return;
 
-  // Pregunta de validación
+  // Pregunta de validación (igual que en los bloques normales)
   const validado = preguntarValidacionBloque(slice.validado);
   if (validado === null) return;
 
   const w = workers.find(x => x.id === slice.trabajadorId);
   if (!w) return;
 
+  const diaISO = slice.fecha;
+
   setSlices(prev => {
-    // 1) fija SOLO ese tramo (amarillo)
-    const fixed = prev.map(s =>
-      s.id === slice.id ? { ...s, horas: h, color: URGENT_COLOR } : s
+    // 1) Actualiza SOLO ese tramo urgente (mismo día, misma tarea)
+    const updated = prev.map(s =>
+      s.id === slice.id
+        ? { ...s, horas: h, color: URGENT_COLOR } // aseguramos color de urgencia
+        : s
     );
 
-    // 2) re-empaqueta desde ese día manteniendo urgencias clavadas
-    const reflowedForWorker = compactFrom(w, slice.fecha, overrides, fixed);
-    const others = fixed.filter(s => s.trabajadorId !== w.id);
-    const final = [...others, ...reflowedForWorker];
-
-    // 3) Marca validación en todo el bloque
-    return final.map(s =>
+    // 2) Marca validación en TODO el bloque de esa urgencia
+    const withValid = updated.map(s =>
       s.taskId === slice.taskId && s.trabajadorId === w.id
         ? { ...s, validado }
         : s
     );
+
+    // 3) (opcional) ajusta horas extra si ese día se pasa de capacidad
+    const totalHoy = Math.round(
+      withValid
+        .filter(s => s.trabajadorId === w.id && s.fecha === diaISO)
+        .reduce((a, s) => a + s.horas, 0) * 2
+    ) / 2;
+
+    const capacidadHoy = capacidadDia(w, fromLocalISO(diaISO), overrides);
+    const exceso = Math.max(
+      0,
+      Math.round((totalHoy - capacidadHoy) * 2) / 2
+    );
+
+    if (exceso > 0) {
+      setOverrides(prevOv => {
+        const byWorker = { ...(prevOv[w.id] || {}) };
+        const cur = byWorker[diaISO] || { extra: 0, sabado: false, domingo: false, vacacion: false };
+        byWorker[diaISO] = {
+          ...cur,
+          extra: Math.round((Number(cur.extra ?? 0) + exceso) * 2) / 2,
+        };
+        return { ...prevOv, [w.id]: byWorker };
+      });
+    }
+
+    return withValid;
   });
 }
+
 
 
   // === NUEVO: helper seguro para leer del almacenamiento local ===
