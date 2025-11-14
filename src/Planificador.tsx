@@ -215,7 +215,14 @@ function usadasEnDia(slices: TaskSlice[], workerId: string, date: Date) {
 }
 
 /* ===================== Replanificación / colas ===================== */
-type QueueItem = { producto: string; horas: number; color: string; taskId: string };
+type QueueItem = {
+  taskId: string;
+  producto: string;
+  color: string;
+  horas: number;
+  validado?: boolean;   // ⬅️ NUEVO
+};
+
 
 function pushOrMergeSameDay(out: TaskSlice[], add: TaskSlice) {
   const i = out.findIndex(
@@ -242,77 +249,84 @@ function aggregateToQueue(items: TaskSlice[]): QueueItem[] {
   return order.map((id) => map.get(id)!);
 }
 
+/**
+ * Refluye TODOS los tramos (slices) del trabajador a partir de startISO inclusive,
+ * rellenando huecos en cada día según capacidadDia(w, date, overrides).
+ * - Respeta vacaciones (capacidad 0) y sab/domingo ON/OFF ya que capacidadDia lo decide.
+ * - Puede partir un bloque en varios días (crea nuevos slices con mismo taskId).
+ * - ⬅️ AHORA mantiene el estado "validado" de cada bloque.
+ */
 function compactFrom(
-  worker: Worker,
-  startF: string,
-  overrides: OverridesState,
+  w: Worker,
+  startISO: string,
+  ov: OverridesState,
   allSlices: TaskSlice[]
 ): TaskSlice[] {
-  // 1) Partes del trabajador ANTES de startF (se conservan)
-  const keepBefore = allSlices
-    .filter((s) => s.trabajadorId === worker.id && s.fecha < startF)
-    .sort((a, b) => a.fecha.localeCompare(b.fecha));
-
-  // 2) Partes del trabajador DESDE startF (se reempacan)
-  const fromHere = allSlices
-    .filter((s) => s.trabajadorId === worker.id && s.fecha >= startF)
+  // 1) Slices de este trabajador, ordenados
+  const delTrabajador = allSlices
+    .filter(s => s.trabajadorId === w.id)
     .sort((a, b) =>
       a.fecha < b.fecha ? -1 :
-      a.fecha > b.fecha ?  1 :
-      (a.id   < b.id   ? -1 : a.id > b.id ? 1 : 0)
+      a.fecha > b.fecha ? 1  :
+      (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
     );
 
-  // 3) Separar URGENTES (no se mueven de su día) y movibles
-  const pinned  = fromHere.filter(isUrgentSlice);
-  const movable = fromHere.filter((s) => !isUrgentSlice(s));
+  const before  = delTrabajador.filter(s => s.fecha < startISO);
+  const fromHere = delTrabajador.filter(s => s.fecha >= startISO);
 
-  // 4) Cola agregada por bloque (sólo lo movible)
-  const queue = aggregateToQueue(movable);
+  // 2) Cola con todos los bloques desde startISO,
+  //    arrastrando color y validado
+  const queue: QueueItem[] = fromHere.map(s => ({
+    taskId: s.taskId,
+    producto: s.producto,
+    color: s.color,
+    horas: s.horas,
+    validado: s.validado ?? false,
+  }));
 
-  // 5) Reconstrucción día a día dejando primero URGENCIAS fijas
   const rebuilt: TaskSlice[] = [];
-  let dayISO = startF;
+  let dayISO = startISO;
   let guard = 0;
-  while ((queue.length > 0 || pinned.length > 0) && guard < 365) {
+
+  while (queue.length > 0 && guard < 365) {
     guard++;
+    let capLeft = Math.max(0, capacidadDia(w, fromLocalISO(dayISO), ov));
 
-    let capLeft = Math.max(0, capacidadDia(worker, fromLocalISO(dayISO), overrides));
+    if (capLeft > 0) {
+      while (queue.length > 0 && capLeft > 1e-9) {
+        const head = queue[0];
+        const take = Math.min(head.horas, capLeft);
 
-    // URGENCIAS de este día (no se tocan)
-    const todaysPinned = pinned.filter((p) => p.fecha === dayISO);
-    for (const p of todaysPinned) {
-      rebuilt.push({ ...p });
-      capLeft = Math.max(0, Math.round((capLeft - p.horas) * 2) / 2);
-    }
+        if (take > 1e-9) {
+          rebuilt.push({
+            id: newId(),
+            taskId: head.taskId,
+            producto: head.producto,
+            fecha: dayISO,
+            horas: Math.round(take * 2) / 2,
+            trabajadorId: w.id,
+            color: head.color,
+            validado: head.validado ?? false,   // ⬅️ mantenemos validación
+          });
 
-    // Rellenar con la cola movible
-    while (queue.length > 0 && capLeft > 1e-9) {
-      const head = queue[0];
-      const take = Math.min(head.horas, capLeft);
-      if (take > 1e-9) {
-        rebuilt.push({
-          id: (crypto as any)?.randomUUID
-  ? (crypto as any).randomUUID()
-  : "S" + Math.random().toString(36).slice(2, 10),
-          taskId: head.taskId,
-          producto: head.producto,
-          fecha: dayISO,
-          horas: Math.round(take * 2) / 2,
-          trabajadorId: worker.id,
-          color: head.color,
-        });
-        head.horas = Math.round((head.horas - take) * 2) / 2;
-        capLeft    = Math.round((capLeft    - take) * 2) / 2;
+          head.horas = Math.round((head.horas - take) * 2) / 2;
+          capLeft    = Math.round((capLeft - take) * 2) / 2;
+        }
+
+        if (head.horas <= 1e-9) {
+          queue.shift();
+        }
       }
-      if (head.horas <= 1e-9) queue.shift();
     }
 
-    dayISO = toLocalISO(addDays(fromLocalISO(dayISO), 1));
+    const nextDay = addDays(fromLocalISO(dayISO), 1);
+    dayISO = toLocalISO(nextDay);
   }
 
-  // 6) Devuelve SOLO lo del trabajador (antes + reconstruido)
-  return [...keepBefore, ...rebuilt];
+  // Devolvemos solo los slices de este trabajador
+  return [...before, ...rebuilt];
 }
+
 
 
 // Planificación de un bloque (crea taskId/color únicos por bloque)
@@ -1644,7 +1658,8 @@ async function removeSlice(id: string) {
 }
 
   // Urgencia
-  function addManualHere(worker: Worker, date: Date) {
+// Urgencia
+function addManualHere(worker: Worker, date: Date) {
   if (!canEdit) return;
 
   // 1) Nombre de la urgencia (con ⚠️ automático)
@@ -1664,23 +1679,35 @@ async function removeSlice(id: string) {
   const startISO = toLocalISO(date);
 
   // 2) Bloques anteriores y los que van a refluírse desde startISO
-  const before = slices
-    .filter(s => s.trabajadorId === worker.id && s.fecha < startISO)
-    .sort((a,b) => a.fecha.localeCompare(b.fecha));
-
-  const fromHere = slices
-    .filter(s => s.trabajadorId === worker.id && s.fecha >= startISO)
-    .sort((a,b) =>
+  const delTrabajador = slices
+    .filter(s => s.trabajadorId === worker.id)
+    .sort((a, b) =>
       a.fecha < b.fecha ? -1 :
       a.fecha > b.fecha ? 1  :
       (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
     );
 
+  const before = delTrabajador.filter(s => s.fecha < startISO);
+  const fromHere = delTrabajador.filter(s => s.fecha >= startISO);
+
   // 3) Cola con la URGENCIA primero (prioridad máxima)
   const urgentTaskId = "T" + Math.random().toString(36).slice(2, 8);
+
   const queue: QueueItem[] = [
-    { taskId: urgentTaskId, producto: nombreFinal, color: URGENT_COLOR, horas: Math.round(h * 2) / 2 },
-    ...fromHere.map(s => ({ taskId: s.taskId, producto: s.producto, color: s.color, horas: s.horas })),
+    {
+      taskId: urgentTaskId,
+      producto: nombreFinal,
+      color: URGENT_COLOR,
+      horas: Math.round(h * 2) / 2,
+      validado: false,                // urgencia nueva → no validada
+    },
+    ...fromHere.map(s => ({
+      taskId: s.taskId,
+      producto: s.producto,
+      color: s.color,
+      horas: s.horas,
+      validado: s.validado ?? false,   // ⬅️ arrastramos la validación antigua
+    })),
   ];
 
   // 4) Reempacado de ese día en adelante
@@ -1688,38 +1715,42 @@ async function removeSlice(id: string) {
   let dayISO = startISO;
   let guard = 0;
 
-  function newId() {
-    return (crypto as any)?.randomUUID ? (crypto as any).randomUUID() : "S" + Math.random().toString(36).slice(2, 10);
+  function localNewId() {
+    return (crypto as any)?.randomUUID
+      ? (crypto as any).randomUUID()
+      : "S" + Math.random().toString(36).slice(2, 10);
   }
 
   while (queue.length > 0 && guard < 365) {
     guard++;
-    let capLeft = Math.max(0, capacidadDia(worker, new Date(dayISO), overrides));
+    let capLeft = Math.max(0, capacidadDia(worker, fromLocalISO(dayISO), overrides));
 
     if (capLeft > 0) {
       while (queue.length > 0 && capLeft > 1e-9) {
         const head = queue[0];
         const take = Math.min(head.horas, capLeft);
+
         if (take > 1e-9) {
           rebuilt.push({
-            id: newId(),
+            id: localNewId(),
             taskId: head.taskId,
             producto: head.producto,
             fecha: dayISO,
             horas: Math.round(take * 2) / 2,
             trabajadorId: worker.id,
-            color: head.color, // ⚠️ amarillo para urgencias
+            color: head.color,
+            validado: head.validado ?? false,   // ⬅️ MUY IMPORTANTE
           });
           head.horas = Math.round((head.horas - take) * 2) / 2;
           capLeft    = Math.round((capLeft - take) * 2) / 2;
         }
+
         if (head.horas <= 1e-9) queue.shift();
       }
     }
 
-    const d = fromLocalISO(dayISO);
-const nextDay = addDays(d, 1);
-dayISO = toLocalISO(nextDay);
+    const nextDay = addDays(fromLocalISO(dayISO), 1);
+    dayISO = toLocalISO(nextDay);
   }
 
   // 5) Actualizamos el estado global
@@ -1729,6 +1760,7 @@ dayISO = toLocalISO(nextDay);
   // 6) Compactamos por seguridad (combina tramos del mismo día)
   compactarBloques(worker.id);
 }
+
 
   // Descripciones CRUD
   function saveDesc() {
