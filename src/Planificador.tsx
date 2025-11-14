@@ -837,30 +837,32 @@ async function loadAll(_uid: string) {
       );
     }
 
-    // 2) Bloques / Slices
-    // 2) Bloques / Slices
-const { data: sData, error: sErr } = await supabase
-  .from("task_slices")
-  .select("*")
-  .eq("tenant_id", TENANT_ID);
 
-if (sErr) console.error("task_slices error:", sErr);
-if (sData) {
-  const rawSlices: TaskSlice[] = sData.map((r: any) => ({
-    id: r.id,
-    taskId: r.task_id,
-    producto: r.producto,
-    fecha: r.fecha,
-    horas: Number(r.horas),
-    trabajadorId: r.trabajador_id,
-    color: r.color,
-    validado: !!r.validado,
-  }));
+    // 2) Bloques / Slices
+// 2) Bloques / Slices
+    const { data: sData, error: sErr } = await supabase
+      .from("task_slices")
+      .select("*")
+      .eq("tenant_id", TENANT_ID);
 
-  // 🔴 Aquí compactamos TODO lo que venga de BD
-  const compacted = compactSlicesAll(rawSlices);
-  setSlices(compacted);
-}
+    if (sErr) console.error("task_slices error:", sErr);
+    if (sData) {
+      // Pasamos lo que viene de Supabase a TaskSlice[]
+      const rawSlices: TaskSlice[] = (sData as any[]).map((r: any) => ({
+        id: r.id,
+        taskId: r.task_id,
+        producto: r.producto,
+        fecha: r.fecha,
+        horas: Number(r.horas),
+        trabajadorId: r.trabajador_id,
+        color: r.color,
+        validado: !!r.validado,
+      }));
+
+      // ⬅️ AQUÍ compactamos para eliminar duplicados en el mismo día
+      const compacted = compactSlicesAll(rawSlices);
+      setSlices(compacted);
+    }
 
 
     // 3) Overrides (extras/sábado/domingo/vacaciones)
@@ -2459,8 +2461,11 @@ function compactarBloques(workerId: string) {
   });
 }
 
+// Compacta TODOS los slices de TODOS los trabajadores
+// Evita que, si en Supabase hay varias filas iguales (mismo trabajador, día y taskId),
+// en memoria aparezcan como 2-3 bloques sumados (25.5h, etc.).
 function compactSlicesAll(input: TaskSlice[]): TaskSlice[] {
-  // Ordenamos por trabajador, fecha y taskId
+  // Ordenamos para agrupar por trabajador + fecha + taskId
   const sorted = [...input].sort((a, b) => {
     if (a.trabajadorId < b.trabajadorId) return -1;
     if (a.trabajadorId > b.trabajadorId) return 1;
@@ -2481,16 +2486,11 @@ function compactSlicesAll(input: TaskSlice[]): TaskSlice[] {
       last.fecha === s.fecha &&
       last.taskId === s.taskId
     ) {
-      // Mismo bloque, mismo día, mismo trabajador → fusionamos horas
-      last.horas = Math.round((last.horas + s.horas) * 2) / 2;
-
-      // Si alguno va marcado urgente, dejamos el color urgente
-      if (s.color === URGENT_COLOR) {
-        last.color = URGENT_COLOR;
-      }
-
-      // Validación: si cualquiera está NO validado, marcar como no validado
-      last.validado = (last.validado ?? false) && (s.validado ?? false);
+      // ⚠️ AQUÍ YA NO SUMAMOS HORAS.
+      // Simplemente nos quedamos con la "última versión" del tramo.
+      last.horas    = s.horas;
+      last.color    = s.color;
+      last.validado = s.validado ?? false;
     } else {
       out.push({ ...s });
     }
@@ -2498,6 +2498,7 @@ function compactSlicesAll(input: TaskSlice[]): TaskSlice[] {
 
   return out;
 }
+
 
 // === Mappers fila -> estado local ===
 function mapRowToSlice(r: any): TaskSlice {
