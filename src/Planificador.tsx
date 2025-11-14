@@ -491,12 +491,22 @@ const rtChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
 function applyRemote(run: () => void) {
   applyingRemoteRef.current = true;
   run();
+
+  // 1) intentamos liberar en el siguiente frame
   if (rafFlushRef.current) cancelAnimationFrame(rafFlushRef.current);
   rafFlushRef.current = requestAnimationFrame(() => {
     applyingRemoteRef.current = false;
     rafFlushRef.current = null;
   });
+
+  // 2) FALLO SEGURO: si por throttling de pestaña no entra el RAF, liberamos a los 2s
+  window.setTimeout(() => {
+    if (applyingRemoteRef.current) {
+      applyingRemoteRef.current = false;
+    }
+  }, 2000);
 }
+
 
 
   // === Copias de seguridad (localStorage)
@@ -818,6 +828,25 @@ async function saveAll(uid: string) {
   updated_by: uid,  
 }));
 
+useEffect(() => {
+  function onVisible() {
+    if (document.visibilityState !== "visible") return;
+    if (!userId) return;
+    if (!hydratedRef.current) return;
+
+    (async () => {
+      const ok = await ensureSessionOrExplain();
+      if (ok) {
+        try { await saveAll(userId); } catch {}
+      }
+    })();
+  }
+
+  document.addEventListener("visibilitychange", onVisible);
+  return () => document.removeEventListener("visibilitychange", onVisible);
+}, [userId]);
+
+
   const sRows = slices.map(s => ({
     id: s.id,
     task_id: s.taskId,
@@ -945,11 +974,10 @@ async function saveAll(uid: string) {
 useEffect(() => {
   let mounted = true;
 
-  async function init() {
-    // 🔒 Bloquea autosave: todavía NO hemos hidratado datos
-    hydratedRef.current = false;
+async function init() {
+  hydratedRef.current = false;
 
-    // 1) ¿Hay sesión ya abierta?
+  try {
     const { data } = await supabase.auth.getSession();
     const uid  = data.session?.user?.id    ?? null;
     const mail = data.session?.user?.email ?? null;
@@ -959,17 +987,24 @@ useEffect(() => {
     setUserId(uid);
     setUserEmail(mail);
 
-    // 2) Si hay usuario, carga todo desde Supabase
     if (uid) {
+      setLoadingCloud(true);
       try {
-        setLoadingCloud(true);
         await seedIfEmpty(uid);
-        await loadAll(uid);   // ← tu carga desde la nube
+        await loadAll(uid);
+      } catch (e) {
+        console.error("init(): carga desde nube falló; uso copia local ->", e);
+        const snap = safeLocal<any>(STORAGE_KEY, null as any);
+        if (snap && mounted) {
+          setWorkers(snap.workers ?? []);
+          setSlices(snap.slices ?? []);
+          setOverrides(snap.overrides ?? {});
+          setDescs(snap.descs ?? {});
+        }
       } finally {
         if (mounted) setLoadingCloud(false);
       }
     } else {
-      // 2-b) Si NO hay sesión, intenta cargar del almacenamiento local
       const snap = safeLocal<any>(STORAGE_KEY, null as any);
       if (snap && mounted) {
         setWorkers(snap.workers ?? []);
@@ -978,18 +1013,19 @@ useEffect(() => {
         setDescs(snap.descs ?? {});
       }
     }
-
-    // ✅ Desbloquea autosave: YA estamos hidratados (nube o local)
+  } finally {
     hydratedRef.current = true;
   }
+}
+
 
   init();
 
   // 3) Suscripción a cambios de sesión (login / logout)
-const { data: sub } = supabase.auth.onAuthStateChange(async (_event: AuthChangeEvent, session: Session | null) => {
+const { data: sub } = supabase.auth.onAuthStateChange(
+  async (_event: AuthChangeEvent, session: Session | null) => {
     if (!mounted) return;
 
-    // 🔒 Bloquea autosave mientras cambiamos de sesión / recargamos datos
     hydratedRef.current = false;
 
     const uid  = session?.user?.id    ?? null;
@@ -1001,22 +1037,29 @@ const { data: sub } = supabase.auth.onAuthStateChange(async (_event: AuthChangeE
       try {
         setLoadingCloud(true);
         await seedIfEmpty(uid);
-        await loadAll(uid);   // ← recarga desde la nube con el nuevo usuario
+        await loadAll(uid);
+      } catch (e) {
+        console.error("onAuthStateChange(): nube falló; uso copia local ->", e);
+        const snap = safeLocal<any>(STORAGE_KEY, null as any);
+        setWorkers(snap?.workers ?? []);
+        setSlices(snap?.slices ?? []);
+        setOverrides(snap?.overrides ?? {});
+        setDescs(snap?.descs ?? {});
       } finally {
         setLoadingCloud(false);
+        hydratedRef.current = true;
       }
     } else {
-      // Logout: intenta cargar desde local (por si tenías algo guardado sin sesión)
+      // logout → intenta local
       const snap = safeLocal<any>(STORAGE_KEY, null as any);
       setWorkers(snap?.workers ?? []);
       setSlices(snap?.slices ?? []);
       setOverrides(snap?.overrides ?? {});
       setDescs(snap?.descs ?? {});
+      hydratedRef.current = true;
     }
-
-    // ✅ Desbloquea autosave: ya hemos re-hidratado tras el cambio de sesión
-    hydratedRef.current = true;
-  });
+  }
+);
 
   return () => {
     mounted = false;
@@ -1028,26 +1071,25 @@ const { data: sub } = supabase.auth.onAuthStateChange(async (_event: AuthChangeE
 useEffect(() => {
   async function ping() {
     try {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
+      const { data: { session } } = await supabase.auth.getSession();
 
       if (!session) {
         // si no hay sesión, intenta refrescar en silencio
         await supabase.auth.refreshSession().catch(() => {});
-      } else {
-        // si al token le queda <60s, provocamos un refresh
-        const expMs = session.expires_at ? session.expires_at * 1000 : 0;
-        if (expMs && expMs - Date.now() < 60_000) {
-          await supabase.auth.getSession();
-        }
+        return;
+      }
+
+      // si al token le queda <90s, FUERZA refresh
+      const expMs = session.expires_at ? session.expires_at * 1000 : 0;
+      if (expMs && expMs - Date.now() < 90_000) {
+        await supabase.auth.refreshSession().catch(() => {});
       }
     } catch {
-      // ignoramos errores puntuales; reintentará en el siguiente tick
+      // ignoramos; se reintentará en el siguiente tick
     }
   }
 
-  // primer toque y luego cada 30 segundos
+  // primer toque y luego cada 30s
   ping();
   const id = setInterval(ping, 30_000);
   return () => clearInterval(id);
@@ -1288,13 +1330,12 @@ useEffect(() => {
 }, [userId]);
 
   // === NUEVO: guardado local automático cuando NO hay sesión ===
-  useEffect(() => {
-  if (userId) return;               // con sesión, nube
-  if (!hydratedRef.current) return; // ⬅️ evita guardar antes de hidratar
+  // Guardado local SIEMPRE (como borrador inmediato)
+useEffect(() => {
+  if (!hydratedRef.current) return; // no guardes antes de hidratar
   const snapshot = JSON.stringify({ workers, slices, overrides, descs });
   try { localStorage.setItem(STORAGE_KEY, snapshot); } catch {}
-}, [workers, slices, overrides, descs, userId]);
-
+}, [workers, slices, overrides, descs]);
 
 
   // Copia automática inicial y cada 10 minutos
@@ -2113,12 +2154,12 @@ async function ensureSessionOrExplain(): Promise<boolean> {
   // 3) Si al token le queda <60s, deja que Supabase lo refresque
   const exp = session.expires_at ? session.expires_at * 1000 : 0;
   if (exp && exp - Date.now() < 60_000) {
-    const { data, error } = await supabase.auth.getSession(); // refresca solo
-    if (error || !data.session) {
-      setSaveError("No se pudo refrescar la sesión. Vuelve a entrar.");
-      return false;
-    }
+  const { data, error } = await supabase.auth.refreshSession();
+  if (error || !data.session) {
+    setSaveError("No se pudo refrescar la sesión. Vuelve a entrar.");
+    return false;
   }
+}
 
   return true;
 }
