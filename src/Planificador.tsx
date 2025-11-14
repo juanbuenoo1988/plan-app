@@ -914,6 +914,30 @@ async function saveAll(uid: string) {
       if (rpcErr) throw rpcErr;
     }
   }
+// 2.c) product_descs: borra los nombres que ya no existen en memoria
+{
+  const { data: existing, error } = await supabase
+    .from("product_descs")
+    .select("nombre")
+    .eq("tenant_id", TENANT_ID);
+
+  if (error) throw error;
+
+  // dRows ya fue construido arriba a partir de 'descs'
+  const keepSet = new Set(dRows.map((r) => r.nombre));
+  const toDelete = (existing ?? [])
+    .map((r: { nombre: string }) => r.nombre)
+    .filter((nombre: string) => !keepSet.has(nombre));
+
+  if (toDelete.length > 0) {
+    const { error: delErr } = await supabase
+      .from("product_descs")
+      .delete()
+      .in("nombre", toDelete)
+      .eq("tenant_id", TENANT_ID);
+    if (delErr) throw delErr;
+  }
+}
 
   return true;
 }
@@ -1660,17 +1684,43 @@ dayISO = toLocalISO(nextDay);
     setDescNombre(key);
     setDescTexto(descs[key] || "");
   }
-  function deleteDesc(key: string) {
-    if (!canEdit) return;
-    const d = { ...descs };
-    delete d[key];
-    setDescs(d);
-    if (editKey === key) {
-      setEditKey(null);
-      setDescNombre("");
-      setDescTexto("");
-    }
+  async function deleteDesc(key: string): Promise<void> {
+  if (!canEdit) return;
+  if (!confirm(`¿Eliminar la descripción de "${key}"?`)) return;
+
+  // 1) Quita del estado local (optimista)
+  const d = { ...descs };
+  delete d[key];
+  setDescs(d);
+
+  if (editKey === key) {
+    setEditKey(null);
+    setDescNombre("");
+    setDescTexto("");
   }
+
+  // 2) Si hay sesión, borra también en Supabase
+  try {
+    if (userId) {
+      const ok = await ensureSessionOrExplain();
+      if (!ok) return;
+
+      const { error } = await supabase
+        .from("product_descs")
+        .delete()
+        .eq("tenant_id", TENANT_ID)
+        .eq("nombre", key);
+
+      if (error) {
+        console.error("deleteDesc: supabase delete error:", error);
+        setSaveError(error.message ?? String(error));
+      }
+    }
+  } catch (e: any) {
+    console.error("deleteDesc: exception:", e);
+    setSaveError(e?.message ?? String(e));
+  }
+}
 
 // Lista todos los días (ISO: YYYY-MM-DD) entre dos fechas (incluidas)
 function eachDayISO(fromISO: string, toISO: string): string[] {
