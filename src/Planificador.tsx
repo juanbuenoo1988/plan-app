@@ -933,16 +933,23 @@ useEffect(() => {
   }
 
   // 2.b) day_overrides: limpieza atómica con RPC (borra lo que sobra)
-  {
-    const keepKeys = oRows.map((r) => `${r.worker_id}|${r.fecha}`);
-    if (keepKeys.length > 0) {
-      const { error: rpcErr } = await supabase.rpc("delete_overrides_not_in", {
-        tenant: TENANT_ID,
-        keep_keys: keepKeys,
-      });
-      if (rpcErr) throw rpcErr;
+// 2.b) day_overrides: limpieza atómica (si la RPC existe)
+try {
+  const keepKeys = oRows.map((r) => `${r.worker_id}|${r.fecha}`);
+  if (keepKeys.length > 0) {
+    const { error: rpcErr } = await supabase.rpc("delete_overrides_not_in", {
+      tenant: TENANT_ID,
+      keep_keys: keepKeys,
+    });
+    // Si la función no existe o está sin permisos, no reventamos el guardado
+    if (rpcErr) {
+      console.warn("[saveAll] Limpieza RPC omitida:", rpcErr.message || rpcErr);
     }
   }
+} catch (e: any) {
+  console.warn("[saveAll] Limpieza RPC omitida (catch):", e?.message || e);
+}
+
 // 2.c) product_descs: borra los nombres que ya no existen en memoria
 {
   const { data: existing, error } = await supabase
