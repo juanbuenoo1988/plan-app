@@ -2777,7 +2777,19 @@ useEffect(() => {
           <h1 style={appTitle}>MONTAJES DELSAZ — PLANIFICACION TALLERES</h1>
         </div>
           <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-    <div style={{ fontWeight: 700, color: "#fff", marginRight: 8 }}>{monthYear(base)}</div>
+    <div
+  style={{
+    padding: "4px 10px",
+    borderRadius: 999,
+    background: "rgba(15,23,42,0.7)",
+    color: "#e5e7eb",
+    fontSize: 13,
+    fontWeight: 600,
+  }}
+>
+  {monthYear(base)}
+</div>
+
     <button style={btnLabeled} onClick={() => setBase(addMonths(base, -1))}>◀ Mes anterior</button>
     <button style={btnLabeled} onClick={() => setBase(addMonths(base, 1))}>Siguiente mes ▶</button>
 
@@ -3091,7 +3103,7 @@ useEffect(() => {
 
           {/* CABECERA DÍAS (impresión mensual) */}
           <div style={daysHeader} className={printMode === "monthly" ? "" : "no-print"}>
-  <div style={dayHeaderCell}>SEM</div>
+  <div style={{ ...dayHeaderCell, background: "transparent" }}>SEM</div>
   {weekDaysHeader.map((d, i) => (
     <div key={`dow-${i}`} style={dayHeaderCell}>
       {d}
@@ -3115,8 +3127,6 @@ useEffect(() => {
   const iso = f || toLocalISO(d);
 
   // Bloques de este trabajador en este día
-  // 1) URGENCIAS SIEMPRE A LA IZQUIERDA
-  // 2) Dentro de cada grupo (urgentes / normales), orden por fecha de inicio del bloque
   const delDia = f
     ? slices
         .filter((s) => s.trabajadorId === w.id && s.fecha === f)
@@ -3124,11 +3134,11 @@ useEffect(() => {
           const au = isUrgentSlice(a);
           const bu = isUrgentSlice(b);
 
-          // --- PRIMERO URGENCIAS ---
+          // 1) Urgencias primero
           if (au && !bu) return -1;
           if (!au && bu) return 1;
 
-          // --- MISMO TIPO (los dos urgentes o los dos normales) ---
+          // 2) Dentro de urgentes/normales, orden por fecha de inicio de bloque
           const starts = taskStartByWorker[w.id] || {};
           const sa = starts[a.taskId] ?? a.fecha;
           const sb = starts[b.taskId] ?? b.fecha;
@@ -3136,226 +3146,239 @@ useEffect(() => {
           if (sa < sb) return -1;
           if (sa > sb) return 1;
 
-          // Desempate estable
+          // 3) Desempate estable
           if (a.taskId < b.taskId) return -1;
           if (a.taskId > b.taskId) return 1;
-
           return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
         })
     : [];
 
+  const cap = capacidadDia(w, d, overrides);
+  const used = usadasEnDia(slices, w.id, d);
+  const over = used > cap + 1e-9;
 
+  const ow: DayOverride = (overrides[w.id]?.[iso]) ?? {};
+  const dow = getDay(d); // 0=domingo, 6=sábado
+  const isWeekend = dow === 0 || dow === 6;
+  const isVacation = !!((overrides[w.id] || {})[iso]?.vacacion);
 
-                      const cap = capacidadDia(w, d, overrides);
-                      const used = usadasEnDia(slices, w.id, d);
-                      const over = used > cap + 1e-9; // "over" significa "se pasó"
-                      const ow: DayOverride = (overrides[w.id]?.[iso]) ?? {};
-                          const dow = getDay(d); // 0=domingo, 6=sábado
+  // Doble clic en cabecera del día (para sábado/domingo ON/OFF)
+  const handleDayHeaderDblClick = () => {
+    if (!canEdit) return;
 
-                           
-const handleDayHeaderDblClick = () => {
-  if (!canEdit) return;
+    const prev = overrides;
 
-  // Usaremos el estado actual para construir el siguiente
-  const prev = overrides;
+    if (dow === 6) {
+      // === SÁBADO ===
+      const v = prompt(
+        "¿Trabaja el sábado " + iso + " ? (sí=1 / no=0)",
+        ow?.sabado ? "1" : "0"
+      );
+      if (v === null) return;
+      const on = v.trim() === "1";
 
-  if (dow === 6) {
-    // === SÁBADO ===
-    const v = prompt("¿Trabaja el sábado " + iso + " ? (sí=1 / no=0)", (ow?.sabado ? "1" : "0"));
-    if (v === null) return;
-    const on = v.trim() === "1";
+      const next: OverridesState = (() => {
+        const byW = { ...(prev[w.id] || {}) };
+        const cur = { ...(byW[iso] || {}) };
+        if (on) cur.sabado = true;
+        else delete cur.sabado;
 
-    // 1) Construye el OV nuevo
-    const next: OverridesState = (() => {
-      const byW = { ...(prev[w.id] || {}) };
-      const cur = { ...(byW[iso] || {}) };
-      if (on) cur.sabado = true; else delete cur.sabado;
+        if (!cur.extra && !cur.sabado && !cur.domingo && !cur.vacacion) {
+          delete byW[iso];
+        } else {
+          byW[iso] = cur;
+        }
+        return { ...prev, [w.id]: byW };
+      })();
 
-      if (!cur.extra && !cur.sabado && !cur.domingo && !cur.vacacion) {
-        delete byW[iso];
-      } else {
-        byW[iso] = cur;
-      }
-      return { ...prev, [w.id]: byW };
-    })();
+      setOverrides(next);
+      reflowFromWorkerWithOverrides(w.id, iso, next);
+      compactarBloques(w.id);
+    } else if (dow === 0) {
+      // === DOMINGO ===
+      const v = prompt(
+        "¿Trabaja el domingo " + iso + " ? (sí=1 / no=0)",
+        ow?.domingo ? "1" : "0"
+      );
+      if (v === null) return;
+      const on = v.trim() === "1";
 
-    // 2) Aplica y refluye con el OV NUEVO
-    setOverrides(next);
-    reflowFromWorkerWithOverrides(w.id, iso, next);
-    compactarBloques(w.id);
-  }
-  else if (dow === 0) {
-    // === DOMINGO ===
-    const v = prompt("¿Trabaja el domingo " + iso + " ? (sí=1 / no=0)", (ow?.domingo ? "1" : "0"));
-    if (v === null) return;
-    const on = v.trim() === "1";
+      const next: OverridesState = (() => {
+        const byW = { ...(prev[w.id] || {}) };
+        const cur = { ...(byW[iso] || {}) };
+        if (on) cur.domingo = true;
+        else delete cur.domingo;
 
-    const next: OverridesState = (() => {
-      const byW = { ...(prev[w.id] || {}) };
-      const cur = { ...(byW[iso] || {}) };
-      if (on) cur.domingo = true; else delete cur.domingo;
+        if (!cur.extra && !cur.sabado && !cur.domingo && !cur.vacacion) {
+          delete byW[iso];
+        } else {
+          byW[iso] = cur;
+        }
+        return { ...prev, [w.id]: byW };
+      })();
 
-      if (!cur.extra && !cur.sabado && !cur.domingo && !cur.vacacion) {
-        delete byW[iso];
-      } else {
-        byW[iso] = cur;
-      }
-      return { ...prev, [w.id]: byW };
-    })();
+      setOverrides(next);
+      reflowFromWorkerWithOverrides(w.id, iso, next);
+      compactarBloques(w.id);
+    }
+  };
 
-    setOverrides(next);
-    reflowFromWorkerWithOverrides(w.id, iso, next);
-    compactarBloques(w.id);
-  }
-};
+  // Estilo final de la celda del día
+  const baseStyle: React.CSSProperties = {
+    ...dayCellBase,
+    ...(isWeekend ? dayCellWeekend : {}),
+    ...(over
+      ? {
+          boxShadow: "inset 0 0 0 2px #dc2626",
+          background: "#fef2f2",
+        }
+      : {}),
+  };
 
+  return (
+    <div
+      key={`${w.id}-${iso}`}
+      style={baseStyle}
+      title={`Doble clic: extras / sábado / domingo para ${w.nombre} el ${
+        f || "día"
+      }`}
+      onDoubleClick={() => canEdit && editOverrideForDay(w, d)}
+      onDragOver={onDragOver}
+      onDrop={(e) => onDropDay(e, w.id, d)}
+    >
+      {/* Cabecera del día: número + avisos + botón ＋ */}
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+        }}
+        onDoubleClick={(e) => {
+          e.stopPropagation(); // que no salte el doble clic del día
+          handleDayHeaderDblClick();
+        }}
+      >
+        <div>
+          <span style={dayNumber}>{format(d, "d")}</span>{" "}
+          {/* Avisos */}
+          {ow ? (
+            <>
+              {ow.vacacion && <span style={dayWarn}>VACACIONES</span>}
+              {!ow.vacacion && dow !== 6 && ow.extra && Number(ow.extra) > 0 && (
+                <span style={dayWarn}>+{ow.extra} h extra</span>
+              )}
+              {!ow.vacacion && dow === 6 && ow.sabado && (
+                <span style={dayWarn}>Sábado ON</span>
+              )}
+              {!ow.vacacion && dow === 0 && ow.domingo && (
+                <span style={dayWarn}>Domingo ON</span>
+              )}
+            </>
+          ) : null}
+        </div>
 
+        {/* Botón + para insertar manual */}
+        {canEdit && !isVacation && (
+          <button
+            className="no-print"
+            onClick={() => addManualHere(w, d)}
+            style={smallPlusBtn}
+            title="Insertar manual aquí"
+          >
+            ＋
+          </button>
+        )}
+      </div>
 
-                      const isVacation = !!((overrides[w.id] || {})[iso]?.vacacion);
+      {/* Bloques del día / vacaciones */}
+      <div style={horizontalLane}>
+        {isVacation ? (
+          <div style={vacationBlock} title="Vacaciones (bloque fijo)">
+            VACACIONES
+            {canEdit && (
+              <button
+                onClick={() => borrarVacacionUnDia(w.id, iso)}
+                style={vacDeleteBtn}
+                title="Eliminar vacaciones de este día"
+              >
+                🗑
+              </button>
+            )}
+          </div>
+        ) : (
+          delDia.map((s) => {
+            const desc = descs[s.producto];
+            const isUrgent = isUrgentSlice(s);
 
-                      return (
-                        <div
-                          style={{
-                            ...dayCell,
-                            ...(over
-                            ? {
-                                boxShadow: "inset 0 0 0 2px #dc2626", // borde rojo
-                                background: "#fff5f5",               // fondo rosado claro
-                               }
-                           : {}),
-                          }}
-                          title={`Doble clic: extras / sábado / domingo para ${w.nombre} el ${f || "día"}`}
+            return (
+              <div
+                key={s.id}
+                draggable={canEdit}
+                onDragStart={(e) => onDragStart(e, s.id)}
+                onDoubleClick={(e) => {
+                  e.stopPropagation();
+                  if (!canEdit) return;
 
-                          onDoubleClick={() => canEdit && editOverrideForDay(w, d)}
-                          onDragOver={onDragOver}
-                          onDrop={(e) => onDropDay(e, w.id, d)}
-                        >
-                          {/* Cabecera del día: número + avisos + botón ＋ */}
-<div
-  style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}
-  onDoubleClick={(e) => { e.stopPropagation(); handleDayHeaderDblClick(); }}
->
-    
-  <div>
-  <span style={dayNumber}>{format(d, "d")}</span>{" "}
-   
-  {/* Avisos */}
-  {ow ? (
-    <>
-      {ow.vacacion && <span style={dayWarn}>VACACIONES</span>}
-      {!ow.vacacion && getDay(d) !== 6 && ow.extra && Number(ow.extra) > 0 && (
-        <span style={dayWarn}>+{ow.extra} h extra</span>
-      )}
-      {!ow.vacacion && getDay(d) === 6 && ow.sabado && (
-        <span style={dayWarn}>Sábado ON</span>
-      )}
-      {!ow.vacacion && getDay(d) === 0 && ow.domingo && (
-        <span style={dayWarn}>Domingo ON</span>
-      )}
-    </>
-  ) : null}
-</div>
+                  if (isUrgent) {
+                    editUrgentSlice(s);
+                  } else {
+                    editBlockTotalFromSlice(s);
+                  }
+                }}
+                title={`${s.producto} — ${s.horas}h${
+                  desc ? "\n" + desc : ""
+                }`}
+                style={{
+                  ...blockStyle,
+                  background: isUrgent ? URGENT_COLOR : s.color,
+                  width: Math.max(18, s.horas * PX_PER_HOUR),
+                  position: "relative",
+                }}
+              >
+                {canEdit && (
+                  <>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        removeSlice(s.id);
+                      }}
+                      title="Eliminar tramo"
+                      style={deleteBtn}
+                    >
+                      ✖
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        removeTask(s.taskId, s.trabajadorId);
+                      }}
+                      title="Eliminar bloque completo"
+                      style={deleteBtnAlt}
+                    >
+                      🗑
+                    </button>
+                  </>
+                )}
 
-  {/* Botón + para insertar manual */}
-  {canEdit && !isVacation && (
-  <button className="no-print" onClick={() => addManualHere(w, d)} style={smallPlusBtn} title="Insertar manual aquí">
-    ＋
-  </button>
-)}
-</div>
+                <ValidIcon validado={s.validado} />
 
-                          <div style={horizontalLane}>
-  {isVacation ? (
-    // Bloque fijo de VACACIONES
-    <div style={vacationBlock} title="Vacaciones (bloque fijo)">
-      VACACIONES
-      {canEdit && (
-        <button
-          onClick={() => borrarVacacionUnDia(w.id, iso)}
-          style={vacDeleteBtn}
-          title="Eliminar vacaciones de este día"
-        >
-          🗑
-        </button>
-      )}
+                <div style={blockTop}>
+                  <span style={productFull}>{s.producto}</span>
+                  <span>{s.horas}h</span>
+                </div>
+
+                {desc ? <div style={miniHint}>ⓘ</div> : null}
+              </div>
+            );
+          })
+        )}
+      </div>
+
+      <DayCapacityBadge capacidad={cap} usado={used} />
     </div>
-  ) : (
-    // === TU BLOQUE ORIGINAL (sin cambios) ===
-    delDia.map((s) => {
-      const desc = descs[s.producto];
-      const isUrgent =
-        s.color === URGENT_COLOR ||
-        /^⚠️/.test(s.producto) ||
-        /urgenc/i.test(s.producto);
+  );
+})}
 
-     return (
-  <div
-    key={s.id}
-    draggable={canEdit}
-    onDragStart={(e) => onDragStart(e, s.id)}
-    onDoubleClick={(e) => {
-  e.stopPropagation();
-  if (!canEdit) return;
-
-  const isUrgent =
-    s.color === URGENT_COLOR ||
-    /^⚠️/.test(s.producto) ||
-    /urgenc/i.test(s.producto);
-
-  if (isUrgent) {
-    editUrgentSlice(s);   // ← urgencias: solo ese día
-  } else {
-    editBlockTotalFromSlice(s); // ← bloques normales: replanifica TODO el bloque
-  }
-}}
-    title={`${s.producto} — ${s.horas}h${desc ? "\n" + desc : ""}`}
-    style={{
-      ...blockStyle,
-      background: isUrgent ? URGENT_COLOR : s.color,
-      width: Math.max(18, s.horas * PX_PER_HOUR),
-      position: "relative",
-    }}
-  >
-        {canEdit && (
-      <>
-        <button
-          onClick={(e) => { e.stopPropagation(); removeSlice(s.id); }}
-          title="Eliminar tramo"
-          style={deleteBtn}
-        >
-          ✖
-        </button>
-        <button
-          onClick={(e) => { e.stopPropagation(); removeTask(s.taskId, s.trabajadorId); }}
-          title="Eliminar bloque completo"
-          style={deleteBtnAlt}
-        >
-          🗑
-        </button>
-      </>
-    )}
-
-   <ValidIcon validado={s.validado} />
-
-    <div style={blockTop}>
-  <span style={productFull}>
-        {s.producto}
-  </span>
-  <span>{s.horas}h</span>
-    </div>
-
-    {desc ? <div style={miniHint}>ⓘ</div> : null}
-  </div>
-);
-
-    })
-  )}
-</div>
-
-                          <DayCapacityBadge capacidad={cap} usado={used} />
-                        </div>
-                      );
-                    })}
                   </div>
                 ))}
               </div>
@@ -3638,8 +3661,23 @@ const handleDayHeaderDblClick = () => {
             Consejo: el <b>nombre del producto</b> debe coincidir exactamente para localizar el bloque.
           </div>
           {/* === Copias de seguridad === */}
+
+{/* === Copias de seguridad === */}
 <div style={{ ...panel, marginTop: 14 }}>
-  <div style={panelTitle}>Copias de seguridad</div>
+  <div
+    style={{
+      ...panelTitle,
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      marginBottom: 8,
+    }}
+  >
+    <span>💾</span>
+    <span>Copias de seguridad</span>
+  </div>
+
+  {/* Copias locales en el navegador */}
   <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
     <button
       style={disabledIf(btnLabeled, false)}
@@ -3663,36 +3701,39 @@ const handleDayHeaderDblClick = () => {
       ⬇️ Exportar última (.json)
     </button>
   </div>
-  {/* === BOTONES DE COPIA EN LA NUBE (SUPABASE) === */}
-{userId && (
-  <div
-    style={{
-      display: "flex",
-      gap: 8,
-      flexWrap: "wrap",
-      marginTop: 8,
-    }}
-  >
-    <button
-      style={disabledIf(btnLabeled, false)}
-      onClick={saveCloudBackup}
-    >
-      ☁️ Guardar en la nube
-    </button>
 
-    <button
-      style={disabledIf(btnLabeled, false)}
-      onClick={restoreLatestCloudBackup}
+  {/* Copias en la nube (Supabase) */}
+  {userId && (
+    <div
+      style={{
+        display: "flex",
+        gap: 8,
+        flexWrap: "wrap",
+        marginTop: 8,
+      }}
     >
-      ☁️ Restaurar última de la nube
-    </button>
-  </div>
-)}
+      <button
+        style={disabledIf(btnLabeled, false)}
+        onClick={saveCloudBackup}
+      >
+        ☁️ Guardar en la nube
+      </button>
+
+      <button
+        style={disabledIf(btnLabeled, false)}
+        onClick={restoreLatestCloudBackup}
+      >
+        ☁️ Restaurar última de la nube
+      </button>
+    </div>
+  )}
 
   <div style={{ fontSize: 12, color: "#6b7280", marginTop: 6 }}>
-    Se guarda automáticamente al iniciar, cada 10 minutos y al ocultar la pestaña. Mantengo hasta {MAX_BACKUPS} copias.
+    Se guarda automáticamente al iniciar, cada 10 minutos y al ocultar la pestaña.
+    Mantengo hasta {MAX_BACKUPS} copias.
   </div>
 </div>
+
 
 {/* === Gestión masiva: extras / vacaciones / domingos === */}
 <div style={{ ...panel, marginTop: 14 }}>
@@ -3774,35 +3815,38 @@ function RTBadge({ status }: { status: RTStatus }) {
 
 /* ===================== Badge ===================== */
 function DayCapacityBadge({ capacidad, usado }: { capacidad: number; usado: number }) {
-  const libre = Math.round((capacidad - usado) * 10) / 10;
-  const exceso = Math.round((usado - capacidad) * 10) / 10; // si > 0, hay sobrecarga
-
-  const base: React.CSSProperties = { marginTop: 6, fontSize: 11, color: "#374151" };
+  const libre = Math.max(0, capacidad - usado);
+  const ratio = capacidad > 0 ? Math.min(1, usado / capacidad) : 0;
 
   return (
-    <div style={base}>
-      Cap: {capacidad.toFixed(1)}h · Usado: {usado.toFixed(1)}h · Libre:{" "}
-      <span style={{ fontWeight: 700 }}>{Math.max(0, libre).toFixed(1)}h</span>
-
-      {exceso > 0 && (
+    <div style={{ marginTop: 8, fontSize: 11, color: "#374151" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+        <span>Cap: {capacidad.toFixed(1)}h</span>
+        <span>Usado: {usado.toFixed(1)}h</span>
+        <span>Libre: {libre.toFixed(1)}h</span>
+      </div>
+      <div
+        style={{
+          height: 6,
+          borderRadius: 999,
+          background: "#e5e7eb",
+          overflow: "hidden",
+        }}
+      >
         <div
           style={{
-            marginTop: 4,
-            fontSize: 12,
-            fontWeight: 700,
-            color: "#b91c1c",        // rojo
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 6,
+            width: `${ratio * 100}%`,
+            height: "100%",
+            borderRadius: 999,
+            background: ratio > 1 ? "#dc2626" : "#22c55e",
+            transition: "width 0.2s ease",
           }}
-          title="Este día tiene más horas asignadas que su capacidad"
-        >
-          ⚠️ Sobreasignado: +{exceso.toFixed(1)}h
-        </div>
-      )}
+        />
+      </div>
     </div>
   );
 }
+
 
 function ValidIcon({
   validado,
@@ -3838,9 +3882,10 @@ function ValidIcon({
 /* ===================== Estilos ===================== */
 const appShell: React.CSSProperties = {
   fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
-  background: "#62bfe7ff",
+  background: "#f3f4f6",            // antes: azul fuerte
   minHeight: "100vh",
 };
+
 
 // === Bloque de vacaciones ===
 const vacationBlock: React.CSSProperties = {
@@ -3874,9 +3919,9 @@ const topHeader: React.CSSProperties = {
   display: "flex",
   alignItems: "center",
   justifyContent: "space-between",
-  padding: "12px 16px",
-  background: "#1f2937",
-  borderBottom: "1px solid rgba(255,255,255,.15)",
+  padding: "10px 20px",
+  background: "linear-gradient(90deg,#0f172a,#1f2937)",
+  borderBottom: "1px solid rgba(148,163,184,0.4)",
 };
 
 const validIconBox: React.CSSProperties = {
@@ -3897,12 +3942,12 @@ const validIconBox: React.CSSProperties = {
 
 
 const appTitle: React.CSSProperties = {
-  fontSize: 18,
+  fontSize: 20,
   fontWeight: 800,
-  letterSpacing: 0.4,
+  letterSpacing: 0.6,
   margin: 0,
   textTransform: "uppercase",
-  color: "#ffffff",
+  color: "#e5e7eb",
 };
 
 const mainLayout: React.CSSProperties = {
@@ -3953,9 +3998,10 @@ const panelRow: React.CSSProperties = {
 };
 const panel: React.CSSProperties = {
   border: "1px solid #e5e7eb",
-  borderRadius: 10,
-  padding: 12,
-  background: "#fff",
+  borderRadius: 16,                  // más redondeado
+  padding: 16,                       // un poco más de aire
+  background: "#ffffff",
+  boxShadow: "0 8px 18px rgba(15,23,42,0.06)", // sombra suave moderna
 };
 const panelInner: React.CSSProperties = {
   width: "100%",
@@ -3977,8 +4023,16 @@ const collapsibleHeader: React.CSSProperties = {
 const caret: React.CSSProperties = { opacity: 0.7, marginLeft: 8, fontWeight: 700 };
 
 const grid2: React.CSSProperties = { display: "grid", gap: 8, gridTemplateColumns: "180px 1fr", alignItems: "center" };
-const label: React.CSSProperties = { fontSize: 13, color: "#374151" };
-const input: React.CSSProperties = { padding: "8px 10px", border: "1px solid #e5e7eb", borderRadius: 8, outline: "none", width: "100%", boxSizing: "border-box" };
+const label: React.CSSProperties = { fontSize: 13, color: "#374151", fontWeight: 600 };
+const input: React.CSSProperties = {
+  padding: "9px 11px",
+  border: "1px solid #d1d5db",
+  borderRadius: 10,
+  outline: "none",
+  width: "100%",
+  boxSizing: "border-box",
+  fontSize: 13,
+};
 const textarea: React.CSSProperties = { ...input, minHeight: 100, resize: "vertical" as const };
 
 const table: React.CSSProperties = { width: "100%", borderCollapse: "collapse", fontSize: 13, background: "#fff" };
@@ -3987,31 +4041,43 @@ const td: React.CSSProperties = { borderBottom: "1px solid #f3f4f6", padding: "6
 
 const daysHeader: React.CSSProperties = {
   display: "grid",
-  gridTemplateColumns: "56px repeat(7, 1fr)", // ⬅️ antes era "repeat(7, 1fr)"
-  gap: 2,
+  gridTemplateColumns: "56px repeat(7, 1fr)",
+  gap: 4,
   fontSize: 12,
-  margin: "8px 0 4px",
-  color: "#000000ff",
+  margin: "12px 0 6px",
+  color: "#4b5563",
 };
 
 const dayHeaderCell: React.CSSProperties = {
-  padding: "8px 10px",
+  padding: "10px 8px",
   fontWeight: 800,
-  fontSize: 16,       // más grande
-  letterSpacing: 0.5, // un poco de separación entre letras
-};
+  fontSize: 14,
+  letterSpacing: 1,
+  textAlign: "center",
+  textTransform: "uppercase",
+  borderRadius: 999,
+  background: "#e5e7eb",
+};  
 
 const weekRow: React.CSSProperties = { display: "grid", gridTemplateColumns: "56px repeat(7, 1fr)", gap: 2, marginBottom: 2 };
-const dayCell: React.CSSProperties = {
+const dayCellBase: React.CSSProperties = {
   border: "1px solid #e5e7eb",
   minHeight: 130,
-  padding: 6,
+  padding: 8,
   display: "flex",
   flexDirection: "column",
-  background: "#fafafa",
-  borderRadius: 8,
+  background: "#ffffff",
+  borderRadius: 12,
+  transition: "box-shadow 0.15s ease, transform 0.15s ease, background 0.15s ease",
+};
+const dayCellWeekend: React.CSSProperties = {
+  background: "#f9fafb",
 };
 
+const dayCellHover: React.CSSProperties = {
+  boxShadow: "0 8px 20px rgba(15,23,42,0.06)",
+  transform: "translateY(-1px)",
+};
 const weekCol: React.CSSProperties = {
   display: "flex",
   alignItems: "center",
@@ -4027,17 +4093,21 @@ const weekCol: React.CSSProperties = {
 const horizontalLane: React.CSSProperties = { display: "flex", gap: 6, overflowX: "auto", alignItems: "flex-start" };
 
 const blockStyle: React.CSSProperties = {
-  color: "#fff",
-  borderRadius: 8,
-  padding: "6px 8px 6px 26px", // 👈 antes era "6px 8px"; reservamos 26px a la izquierda
+  color: "#ffffff",
+  borderRadius: 999,
+  padding: "6px 10px 6px 32px",
   fontSize: 12,
-  minHeight: 34,
+  minHeight: 32,
   display: "flex",
   flexDirection: "column",
   justifyContent: "center",
   cursor: "grab",
-  boxShadow: "0 1px 2px rgba(0,0,0,.15)",
+  boxShadow: "0 4px 10px rgba(15,23,42,0.2)",
+  position: "relative",
+  overflow: "hidden",
+  maxWidth: 280, // para que no se hagan eternos en horizontal
 };
+
 
 const blockTop: React.CSSProperties = { display: "flex", justifyContent: "space-between", gap: 8, alignItems: "flex-start" };
 
@@ -4063,16 +4133,12 @@ const statusBadge: React.CSSProperties = {
 
 const productFull: React.CSSProperties = {
   fontWeight: 700,
-  whiteSpace: "normal",
-  overflow: "visible",
-  textOverflow: "clip",
-  wordBreak: "break-word",
+  whiteSpace: "nowrap",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
   lineHeight: 1.1,
   marginRight: 8,
-  maxWidth: "100%",
-  display: "inline-flex",
-  alignItems: "center",
-  gap: 6,
+  maxWidth: 180,
 };
 // === Botones ===
 const btnBase: React.CSSProperties = {
@@ -4105,14 +4171,15 @@ const smallPlusBtn: React.CSSProperties = { background: "#111827", color: "#fff"
 
 const sidebar: React.CSSProperties = {
   position: "sticky",
-  top: 72,
+  top: 80,
   alignSelf: "start",
-  background: "#fff",
+  background: "#ffffff",
   border: "1px solid #e5e7eb",
-  borderRadius: 10,
-  padding: 12,
-  maxHeight: "calc(100vh - 90px)",
+  borderRadius: 16,
+  padding: 16,
+  maxHeight: "calc(100vh - 96px)",
   overflow: "auto",
+  boxShadow: "0 10px 25px rgba(15,23,42,0.08)",
 };
 
 const miniHint: React.CSSProperties = {
