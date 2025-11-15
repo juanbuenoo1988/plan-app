@@ -4105,8 +4105,9 @@ const blockStyle: React.CSSProperties = {
   cursor: "grab",
   boxShadow: "0 4px 10px rgba(15,23,42,0.2)",
   position: "relative",
-  overflow: "visible",        // ⬅️ importante para que se vean los botones
+  overflow: "visible",   // ⬅️ para que se vean los botones flotando
 };
+
 
 
 
@@ -4158,13 +4159,13 @@ const btnLock: React.CSSProperties   = { ...btnBase, background: "#ef4444", colo
 
 const deleteBtn: React.CSSProperties = {
   position: "absolute",
-  top: 4,
-  right: 4,
+  top: -10,            // ⬅️ ahora por fuera del bloque
+  right: -6,
   width: 22,
   height: 22,
   borderRadius: 999,
   border: "none",
-  background: "rgba(248,113,113,0.95)", // rojo suave
+  background: "rgba(248,113,113,0.95)",
   color: "#fff",
   cursor: "pointer",
   fontSize: 11,
@@ -4176,13 +4177,13 @@ const deleteBtn: React.CSSProperties = {
 
 const deleteBtnAlt: React.CSSProperties = {
   position: "absolute",
-  top: 4,
-  right: 30,
+  top: -10,           // ⬅️ también por fuera
+  right: 22,
   width: 22,
   height: 22,
   borderRadius: 999,
   border: "none",
-  background: "rgba(148,163,184,0.95)", // gris para “bloque completo”
+  background: "rgba(148,163,184,0.95)",
   color: "#fff",
   cursor: "pointer",
   fontSize: 11,
@@ -4191,6 +4192,7 @@ const deleteBtnAlt: React.CSSProperties = {
   justifyContent: "center",
   boxShadow: "0 2px 4px rgba(15,23,42,0.25)",
 };
+
 
 const smallPlusBtn: React.CSSProperties = { background: "#111827", color: "#fff", border: "none", borderRadius: 6, padding: "2px 6px", cursor: "pointer", fontSize: 12 };
 
