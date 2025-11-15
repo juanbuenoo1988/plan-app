@@ -110,14 +110,12 @@ type TaskSlice = {
 type PendingBlockAlert = {
   trabajadorId: string;
   trabajadorNombre: string;
-  taskId: string;
   producto: string;
-  fecha: string;          // día del bloque (YYYY-MM-DD)
-  remainingDays: number;  // días que faltan (0..10)
-  descripcion?: string;   // descripción del producto (si existe)
+  fecha: string;          // primer día de ese producto para ese trabajador
+  remainingDays: number;  // puede ser <= 0
+  descripcion?: string;
+  urgente?: boolean;
 };
-
-
 
 
 type NewTaskForm = {
@@ -2682,72 +2680,82 @@ function mergeOverrideRow(
   return { ...prev, [row.worker_id]: byW };
 }
 
-  // === Alertas de bloques sin validar en los próximos 10 días ===
-    // === Alertas de bloques sin validar en los próximos 10 días ===
-  useEffect(() => {
-    if (!slices.length) {
-      setPendingAlerts([]);
-      return;
+// === Alertas de bloques sin validar (cuenta atrás desde el PRIMER día de producto) ===
+useEffect(() => {
+  if (!slices.length) {
+    setPendingAlerts([]);
+    return;
+  }
+
+  const hoy = new Date();
+
+  // Agrupamos por (trabajadorId, producto)
+  const base = new Map<
+    string,
+    {
+      trabajadorId: string;
+      trabajadorNombre: string;
+      producto: string;
+      fecha: string;      // primer día pendiente de ese producto
+      descripcion?: string;
     }
+  >();
 
-    const hoy = new Date();
-    const limite = addDays(hoy, 10);
-    const fromISO = toLocalISO(hoy);
-    const toISO = toLocalISO(limite);
+  for (const s of slices) {
+    // Solo bloques que NO están validados
+    if (s.validado === true) continue;
 
-    // Agrupamos por (trabajadorId, taskId) para no repetir el mismo bloque
-    const map = new Map<string, PendingBlockAlert>();
+    const worker = workers.find((w) => w.id === s.trabajadorId);
+    const key = `${s.trabajadorId}|${s.producto}`;
+    const descripcion = descs[s.producto] ?? "";
 
-    for (const s of slices) {
-      // Solo bloques VALIDADO = false/undefined
-      if (s.validado === true) continue;
-
-      // Fuera de la ventana [hoy, hoy+10]
-      if (s.fecha < fromISO || s.fecha > toISO) continue;
-
-      const worker = workers.find(w => w.id === s.trabajadorId);
-      const key = `${s.trabajadorId}|${s.taskId}`;
-
-      const fechaDate = fromLocalISO(s.fecha);
-      const diff = differenceInCalendarDays(fechaDate, hoy); // 0..10
-      const descripcion = descs[s.producto] ?? "";
-
-      const existing = map.get(key);
-      if (!existing) {
-        map.set(key, {
-          trabajadorId: s.trabajadorId,
-          trabajadorNombre: worker?.nombre ?? s.trabajadorId,
-          taskId: s.taskId,
-          producto: s.producto,
-          fecha: s.fecha,
-          remainingDays: diff,
-          descripcion,
-        });
-      } else {
-        // Nos quedamos con la fecha más temprana dentro de la ventana
-        if (s.fecha < existing.fecha) {
-          map.set(key, {
-            ...existing,
-            fecha: s.fecha,
-            remainingDays: diff,
-          });
-        }
+    const existing = base.get(key);
+    if (!existing) {
+      base.set(key, {
+        trabajadorId: s.trabajadorId,
+        trabajadorNombre: worker?.nombre ?? s.trabajadorId,
+        producto: s.producto,
+        fecha: s.fecha,
+        descripcion,
+      });
+    } else {
+      // Nos quedamos SIEMPRE con la fecha MÁS ANTIGUA de ese producto
+      if (s.fecha < existing.fecha) {
+        base.set(key, { ...existing, fecha: s.fecha });
       }
     }
+  }
 
-    // Orden: por fecha, luego por trabajador, luego por producto
-    const arr = Array.from(map.values()).sort((a, b) => {
-      if (a.fecha < b.fecha) return -1;
-      if (a.fecha > b.fecha) return 1;
-      if (a.trabajadorNombre < b.trabajadorNombre) return -1;
-      if (a.trabajadorNombre > b.trabajadorNombre) return 1;
-      if (a.producto < b.producto) return -1;
-      if (a.producto > b.producto) return 1;
-      return 0;
+  const alerts: PendingBlockAlert[] = [];
+
+  for (const v of base.values()) {
+    const fechaDate = fromLocalISO(v.fecha);
+    const diff = differenceInCalendarDays(fechaDate, hoy); // puede ser negativo
+
+    // Si falta más de 10 días para el primer día → no avisamos todavía
+    if (diff > 10) continue;
+
+    alerts.push({
+      ...v,
+      remainingDays: diff,   // si diff <= 0, luego se muestra como URGENTE
+      urgente: diff <= 0,
     });
+  }
 
-    setPendingAlerts(arr);
-  }, [slices, workers, descs]);
+  // Orden: por fecha, luego por trabajador, luego por producto
+  alerts.sort((a, b) => {
+    if (a.fecha < b.fecha) return -1;
+    if (a.fecha > b.fecha) return 1;
+    if (a.trabajadorNombre < b.trabajadorNombre) return -1;
+    if (a.trabajadorNombre > b.trabajadorNombre) return 1;
+    if (a.producto < b.producto) return -1;
+    if (a.producto > b.producto) return 1;
+    return 0;
+  });
+
+  setPendingAlerts(alerts);
+}, [slices, workers, descs]);
+
 
  
   /* ===================== Render ===================== */
@@ -2871,12 +2879,13 @@ function mergeOverrideRow(
                 )}
                 {" · "}
                 <span style={{ fontWeight: 700 }}>
-                  {b.remainingDays === 0
-                    ? "¡HOY hay que validar este bloque!"
-                    : `Quedan ${b.remainingDays} día${
-                        b.remainingDays === 1 ? "" : "s"
-                      } para validar`}
-                </span>
+  {b.urgente
+    ? "🚨 URGENTE: este bloque ya debería estar validado"
+    : `Quedan ${b.remainingDays} día${
+        b.remainingDays === 1 ? "" : "s"
+      } para validar`}
+</span>
+
               </li>
             ))}
           </ul>
