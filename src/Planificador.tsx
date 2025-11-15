@@ -4096,17 +4096,18 @@ const horizontalLane: React.CSSProperties = { display: "flex", gap: 6, overflowX
 const blockStyle: React.CSSProperties = {
   color: "#ffffff",
   borderRadius: 999,
-  padding: "6px 10px 6px 32px",
+  padding: "8px 12px 8px 32px",
   fontSize: 12,
-  minHeight: 32,
+  minHeight: 36,
   display: "flex",
   flexDirection: "column",
   justifyContent: "center",
   cursor: "grab",
   boxShadow: "0 4px 10px rgba(15,23,42,0.2)",
   position: "relative",
-  overflow: "hidden",
+  overflow: "visible",        // ⬅️ importante para que se vean los botones
 };
+
 
 
 
@@ -4156,15 +4157,41 @@ const btnUnlock: React.CSSProperties = { ...btnBase, background: "#10b981", colo
 const btnLock: React.CSSProperties   = { ...btnBase, background: "#ef4444", color: "#fff", border: "1px solid #dc2626" };
 
 const deleteBtn: React.CSSProperties = {
-  position: "absolute", top: -8, right: -8, background: "#ef4444",
-  border: "none", color: "#fff", width: 20, height: 20, borderRadius: "50%",
-  cursor: "pointer", lineHeight: "20px", fontSize: 12,
+  position: "absolute",
+  top: 4,
+  right: 4,
+  width: 22,
+  height: 22,
+  borderRadius: 999,
+  border: "none",
+  background: "rgba(248,113,113,0.95)", // rojo suave
+  color: "#fff",
+  cursor: "pointer",
+  fontSize: 11,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  boxShadow: "0 2px 4px rgba(15,23,42,0.35)",
 };
+
 const deleteBtnAlt: React.CSSProperties = {
-  position: "absolute", top: -8, right: 16, background: "#6b7280",
-  border: "none", color: "#fff", width: 22, height: 22, borderRadius: "50%",
-  cursor: "pointer", lineHeight: "22px", fontSize: 12,
+  position: "absolute",
+  top: 4,
+  right: 30,
+  width: 22,
+  height: 22,
+  borderRadius: 999,
+  border: "none",
+  background: "rgba(148,163,184,0.95)", // gris para “bloque completo”
+  color: "#fff",
+  cursor: "pointer",
+  fontSize: 11,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  boxShadow: "0 2px 4px rgba(15,23,42,0.25)",
 };
+
 const smallPlusBtn: React.CSSProperties = { background: "#111827", color: "#fff", border: "none", borderRadius: 6, padding: "2px 6px", cursor: "pointer", fontSize: 12 };
 
 const sidebar: React.CSSProperties = {
