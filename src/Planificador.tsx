@@ -3329,11 +3329,12 @@ useEffect(() => {
                   desc ? "\n" + desc : ""
                 }`}
                 style={{
-                  ...blockStyle,
-                  background: isUrgent ? URGENT_COLOR : s.color,
-                  width: Math.max(18, s.horas * PX_PER_HOUR),
-                  position: "relative",
-                }}
+  ...blockStyle,
+  background: isUrgent ? URGENT_COLOR : s.color,
+  minWidth: Math.max(90, s.horas * PX_PER_HOUR), // mínimo decente
+  position: "relative",
+}}
+
               >
                 {canEdit && (
                   <>
@@ -4105,8 +4106,8 @@ const blockStyle: React.CSSProperties = {
   boxShadow: "0 4px 10px rgba(15,23,42,0.2)",
   position: "relative",
   overflow: "hidden",
-  maxWidth: 280, // para que no se hagan eternos en horizontal
 };
+
 
 
 const blockTop: React.CSSProperties = { display: "flex", justifyContent: "space-between", gap: 8, alignItems: "flex-start" };
@@ -4133,12 +4134,9 @@ const statusBadge: React.CSSProperties = {
 
 const productFull: React.CSSProperties = {
   fontWeight: 700,
-  whiteSpace: "nowrap",
-  overflow: "hidden",
-  textOverflow: "ellipsis",
-  lineHeight: 1.1,
+  lineHeight: 1.2,
   marginRight: 8,
-  maxWidth: 180,
+  wordBreak: "break-word",
 };
 // === Botones ===
 const btnBase: React.CSSProperties = {
