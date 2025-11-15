@@ -153,7 +153,7 @@ const fromLocalISO = (iso: string) => {
   return new Date(y, (m ?? 1) - 1, dd ?? 1); // ← SIN UTC
 };
 
-const weekDaysHeader = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"];
+const weekDaysHeader = ["LUNES", "MARTES", "MIÉRCOLES", "JUEVES", "VIERNES", "SÁBADO", "DOMINGO"];
 const PX_PER_HOUR = 20;
 const URGENT_COLOR = "#f59e0b";
 
@@ -2858,7 +2858,7 @@ useEffect(() => {
       {pendingAlerts.length > 0 && (
         <div style={alertBox} className="no-print">
           <div style={{ fontWeight: 700, marginBottom: 4 }}>
-            ⚠ Bloques sin validar en los próximos 10 días
+            ⚠ Planos sin validar en los próximos 10 días
           </div>
 
           <ul style={alertList}>
@@ -3091,11 +3091,14 @@ useEffect(() => {
 
           {/* CABECERA DÍAS (impresión mensual) */}
           <div style={daysHeader} className={printMode === "monthly" ? "" : "no-print"}>
-  <div style={{ padding: "6px 8px", fontWeight: 600 }}>Sem</div>
+  <div style={dayHeaderCell}>SEM</div>
   {weekDaysHeader.map((d, i) => (
-    <div key={`dow-${i}`} style={{ padding: "6px 8px", fontWeight: 600 }}>{d}</div>
+    <div key={`dow-${i}`} style={dayHeaderCell}>
+      {d}
+    </div>
   ))}
 </div>
+
 
 
           {/* CALENDARIO */}
@@ -3990,6 +3993,14 @@ const daysHeader: React.CSSProperties = {
   margin: "8px 0 4px",
   color: "#000000ff",
 };
+
+const dayHeaderCell: React.CSSProperties = {
+  padding: "8px 10px",
+  fontWeight: 800,
+  fontSize: 16,       // más grande
+  letterSpacing: 0.5, // un poco de separación entre letras
+};
+
 const weekRow: React.CSSProperties = { display: "grid", gridTemplateColumns: "56px repeat(7, 1fr)", gap: 2, marginBottom: 2 };
 const dayCell: React.CSSProperties = {
   border: "1px solid #e5e7eb",
