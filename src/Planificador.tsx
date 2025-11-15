@@ -2880,10 +2880,10 @@ useEffect(() => {
                 {" · "}
                 <span style={{ fontWeight: 700 }}>
   {b.urgente
-    ? "🚨 URGENTE: este bloque ya debería estar validado"
+    ? "🚨 URGENTE: este plano ya debería estar validado"
     : `Quedan ${b.remainingDays} día${
         b.remainingDays === 1 ? "" : "s"
-      } para validar`}
+      } para validar el plano`}
 </span>
 
               </li>
