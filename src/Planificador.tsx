@@ -129,6 +129,30 @@ type NewTaskForm = {
 
 type ProductDescriptions = Record<string, string>;
 
+// Normaliza nombres de producto para que "⚠️ OT-123" y "ot-123" se consideren iguales
+function normalizeProdKey(name: string): string {
+  return name
+    .trim()
+    // quita el icono de urgencia del principio si lo hay
+    .replace(/^⚠️\s*/u, "")
+    // quita un "URGENTE:" inicial si lo pones así
+    .replace(/^URGENTE[:\-\s]*/i, "")
+    .toUpperCase(); // sin distinguir mayúsculas/minúsculas
+}
+
+// Devuelve la descripción de un producto, aunque tenga el ⚠️ delante
+function getProductDesc(name: string, descs: ProductDescriptions): string | undefined {
+  // 1) Intento directo (nombre exacto)
+  if (descs[name]) return descs[name];
+
+  // 2) Intento por nombre normalizado
+  const target = normalizeProdKey(name);
+  for (const [k, v] of Object.entries(descs)) {
+    if (normalizeProdKey(k) === target) return v;
+  }
+  return undefined;
+}
+
 
 /* ===================== Util ===================== */
 const fmt = (d: Date | null | undefined) => {
@@ -2729,7 +2753,7 @@ useEffect(() => {
 
     const worker = workers.find((w) => w.id === s.trabajadorId);
     const key = `${s.trabajadorId}|${s.producto}`;
-    const descripcion = descs[s.producto] ?? "";
+    const descripcion = getProductDesc(s.producto, descs) ?? "";
 
     const existing = base.get(key);
     if (!existing) {
@@ -3329,7 +3353,7 @@ useEffect(() => {
           </div>
         ) : (
           delDia.map((s) => {
-            const desc = descs[s.producto];
+            const desc = getProductDesc(s.producto, descs);
             const isUrgent = isUrgentSlice(s);
 
             return (
