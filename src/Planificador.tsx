@@ -3883,7 +3883,7 @@ function ValidIcon({
 /* ===================== Estilos ===================== */
 const appShell: React.CSSProperties = {
   fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
-  background: "#f3f4f6",            // antes: azul fuerte
+  background: "#8492afff",            // antes: azul fuerte
   minHeight: "100vh",
 };
 
