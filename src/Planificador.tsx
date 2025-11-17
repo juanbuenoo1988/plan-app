@@ -1341,26 +1341,48 @@ useEffect(() => {
   }
 
 async function manualSave() {
+  // 0) Siempre guardo una copia local como seguridad
+  saveBackup("manual");
+
+  // Si no hay sesión → solo copia local
   if (!userId) {
-    alert("No hay sesión activa. Inicia sesión para guardar en la nube.");
+    alert(
+      "He guardado una copia local en este navegador.\n\n" +
+      "Para guardar también en la nube (Supabase), inicia sesión arriba a la derecha."
+    );
     return;
   }
 
   setSavingCloud(true);
   setSaveError(null);
 
-  const snapshot = JSON.stringify({ workers, slices, overrides, descs });
-
   try {
-    await guardedSaveAll(userId);
-    lastSavedRef.current = snapshot;
+    // Comprobamos conexión básica
+    if (typeof navigator !== "undefined" && navigator.onLine === false) {
+      setSaveError("Sin conexión. Solo se ha guardado la copia local.");
+      alert(
+        "No hay conexión a Internet.\n\n" +
+        "Solo se ha guardado una copia local en este navegador."
+      );
+      return;
+    }
+
+    // Guardar directamente en Supabase
+    await saveAll(userId);
+
+    lastSavedRef.current = JSON.stringify({ workers, slices, overrides, descs });
     alert("Guardado en la nube correctamente.");
   } catch (e: any) {
-    console.error("Guardado manual falló:", e);
     const msg = e?.message ?? String(e);
+    console.error("Error al guardar en la nube:", e);
     setSaveError(msg);
-    alert("Error al guardar en la nube:\n\n" + msg);
+    alert(
+      "Ha fallado el guardado en la nube.\n\n" +
+      "Se mantiene la copia local en este navegador.\n\n" +
+      "Detalle técnico:\n" + msg
+    );
   } finally {
+    // Muy importante: siempre se ejecuta, haya éxito o error
     setSavingCloud(false);
   }
 }
