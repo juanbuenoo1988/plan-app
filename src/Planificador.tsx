@@ -3596,24 +3596,31 @@ useEffect(() => {
   )}
 
   {Object.entries(descs).map(([prod, texto]) => {
-    // ✓ si TODOS los tramos de ese producto están validados; en otro caso ✗
-    const prodSlices = slices.filter(s => s.producto === prod);
-    const estado: boolean = prodSlices.length > 0 && prodSlices.every(s => s.validado === true);
+  // Normalizamos el nombre del producto de la descripción
+  const prodNorm = normalizeProdKey(prod);
+
+  // Cogemos TODOS los bloques cuyo nombre normalizado coincida
+  const prodSlices = slices.filter(
+    (s) => normalizeProdKey(s.producto) === prodNorm
+  );
+
+  // ✓ si TODOS esos tramos están validados; en otro caso ✗
+  const estado: boolean =
+    prodSlices.length > 0 && prodSlices.every((s) => s.validado === true);
 
     return (
-      <div key={`desc-${prod}`} style={descItem}>
-        {/* Cabecera: nombre + icono + botones */}
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-          }}
-        >
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <span style={{ fontWeight: 700 }}>{prod}</span>
-            <ValidIcon validado={estado} inline />
-          </div>
+    <div key={`desc-${prod}`} style={descItem}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ fontWeight: 700 }}>{prod}</span>
+          <ValidIcon validado={estado} inline />
+        </div>
 
           <div style={{ display: "flex", gap: 6 }}>
             <button
