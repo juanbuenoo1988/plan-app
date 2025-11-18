@@ -816,8 +816,25 @@ function marcarValidacionBloque(taskId: string, trabajadorId: string, validado: 
 function editUrgentSlice(slice: TaskSlice) {
   if (!canEdit) return;
 
+  // Trabajador de la urgencia
+  const w = workers.find(x => x.id === slice.trabajadorId);
+  if (!w) return;
+
+  // Todas las partes de ese bloque de urgencia para este trabajador
+  const partesBloque = slices.filter(
+    s => s.trabajadorId === w.id && s.taskId === slice.taskId
+  );
+
+  // Horas totales del bloque de urgencia
+  const totalBloque = Math.round(
+    partesBloque.reduce((acc, s) => acc + s.horas, 0) * 2
+  ) / 2;
+
+  // Mensaje indicando el total del bloque + horas de ese día
   const nuevoStr = prompt(
-    `Horas reales para "${slice.producto}" el ${slice.fecha}:`,
+    `Horas reales para "${slice.producto}" el ${slice.fecha}.\n\n` +
+      `Total del bloque de urgencia para ${w.nombre}: ${totalBloque}h.\n` +
+      `Introduce las horas reales SOLO de este día:`,
     String(slice.horas)
   );
   if (nuevoStr === null) return;
@@ -825,16 +842,13 @@ function editUrgentSlice(slice: TaskSlice) {
   const h = Math.max(0.5, Math.round(Number(nuevoStr) * 2) / 2);
   if (!isFinite(h)) return;
 
-  // Pregunta de validación
+  // Pregunta de validación (afecta a TODO el bloque)
   const validado = preguntarValidacionBloque(slice.validado);
   if (validado === null) return;
 
-  const w = workers.find(x => x.id === slice.trabajadorId);
-  if (!w) return;
-
-  // 1) Refluye fijando la urgencia y recolocando el resto
+  // 1) Refluye fijando la urgencia de este día y recolocando el resto
   setSlices(prev => {
-    // Fijamos SOLO ese tramo (amarillo) con sus nuevas horas
+    // Fijamos SOLO este tramo urgente con las nuevas horas
     const fixed = prev.map(s =>
       s.id === slice.id
         ? { ...s, horas: h, color: URGENT_COLOR }
@@ -846,7 +860,7 @@ function editUrgentSlice(slice: TaskSlice) {
     const others = fixed.filter(s => s.trabajadorId !== w.id);
     const final = [...others, ...reflowedForWorker];
 
-    // 3) Marca validación en TODO el bloque al que pertenece esta urgencia
+    // 3) Marcamos validación en TODO el bloque de esa urgencia
     return final.map(s =>
       s.taskId === slice.taskId && s.trabajadorId === w.id
         ? { ...s, validado }
@@ -854,10 +868,10 @@ function editUrgentSlice(slice: TaskSlice) {
     );
   });
 
-  // 4) MUY IMPORTANTE: después de refluír, fusionamos trocitos del mismo
-  // bloque en el mismo día para que se vea como un solo bloque.
+  // 4) Fusionar trocitos del mismo día para que se vea limpio
   compactarBloques(w.id);
 }
+
 
   // === NUEVO: helper seguro para leer del almacenamiento local ===
   function safeLocal<T>(k: string, fallback: T) {
