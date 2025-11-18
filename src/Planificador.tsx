@@ -816,51 +816,68 @@ function marcarValidacionBloque(taskId: string, trabajadorId: string, validado: 
 function editUrgentSlice(slice: TaskSlice) {
   if (!canEdit) return;
 
-  // Trabajador de la urgencia
   const w = workers.find(x => x.id === slice.trabajadorId);
   if (!w) return;
 
-  // Todas las partes de ese bloque de urgencia para este trabajador
-  const partesBloque = slices.filter(
+  // Todas las partes del bloque de urgencia para este trabajador
+  const delBloque = slices.filter(
     s => s.trabajadorId === w.id && s.taskId === slice.taskId
   );
+  if (delBloque.length === 0) return;
 
-  // Horas totales del bloque de urgencia
-  const totalBloque = Math.round(
-    partesBloque.reduce((acc, s) => acc + s.horas, 0) * 2
+  // Primer día del bloque y total actual de horas
+  const startF = delBloque.reduce(
+    (m, s) => (s.fecha < m ? s.fecha : m),
+    delBloque[0].fecha
+  );
+  const totalActual = Math.round(
+    delBloque.reduce((a, s) => a + s.horas, 0) * 2
   ) / 2;
 
-  // Mensaje indicando el total del bloque + horas de ese día
+  // Pedimos NUEVO TOTAL de horas del bloque completo de urgencia
   const nuevoStr = prompt(
-    `Horas reales para "${slice.producto}" el ${slice.fecha}.\n\n` +
-      `Total del bloque de urgencia para ${w.nombre}: ${totalBloque}h.\n` +
-      `Introduce las horas reales SOLO de este día:`,
-    String(slice.horas)
+    `Horas TOTALES del bloque de urgencia "${slice.producto}" ` +
+      `para ${w.nombre} (desde ${startF}):`,
+    String(totalActual)
   );
   if (nuevoStr === null) return;
 
-  const h = Math.max(0.5, Math.round(Number(nuevoStr) * 2) / 2);
-  if (!isFinite(h)) return;
+  const nuevoTotal = Math.max(0.5, Math.round(Number(nuevoStr) * 2) / 2);
+  if (!isFinite(nuevoTotal) || nuevoTotal <= 0) return;
 
-  // Pregunta de validación (afecta a TODO el bloque)
-  const validado = preguntarValidacionBloque(slice.validado);
+  // Pregunta de validación (aplica al bloque entero)
+  const validado = preguntarValidacionBloque(delBloque[0]?.validado);
   if (validado === null) return;
 
-  // 1) Refluye fijando la urgencia de este día y recolocando el resto
   setSlices(prev => {
-    // Fijamos SOLO este tramo urgente con las nuevas horas
-    const fixed = prev.map(s =>
-      s.id === slice.id
-        ? { ...s, horas: h, color: URGENT_COLOR }
-        : s
+    // 1) Elimina TODO el bloque de urgencia de ese trabajador
+    const restantes = prev.filter(
+      s => !(s.taskId === slice.taskId && s.trabajadorId === w.id)
     );
 
-    // 2) Re-empaquetar desde ese día, respetando urgencias como "pinned"
-    const reflowedForWorker = compactFrom(w, slice.fecha, overrides, fixed);
-    const others = fixed.filter(s => s.trabajadorId !== w.id);
+    // 2) Replanifica SOLO ese bloque desde su primer día
+    const plan = planificarBloqueAuto(
+      slice.producto,
+      nuevoTotal,
+      w,
+      fromLocalISO(startF),
+      base,
+      restantes,
+      overrides
+    ).map(s => ({
+      ...s,
+      taskId: slice.taskId,      // mismo bloque
+      color: URGENT_COLOR,       // mantiene color de urgencia
+    }));
+
+    const merged = [...restantes, ...plan];
+
+    // 3) Reempaca TODO ese trabajador desde el primer día del bloque
+    const reflowedForWorker = compactFrom(w, startF, overrides, merged);
+    const others = merged.filter(s => s.trabajadorId !== w.id);
     const final = [...others, ...reflowedForWorker];
 
-    // 3) Marcamos validación en TODO el bloque de esa urgencia
+    // 4) Marca validación en TODO el bloque de urgencia
     return final.map(s =>
       s.taskId === slice.taskId && s.trabajadorId === w.id
         ? { ...s, validado }
@@ -868,9 +885,10 @@ function editUrgentSlice(slice: TaskSlice) {
     );
   });
 
-  // 4) Fusionar trocitos del mismo día para que se vea limpio
+  // 5) Fusionar trocitos del mismo día
   compactarBloques(w.id);
 }
+
 
 
   // === NUEVO: helper seguro para leer del almacenamiento local ===
