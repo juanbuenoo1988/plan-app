@@ -246,16 +246,33 @@ function pushOrMergeSameDay(out: TaskSlice[], add: TaskSlice) {
 function aggregateToQueue(items: TaskSlice[]): QueueItem[] {
   const map = new Map<string, QueueItem>();
   const order: string[] = [];
-  for (const t of items) {
-    if (!map.has(t.taskId)) {
-      map.set(t.taskId, { producto: t.producto, horas: 0, color: t.color, taskId: t.taskId });
-      order.push(t.taskId);
+
+  for (const s of items) {
+    let q = map.get(s.taskId);
+    if (!q) {
+      q = {
+        taskId: s.taskId,
+        producto: s.producto,
+        color: s.color,
+        horas: 0,
+        validado: s.validado ?? false,
+      };
+      map.set(s.taskId, q);
+      order.push(s.taskId);
     }
-    const cur = map.get(t.taskId)!;
-    cur.horas = Math.round((cur.horas + t.horas) * 2) / 2;
+
+    // sumamos horas de todos los trozos de ese bloque
+    q.horas = Math.round((q.horas + s.horas) * 2) / 2;
+
+    // si algún trozo NO está validado, el bloque completo se considera no validado
+    if (s.validado === false) {
+      q.validado = false;
+    }
   }
+
   return order.map((id) => map.get(id)!);
 }
+
 
 
 function newId(): string {
@@ -292,13 +309,7 @@ function compactFrom(
 
   // 2) Cola con todos los bloques desde startISO,
   //    arrastrando color y validado
-  const queue: QueueItem[] = fromHere.map(s => ({
-    taskId: s.taskId,
-    producto: s.producto,
-    color: s.color,
-    horas: s.horas,
-    validado: s.validado ?? false,
-  }));
+  const queue: QueueItem[] = aggregateToQueue(fromHere);
 
   const rebuilt: TaskSlice[] = [];
   let dayISO = startISO;
